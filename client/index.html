@@ -33,20 +33,36 @@
         padding: 22px 24px;
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
       }
-      .card h1 { margin: 0 0 4px; font-size: 26px; }
-      .card p.sub { margin: 0 0 10px; color: #8fb4c9; font-size: 13px; }
-      .card p.joke {
-        margin: 0 0 18px;
-        padding: 10px 12px;
-        border-left: 3px solid #f4b400;
-        background: rgba(244, 180, 0, 0.08);
-        border-radius: 0 6px 6px 0;
-        color: #d9c9a3;
-        font-size: 12.5px;
-        font-style: italic;
-        line-height: 1.45;
+      .card h1.title { margin: 0 0 4px; font-size: 30px; letter-spacing: 0.5px; }
+      .card p.sub { margin: 0 0 18px; color: #8fb4c9; font-size: 13px; }
+      /* The name gag: the "m" in Bamfield struck out, a fresh "n" stickered over it. */
+      .swap { position: relative; display: inline-block; }
+      .swap .m { color: #5f7d8c; }
+      .swap .m::after {
+        content: "";
+        position: absolute;
+        left: -1px;
+        right: -1px;
+        top: 52%;
+        height: 3px;
+        background: #e53935;
+        border-radius: 2px;
+        transform: rotate(-7deg);
       }
-      .card p.joke b { color: #f4d27a; font-style: normal; }
+      .swap .n {
+        position: absolute;
+        left: 50%;
+        top: -0.2em;
+        transform: translateX(-50%) rotate(-6deg);
+        background: #fff7e6;
+        color: #15384f;
+        padding: 0 0.14em;
+        border-radius: 3px;
+        border: 1px solid #cdbd97;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+        font-weight: 800;
+      }
+      .title .rest { font-weight: 600; color: #cfe3ef; font-size: 0.62em; }
       label { display: block; font-size: 13px; margin: 12px 0 4px; color: #b8d4e3; }
       input[type="text"] {
         width: 100%;
@@ -122,13 +138,8 @@
 
     <div id="creator">
       <div class="card">
-        <h1>Banfield, The Game</h1>
+        <h1 class="title">Ba<span class="swap"><span class="m">m</span><span class="n">n</span></span>field<span class="rest">,&nbsp;The Game</span></h1>
         <p class="sub">Survive low tide and high tide on the coast of Barkley Sound.</p>
-        <p class="joke">
-          It was <i>supposed</i> to be called <b>Banfield</b> — but a clerk's
-          slip of the pen named the town <b>Bamfield</b>, and it stuck for over
-          a century. This game takes back the old, true name.
-        </p>
 
         <label for="name">Name</label>
         <input id="name" type="text" maxlength="16" placeholder="Settler" />
