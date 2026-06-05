@@ -1,6 +1,7 @@
 import {
   Appearance,
   BuildingState,
+  CRAFT_RECIPES,
   CreatureState,
   ITEM_IDS,
   ITEM_LABEL,
@@ -52,6 +53,8 @@ export class Game {
   private chatLines: Array<{ from: string; msg: string; channel: "global" | "team"; ts: number }> = [];
   private chargeStart: number | null = null; // when Space went down (for charged swings)
   private chatOpen = false; // is the chat text box visible?
+  private craftOpen = false; // is the crafting panel visible?
+  private craftSelected = 0; // highlighted recipe index
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -117,13 +120,34 @@ export class Game {
         if (this.chargeStart === null) this.chargeStart = performance.now();
         e.preventDefault();
       } else if (!e.repeat) {
-        if (k === "shift") this.net.send({ t: "dodge" });
-        else if (k === "f") this.net.send({ t: "board" });
-        else if (k === "e") {
+        if (k === "shift") {
+          this.net.send({ t: "dodge" });
+        } else if (k === "f") {
+          this.net.send({ t: "board" });
+        } else if (k === "e") {
           this.net.send({ t: "harvest" });
           this.net.send({ t: "repair" });
-        } else if (k === "t") this.net.send({ t: "travel" });
-        else if (k === "c") this.net.send({ t: "craft", recipe: "plank" });
+        } else if (k === "q") {
+          this.net.send({ t: "eat" });
+        } else if (k === "g") {
+          this.net.send({ t: "fish" });
+        } else if (k === "t") {
+          this.net.send({ t: "travel" });
+        } else if (k === "c") {
+          this.craftOpen = !this.craftOpen;
+          this.craftSelected = 0;
+          e.preventDefault();
+        } else if (this.craftOpen && k >= "1" && k <= "9") {
+          const idx = parseInt(k) - 1;
+          if (idx < CRAFT_RECIPES.length) {
+            this.craftSelected = idx;
+            this.net.send({ t: "craft", recipe: CRAFT_RECIPES[idx].id });
+          }
+          e.preventDefault();
+        } else if (this.craftOpen && k === "escape") {
+          this.craftOpen = false;
+          e.preventDefault();
+        }
       }
     } else if (k === " ") {
       if (this.chargeStart !== null) {
@@ -211,6 +235,8 @@ export class Game {
     this.drawTravelPrompt(me);
     this.drawBoardPrompt(me);
     this.drawHarvestPrompt(this.snap.resourceNodes, me);
+    this.drawFishPrompt(me);
+    if (this.craftOpen) this.drawCraftPanel(me);
   }
 
   // Charge meter under your feet while you wind up a swing.
@@ -420,6 +446,122 @@ export class Game {
     }
   }
 
+  private drawCraftPanel(me?: PlayerState) {
+    const ctx = this.ctx;
+    const PW = 310;
+    const lineH = 40;
+    const PH = 60 + CRAFT_RECIPES.length * lineH;
+    const px = this.canvas.width / 2 - PW / 2;
+    const py = this.canvas.height / 2 - PH / 2;
+
+    // Background
+    ctx.fillStyle = "rgba(5,15,24,0.95)";
+    roundRect(ctx, px, py, PW, PH, 10);
+    ctx.fill();
+    ctx.strokeStyle = "#1e88e5";
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, px, py, PW, PH, 10);
+    ctx.stroke();
+
+    ctx.fillStyle = "#b8d4e3";
+    ctx.font = "bold 14px system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText("CRAFTING  [C] close  [1-5] select", px + PW / 2, py + 22);
+    ctx.fillStyle = "#456a80";
+    ctx.fillRect(px + 10, py + 30, PW - 20, 1);
+
+    for (let i = 0; i < CRAFT_RECIPES.length; i++) {
+      const r = CRAFT_RECIPES[i];
+      const ry = py + 44 + i * lineH;
+      const canAfford = me
+        ? Object.entries(r.needs).every(([item, qty]) => (me.inventory[item as ItemId] ?? 0) >= (qty as number))
+        : false;
+      const selected = i === this.craftSelected;
+
+      if (selected) {
+        ctx.fillStyle = "rgba(30,136,229,0.22)";
+        ctx.fillRect(px + 6, ry - 2, PW - 12, lineH - 4);
+      }
+      ctx.fillStyle = canAfford ? "#eaf2f8" : "#4a6278";
+      ctx.font = `bold 13px system-ui`;
+      ctx.textAlign = "left";
+      ctx.fillText(`[${i + 1}] ${r.name}`, px + 16, ry + 14);
+
+      // Ingredients
+      const needsStr = Object.entries(r.needs)
+        .map(([item, qty]) => {
+          const have = me?.inventory[item as ItemId] ?? 0;
+          const col = have >= (qty as number) ? "#7ec8a0" : "#e57373";
+          return `<${col}>${qty} ${ITEM_LABEL[item as ItemId]}</${col}>`;
+        })
+        .join("  ");
+      // Plain text fallback (canvas can't render HTML, so we do it manually)
+      let nx = px + 16;
+      const ny = ry + 30;
+      ctx.font = "11px system-ui";
+      for (const [item, qty] of Object.entries(r.needs) as [ItemId, number][]) {
+        const have = me?.inventory[item] ?? 0;
+        ctx.fillStyle = have >= qty ? "#7ec8a0" : "#e57373";
+        const txt = `${qty} ${ITEM_LABEL[item]}  `;
+        ctx.textAlign = "left";
+        ctx.fillText(txt, nx, ny);
+        nx += ctx.measureText(txt).width;
+      }
+      if (Object.keys(r.gives).length > 0) {
+        ctx.fillStyle = "#5a7a8a";
+        ctx.fillText("→", nx, ny);
+        nx += ctx.measureText("→ ").width;
+        for (const [item, qty] of Object.entries(r.gives) as [ItemId, number][]) {
+          ctx.fillStyle = "#a0c8e0";
+          ctx.fillText(`${qty} ${ITEM_LABEL[item]}`, nx, ny);
+        }
+      }
+      void needsStr; // suppress unused
+    }
+  }
+
+  private drawFishPrompt(me?: PlayerState) {
+    if (!me || !this.snap) return;
+    const nearWater = me.swimming || (() => {
+      // Check if any adjacent tile in the snap is under water (approximate).
+      return this.snap!.waterline > 5; // roughly "tidal area" — just use swimming flag
+    })();
+    if (!nearWater && !me.fishing) return;
+
+    if (me.fishing) {
+      // Show "fishing…" status.
+      const ctx = this.ctx;
+      const text = "Fishing… (G to cancel)";
+      ctx.font = "15px system-ui";
+      ctx.textAlign = "center";
+      const w = ctx.measureText(text).width + 28;
+      const x = this.canvas.width / 2;
+      const y = this.canvas.height / 2 + 80;
+      ctx.fillStyle = "rgba(7,19,28,0.85)";
+      ctx.fillRect(x - w / 2, y - 22, w, 32);
+      ctx.strokeStyle = "#00acc1";
+      ctx.strokeRect(x - w / 2, y - 22, w, 32);
+      ctx.fillStyle = "#eaf2f8";
+      ctx.fillText(text, x, y);
+      return;
+    }
+    if (!me.swimming) return; // only prompt when in/near water
+    const ctx = this.ctx;
+    const hasRod = (me.inventory.rod ?? 0) > 0;
+    const text = hasRod ? "G — cast fishing line" : "G — fish (need a rod)";
+    ctx.font = "15px system-ui";
+    ctx.textAlign = "center";
+    const w = ctx.measureText(text).width + 28;
+    const x = this.canvas.width / 2;
+    const y = this.canvas.height - 184;
+    ctx.fillStyle = "rgba(7,19,28,0.85)";
+    ctx.fillRect(x - w / 2, y - 22, w, 32);
+    ctx.strokeStyle = hasRod ? "#00bcd4" : "#607d8b";
+    ctx.strokeRect(x - w / 2, y - 22, w, 32);
+    ctx.fillStyle = "#eaf2f8";
+    ctx.fillText(text, x, y);
+  }
+
   private drawHarvestPrompt(nodes: ResourceNode[], me?: PlayerState) {
     if (!me) return;
     const near = nodes.find(
@@ -465,6 +607,26 @@ export class Game {
     }
 
     if (p.dead) ctx.globalAlpha = 0.3;
+
+    // Fishing rod line cast toward the water.
+    if (p.fishing) {
+      const rodLen = TILE_SIZE * 2.2;
+      ctx.strokeStyle = "rgba(200,220,240,0.7)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      const floatX = sx + Math.cos(p.dir) * rodLen;
+      const floatY = sy + Math.sin(p.dir) * rodLen;
+      ctx.lineTo(floatX, floatY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Float bob
+      ctx.fillStyle = "#ff6b6b";
+      ctx.beginPath();
+      ctx.arc(floatX, floatY + Math.sin(performance.now() / 400) * 2, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     // A motion streak behind a dodging player (i-frames active).
     if (p.dodging) {
@@ -567,12 +729,19 @@ export class Game {
     const hp = me ? Math.max(0, Math.round(me.hp)) : 0;
     const stam = me ? Math.max(0, Math.round(me.stamina)) : 0;
     const skillsHtml = me
-      ? SKILL_NAMES.map((sk) => `${sk.slice(0,3).toUpperCase()}:${skillLevel(me.skills[sk])}`).join(" ")
+      ? SKILL_NAMES
+          .filter((sk) => skillLevel(me.skills[sk]) > 0)
+          .map((sk) => `${sk.slice(0, 3).toUpperCase()}:${skillLevel(me.skills[sk])}`)
+          .join(" ") || "New settler — go earn some XP!"
       : "";
     const invItems = me
       ? (ITEM_IDS as readonly ItemId[])
           .filter((id) => (me.inventory[id] ?? 0) > 0)
-          .map((id) => `${ITEM_LABEL[id]}:${me.inventory[id]}`)
+          .map((id) => {
+            const qty = me.inventory[id] ?? 0;
+            const label = ITEM_LABEL[id];
+            return id === "food" ? `<span style="color:#7ec8a0">${label}:${qty}</span>` : `${label}:${qty}`;
+          })
           .join(" ")
       : "";
     hud.innerHTML =

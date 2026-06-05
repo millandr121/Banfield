@@ -64,21 +64,22 @@ export type RegionId = string;
 // (being level 50 in one skill costs 2500 XP; being level 10 in five costs the
 // same — the maths nudge you to pick a lane without forcing it).
 export const SKILL_NAMES = [
-  "combat", "woodcutting", "mining", "swimming", "boating", "driving",
+  "combat", "woodcutting", "mining", "fishing", "swimming", "boating", "driving",
 ] as const;
 export type SkillName = (typeof SKILL_NAMES)[number];
 export type Skills = Record<SkillName, number>; // stores raw XP
 export function skillLevel(xp: number): number { return Math.floor(Math.sqrt(xp)); }
 export function defaultSkills(): Skills {
-  return { combat: 0, woodcutting: 0, mining: 0, swimming: 0, boating: 0, driving: 0 };
+  return { combat: 0, woodcutting: 0, mining: 0, fishing: 0, swimming: 0, boating: 0, driving: 0 };
 }
 
 // --- Inventory --------------------------------------------------------------
-export const ITEM_IDS = ["wood", "iron", "stone", "plank", "scrap"] as const;
+export const ITEM_IDS = ["wood", "iron", "stone", "plank", "scrap", "food", "rod"] as const;
 export type ItemId = (typeof ITEM_IDS)[number];
 export type Inventory = Partial<Record<ItemId, number>>;
 export const ITEM_LABEL: Record<ItemId, string> = {
-  wood: "Wood", iron: "Iron", stone: "Stone", plank: "Plank", scrap: "Scrap",
+  wood: "Wood", iron: "Iron", stone: "Stone", plank: "Plank",
+  scrap: "Scrap", food: "Food", rod: "Rod",
 };
 
 // --- Resource nodes ---------------------------------------------------------
@@ -96,7 +97,24 @@ export interface ResourceNode {
 }
 
 // --- Crafting ---------------------------------------------------------------
-export type CraftRecipeId = "plank" | "repairVehicle";
+export type CraftRecipeId = "plank" | "rod" | "campfire" | "repairVehicle" | "repairBuilding";
+
+// Shared recipe data — used by server for logic AND by client for the craft panel.
+export interface RecipeInfo {
+  id: CraftRecipeId;
+  name: string;
+  needs: Partial<Record<ItemId, number>>;
+  gives: Partial<Record<ItemId, number>>;
+  note: string;
+}
+
+export const CRAFT_RECIPES: RecipeInfo[] = [
+  { id: "plank",         name: "Plank",           needs: { wood: 3 },                gives: { plank: 1 }, note: "3 timber → 1 plank" },
+  { id: "rod",           name: "Fishing Rod",      needs: { wood: 3, iron: 2 },       gives: { rod: 1 },   note: "3 wood + 2 iron → fishing rod" },
+  { id: "campfire",      name: "Campfire",          needs: { wood: 4 },                gives: {},           note: "4 wood — light a fire" },
+  { id: "repairVehicle", name: "Repair Vehicle",    needs: { plank: 2, scrap: 2 },     gives: {},           note: "2 plank + 2 scrap → +50 HP nearest vehicle" },
+  { id: "repairBuilding",name: "Repair Building",   needs: { wood: 5, stone: 3 },      gives: {},           note: "5 wood + 3 stone → +80 HP nearest building" },
+];
 
 export interface PlayerState {
   id: string;
@@ -114,6 +132,7 @@ export interface PlayerState {
   appearance: Appearance;
   swimming: boolean;
   dodging: boolean; // brief lunge with i-frames (client renders a streak)
+  fishing: boolean; // currently fishing (rod cast)
   vehicleId: string | null; // id of the vehicle being driven, else null
   dead: boolean;
 }
@@ -200,7 +219,9 @@ export type ClientMessage =
   | { t: "dodge" } // quick lunge + i-frames in the current heading
   | { t: "board" } // get in / out of the nearest vehicle
   | { t: "harvest" } // chop/mine nearest resource node
-  | { t: "craft"; recipe: CraftRecipeId } // craft at an adjacent shop/boathouse
+  | { t: "craft"; recipe: CraftRecipeId } // craft (recipe validated server-side)
+  | { t: "fish" } // toggle fishing on/off (needs rod in inventory)
+  | { t: "eat" } // consume food from inventory for HP
   | { t: "chat"; msg: string } // text message; / = global, // = team
   | { t: "repair" }
   | { t: "travel" };

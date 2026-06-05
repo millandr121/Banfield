@@ -1,6 +1,7 @@
 import {
   Appearance,
   BuildingState,
+  CRAFT_RECIPES,
   ClientMessage,
   CraftRecipeId,
   CreatureKind,
@@ -115,21 +116,50 @@ const XP_KILL_PER_HP = 0.5; // per HP of killed creature
 const XP_SWIM_PER_SEC = 0.4;
 const XP_BOAT_PER_SEC = 0.6;
 const XP_DRIVE_PER_SEC = 0.5;
+const XP_FISH = 30; // per successful catch
 const DEATH_XP_LOSS = 0.25; // fraction of raw XP lost on death
 
-// Crafting recipes -----------------------------------------------------------
-const RECIPES: Record<CraftRecipeId, { needs: Partial<Record<ItemId, number>>; gives: Partial<Record<ItemId, number>>; note: string }> = {
-  plank: {
-    needs: { wood: 3 },
-    gives: { plank: 1 },
-    note: "Craft planks from timber",
-  },
-  repairVehicle: {
-    needs: { plank: 2, scrap: 2 },
-    gives: {},
-    note: "Repair the nearest vehicle (+50 HP)",
-  },
+const ITEM_LABEL_MAP: Record<ItemId, string> = {
+  wood: "Wood", iron: "Iron", stone: "Stone", plank: "Plank",
+  scrap: "Scrap", food: "Food", rod: "Rod",
 };
+
+// Fishing --------------------------------------------------------------------
+const FISHING_TIME_MS = 5000; // base wait time; reduced by fishing level
+const FISHING_ROD_REQUIRED = true;
+const EAT_HP_RESTORE = 35;
+
+// Loot table -----------------------------------------------------------------
+// Returns { item, qty }[] rolled for the given creature kind.
+function rollLoot(kind: CreatureKind): Array<{ item: ItemId; qty: number }> {
+  const drops: Array<{ item: ItemId; qty: number }> = [];
+  const r = Math.random;
+  switch (kind) {
+    case "crab":
+      if (r() < 0.8) drops.push({ item: "scrap", qty: 1 });
+      if (r() < 0.5) drops.push({ item: "food", qty: 1 });
+      break;
+    case "octopus":
+      if (r() < 0.6) drops.push({ item: "scrap", qty: 1 });
+      if (r() < 0.4) drops.push({ item: "food", qty: 1 });
+      break;
+    case "dogfish":
+      if (r() < 0.9) drops.push({ item: "scrap", qty: 1 });
+      if (r() < 0.6) drops.push({ item: "food", qty: 2 });
+      break;
+    case "sixgill":
+      if (r() < 1.0) drops.push({ item: "scrap", qty: 2 });
+      if (r() < 0.7) drops.push({ item: "food", qty: 2 });
+      break;
+    case "orca":
+      drops.push({ item: "scrap", qty: 2 + Math.floor(r() * 2) });
+      if (r() < 0.8) drops.push({ item: "food", qty: 3 });
+      break;
+    default: // neutrals (humpback, greywhale) — not killable but here for completeness
+      break;
+  }
+  return drops;
+}
 
 export class GameRoom {
   private sessions = new Map<WebSocket, Session>();
@@ -139,6 +169,8 @@ export class GameRoom {
   private creatures = new Map<string, CreatureState>();
   private vehicles = new Map<string, VehicleRecord>();
   private resourceNodes = new Map<string, ResourceNode>();
+  // playerId → timestamp when they cast their line (null = not fishing)
+  private fishingStates = new Map<string, number>();
   // Transient knockback impulses by entity id (players + creatures).
   private kb = new Map<string, { x: number; y: number }>();
 
@@ -228,6 +260,7 @@ export class GameRoom {
       }
       this.players.delete(s.playerId);
       this.kb.delete(s.playerId);
+      this.fishingStates.delete(s.playerId);
     }
     this.sessions.delete(ws);
     if (this.sessions.size === 0 && this.loop) {
@@ -259,6 +292,7 @@ export class GameRoom {
           appearance: sanitizeAppearance(msg.appearance),
           swimming: false,
           dodging: false,
+          fishing: false,
           vehicleId: null,
           dead: false,
         };
@@ -272,7 +306,14 @@ export class GameRoom {
         s.dx = len > 1 ? msg.dx / len : msg.dx;
         s.dy = len > 1 ? msg.dy / len : msg.dy;
         const p = this.players.get(s.playerId);
-        if (p && (msg.dx !== 0 || msg.dy !== 0)) p.dir = Math.atan2(msg.dy, msg.dx);
+        if (p && (msg.dx !== 0 || msg.dy !== 0)) {
+          p.dir = Math.atan2(msg.dy, msg.dx);
+          // Moving cancels fishing.
+          if (p.fishing) {
+            p.fishing = false;
+            this.fishingStates.delete(p.id);
+          }
+        }
         break;
       }
       case "attack":
@@ -286,6 +327,12 @@ export class GameRoom {
         break;
       case "harvest":
         this.doHarvest(s.playerId);
+        break;
+      case "fish":
+        this.doFishToggle(s.playerId);
+        break;
+      case "eat":
+        this.doEat(s.playerId);
         break;
       case "craft":
         this.doCraft(s.playerId, msg.recipe);
@@ -336,6 +383,7 @@ export class GameRoom {
     this.updateCreatures(dt, waterline, now);
     this.updateResourceRespawn(now);
     this.updateVehicleRust(dt, waterline, now);
+    this.updateFishing(now);
     this.maybeSpawn(now, waterline);
 
     // Each player only sees their own region; cache one snapshot per region.
@@ -579,14 +627,14 @@ export class GameRoom {
   private doCraft(playerId: string, recipeId: CraftRecipeId) {
     const p = this.players.get(playerId);
     if (!p || p.dead) return;
-    const recipe = RECIPES[recipeId];
+    const recipe = CRAFT_RECIPES.find((r) => r.id === recipeId);
     if (!recipe) return;
+    const s = this.sessionFor(p.id);
 
     // Check and consume ingredients.
     for (const [item, qty] of Object.entries(recipe.needs) as [ItemId, number][]) {
       if ((p.inventory[item] ?? 0) < qty) {
-        const s = this.sessionFor(p.id);
-        if (s) this.send(s.ws, { t: "log", msg: `Need ${qty} ${item} to craft.` });
+        if (s) this.send(s.ws, { t: "log", msg: `Need ${qty} ${ITEM_LABEL_MAP[item]} to craft.` });
         return;
       }
     }
@@ -594,8 +642,8 @@ export class GameRoom {
       p.inventory[item] = (p.inventory[item] ?? 0) - qty;
     }
 
+    // Special-case recipes that do world actions rather than produce items.
     if (recipeId === "repairVehicle") {
-      // Repair the nearest vehicle.
       let best: VehicleRecord | null = null;
       let bestD = VEHICLE_BOARD_RANGE * 2;
       for (const v of this.vehicles.values()) {
@@ -605,17 +653,114 @@ export class GameRoom {
       }
       if (best) {
         best.hp = Math.min(best.maxHp, best.hp + 50);
-        best.lastDriven = Date.now(); // reset rust timer
-        const s = this.sessionFor(p.id);
-        if (s) this.send(s.ws, { t: "log", msg: `Repaired the ${best.kind}.` });
+        best.lastDriven = Date.now();
+        if (s) this.send(s.ws, { t: "log", msg: `Repaired the ${best.kind} (+50 HP).` });
+      } else {
+        if (s) this.send(s.ws, { t: "log", msg: "No vehicle nearby to repair." });
+        // Refund if no target found.
+        for (const [item, qty] of Object.entries(recipe.needs) as [ItemId, number][]) {
+          this.addItem(p.inventory, item, qty);
+        }
       }
-    } else {
-      // Regular item output.
-      for (const [item, qty] of Object.entries(recipe.gives) as [ItemId, number][]) {
-        this.addItem(p.inventory, item, qty);
+      return;
+    }
+
+    if (recipeId === "repairBuilding") {
+      const region = this.regions.get(p.region);
+      const b = region ? this.nearestBuilding(region, p.x, p.y, 2.5) : null;
+      if (b) {
+        b.hp = Math.min(b.maxHp, b.hp + 80);
+        if (b.kind === "rubble" && b.hp > b.maxHp * 0.5) {
+          b.kind = (b as any).originalKind ?? "house";
+        }
+        if (s) this.send(s.ws, { t: "log", msg: `Repaired building (+80 HP).` });
+      } else {
+        if (s) this.send(s.ws, { t: "log", msg: "No building nearby to repair." });
+        for (const [item, qty] of Object.entries(recipe.needs) as [ItemId, number][]) {
+          this.addItem(p.inventory, item, qty);
+        }
       }
+      return;
+    }
+
+    if (recipeId === "campfire") {
+      this.broadcastLog(`${p.name} lit a campfire.`);
+      return;
+    }
+
+    // Regular item output.
+    for (const [item, qty] of Object.entries(recipe.gives) as [ItemId, number][]) {
+      this.addItem(p.inventory, item, qty);
+    }
+    if (s) this.send(s.ws, { t: "log", msg: `Crafted: ${recipe.name}.` });
+  }
+
+  private doEat(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead) return;
+    if ((p.inventory.food ?? 0) < 1) {
       const s = this.sessionFor(p.id);
-      if (s) this.send(s.ws, { t: "log", msg: `Crafted: ${recipeId}.` });
+      if (s) this.send(s.ws, { t: "log", msg: "No food to eat." });
+      return;
+    }
+    p.inventory.food = (p.inventory.food ?? 0) - 1;
+    const gained = Math.min(EAT_HP_RESTORE, p.maxHp - p.hp);
+    p.hp += gained;
+    const s = this.sessionFor(p.id);
+    if (s) this.send(s.ws, { t: "log", msg: `Ate food (+${Math.round(gained)} HP).` });
+  }
+
+  private doFishToggle(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead || p.vehicleId) return;
+
+    if (this.fishingStates.has(playerId)) {
+      // Cancel fishing.
+      this.fishingStates.delete(playerId);
+      p.fishing = false;
+      return;
+    }
+    if (FISHING_ROD_REQUIRED && (p.inventory.rod ?? 0) < 1) {
+      const s = this.sessionFor(p.id);
+      if (s) this.send(s.ws, { t: "log", msg: "Need a fishing rod. Craft one: 3 wood + 2 iron." });
+      return;
+    }
+    // Must be near water (swimming or adjacent to a water tile).
+    const region = this.regions.get(p.region);
+    if (!region) return;
+    const waterline = this.currentWaterline(Date.now());
+    const nearWater = this.depthAt(region.map, p.x, p.y, waterline) > -1;
+    if (!nearWater) {
+      const s = this.sessionFor(p.id);
+      if (s) this.send(s.ws, { t: "log", msg: "Need to be near the water to fish." });
+      return;
+    }
+    const fishingLevel = skillLevel(p.skills.fishing);
+    const waitMs = Math.max(2000, FISHING_TIME_MS - fishingLevel * 50); // faster at higher level
+    this.fishingStates.set(playerId, Date.now() + waitMs);
+    p.fishing = true;
+    const s = this.sessionFor(p.id);
+    if (s) this.send(s.ws, { t: "log", msg: "Line cast… (press G again to cancel)" });
+  }
+
+  private updateFishing(now: number) {
+    for (const [playerId, readyAt] of this.fishingStates) {
+      if (now < readyAt) continue;
+      this.fishingStates.delete(playerId);
+      const p = this.players.get(playerId);
+      if (!p || p.dead) continue;
+      p.fishing = false;
+      const fishingLevel = skillLevel(p.skills.fishing);
+      const catchChance = 0.55 + fishingLevel * 0.01; // 55% + 1% per level
+      if (Math.random() < catchChance) {
+        this.addItem(p.inventory, "food", 1 + (fishingLevel >= 20 ? 1 : 0));
+        this.giveXP(p, "fishing", XP_FISH);
+        const s = this.sessionFor(playerId);
+        if (s) this.send(s.ws, { t: "log", msg: "You caught a fish!" });
+      } else {
+        const s = this.sessionFor(playerId);
+        if (s) this.send(s.ws, { t: "log", msg: "The fish got away…" });
+      }
     }
   }
 
@@ -734,12 +879,15 @@ export class GameRoom {
       best = c;
     }
     if (best) {
-      const prevHp = best.hp;
       best.hp -= damage;
       this.applyKnockback(best.id, best.x - p.x, best.y - p.y, knockback);
       if (best.hp <= 0) {
-        // Combat XP proportional to the creature's total HP (harder kills = more XP).
-        this.giveXP(p, "combat", prevHp * XP_KILL_PER_HP);
+        // Combat XP proportional to the creature's max HP (harder kills = more XP).
+        this.giveXP(p, "combat", creatureHp(best.kind) * XP_KILL_PER_HP);
+        // Loot drops go straight into inventory.
+        for (const drop of rollLoot(best.kind)) {
+          this.addItem(p.inventory, drop.item, drop.qty);
+        }
         this.creatures.delete(best.id);
         this.kb.delete(best.id);
       }
@@ -937,6 +1085,8 @@ export class GameRoom {
       if (v) v.driverId = null;
       p.vehicleId = null;
     }
+    p.fishing = false;
+    this.fishingStates.delete(p.id);
     // Death penalty: lose 25% of raw XP in every skill. You can slide back
     // but never to zero — keeps the stakes real without being punishing.
     for (const sk of Object.keys(p.skills) as SkillName[]) {
