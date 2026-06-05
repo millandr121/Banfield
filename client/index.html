@@ -123,6 +123,22 @@
         pointer-events: none;
       }
       .hidden { display: none !important; }
+
+      #chat-input {
+        position: fixed;
+        left: 12px;
+        bottom: 48px;
+        width: min(380px, 80vw);
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid #1e88e5;
+        background: rgba(7,19,28,0.92);
+        color: #eaf2f8;
+        font-size: 14px;
+        outline: none;
+        z-index: 10;
+      }
+      #chat-input::placeholder { color: #5a7f96; }
     </style>
   </head>
   <body>
@@ -132,10 +148,12 @@
     <div id="help" class="hidden">
       WASD / arrows: move<br />
       Space: attack (hold to charge)&nbsp;&nbsp; Shift: dodge<br />
-      F: board / exit a car or boat<br />
-      E: repair&nbsp;&nbsp; T: travel (bus / gate pad)
+      F: board / exit a vehicle &nbsp;&nbsp; E: chop/mine/repair<br />
+      C: craft plank (3 wood) &nbsp;&nbsp; T: travel (bus / gate)<br />
+      Enter: open chat &nbsp;&nbsp; / or // = global / team
     </div>
     <div id="log" class="hidden"></div>
+    <input id="chat-input" class="hidden" type="text" maxlength="120" placeholder="Chat (/ = global, // = team) — Enter to send" autocomplete="off" />
 
     <div id="creator">
       <div class="card">

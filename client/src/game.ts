@@ -2,8 +2,13 @@ import {
   Appearance,
   BuildingState,
   CreatureState,
+  ITEM_IDS,
+  ITEM_LABEL,
+  ItemId,
   PlayerState,
+  ResourceNode,
   ServerMessage,
+  SKILL_NAMES,
   Snapshot,
   TILE_SIZE,
   Tile,
@@ -11,10 +16,12 @@ import {
   VehicleState,
   WorldMap,
   WATERLINE_HIGH,
+  skillLevel,
 } from "../../shared/protocol";
 import { Net } from "./net";
 
 const CHARGE_MAX_MS = 600; // hold Space this long for a full-power swing
+const HARVEST_RANGE_PX = 1.8 * TILE_SIZE; // client-side prompt range (cosmetic only)
 
 const TILE_COLORS: Record<Tile, string> = {
   [Tile.Water]: "#1c5f86",
@@ -42,7 +49,9 @@ export class Game {
   private lastDir = { x: 0, y: 0 };
   private cam = { x: 0, y: 0 };
   private logLines: string[] = [];
+  private chatLines: Array<{ from: string; msg: string; channel: "global" | "team"; ts: number }> = [];
   private chargeStart: number | null = null; // when Space went down (for charged swings)
+  private chatOpen = false; // is the chat text box visible?
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -58,6 +67,34 @@ export class Game {
     this.net.connect();
     this.net.send({ t: "join", name, appearance });
     requestAnimationFrame(() => this.frame());
+
+    // Chat input box — wired up once.
+    const chatInput = document.getElementById("chat-input") as HTMLInputElement;
+    chatInput.addEventListener("keydown", (e) => {
+      e.stopPropagation(); // prevent WASD etc. from firing while typing
+      if (e.key === "Enter") {
+        const raw = chatInput.value.trim();
+        if (raw) this.net.send({ t: "chat", msg: raw });
+        chatInput.value = "";
+        this.closeChatInput();
+      } else if (e.key === "Escape") {
+        chatInput.value = "";
+        this.closeChatInput();
+      }
+    });
+  }
+
+  private openChatInput() {
+    this.chatOpen = true;
+    const el = document.getElementById("chat-input")!;
+    el.classList.remove("hidden");
+    el.focus();
+  }
+
+  private closeChatInput() {
+    this.chatOpen = false;
+    document.getElementById("chat-input")!.classList.add("hidden");
+    (document.getElementById("game") as HTMLCanvasElement).focus();
   }
 
   private resize() {
@@ -66,8 +103,15 @@ export class Game {
   }
 
   private onKey(e: KeyboardEvent, down: boolean) {
+    // While the chat box is open, let it handle all input.
+    if (this.chatOpen) return;
     const k = e.key.toLowerCase();
     if (down) {
+      if (k === "enter") {
+        this.openChatInput();
+        e.preventDefault();
+        return;
+      }
       if (k === " ") {
         // Start charging on first press; the swing fires on release.
         if (this.chargeStart === null) this.chargeStart = performance.now();
@@ -75,8 +119,11 @@ export class Game {
       } else if (!e.repeat) {
         if (k === "shift") this.net.send({ t: "dodge" });
         else if (k === "f") this.net.send({ t: "board" });
-        else if (k === "e") this.net.send({ t: "repair" });
-        else if (k === "t") this.net.send({ t: "travel" });
+        else if (k === "e") {
+          this.net.send({ t: "harvest" });
+          this.net.send({ t: "repair" });
+        } else if (k === "t") this.net.send({ t: "travel" });
+        else if (k === "c") this.net.send({ t: "craft", recipe: "plank" });
       }
     } else if (k === " ") {
       if (this.chargeStart !== null) {
@@ -122,6 +169,13 @@ export class Game {
       this.logLines.push(m.msg);
       if (this.logLines.length > 6) this.logLines.shift();
       this.renderLog();
+    } else if (m.t === "chat") {
+      const prefix = m.channel === "team" ? "[TEAM] " : "";
+      this.chatLines.push({ from: m.from, msg: m.msg, channel: m.channel, ts: Date.now() });
+      if (this.chatLines.length > 30) this.chatLines.shift();
+      this.logLines.push(`${prefix}${m.from}: ${m.msg}`);
+      if (this.logLines.length > 6) this.logLines.shift();
+      this.renderLog();
     }
   }
 
@@ -147,6 +201,7 @@ export class Game {
 
     this.drawTiles();
     this.drawTravelNodes();
+    this.drawResourceNodes(this.snap.resourceNodes, me);
     this.drawBuildings(this.snap.buildings);
     this.drawVehicles(this.snap.vehicles);
     this.drawCreatures(this.snap.creatures);
@@ -155,6 +210,7 @@ export class Game {
     this.drawHud(this.snap, me);
     this.drawTravelPrompt(me);
     this.drawBoardPrompt(me);
+    this.drawHarvestPrompt(this.snap.resourceNodes, me);
   }
 
   // Charge meter under your feet while you wind up a swing.
@@ -357,6 +413,36 @@ export class Game {
     ctx.fillText(text, x, y);
   }
 
+  private drawResourceNodes(nodes: ResourceNode[], _me?: PlayerState) {
+    for (const n of nodes) {
+      const { sx, sy } = this.toScreen(n.x + 0.5, n.y + 0.5);
+      drawResourceSprite(this.ctx, n, sx, sy);
+    }
+  }
+
+  private drawHarvestPrompt(nodes: ResourceNode[], me?: PlayerState) {
+    if (!me) return;
+    const near = nodes.find(
+      (n) =>
+        !n.depleted &&
+        Math.hypot((n.x + 0.5 - me.x) * TILE_SIZE, (n.y + 0.5 - me.y) * TILE_SIZE) <= HARVEST_RANGE_PX,
+    );
+    if (!near) return;
+    const label = near.kind === "tree" ? "Chop tree (E)" : near.kind === "ironOre" ? "Mine iron (E)" : "Mine stone (E)";
+    const ctx = this.ctx;
+    ctx.font = "15px system-ui";
+    ctx.textAlign = "center";
+    const w = ctx.measureText(label).width + 28;
+    const x = this.canvas.width / 2;
+    const y = this.canvas.height - 146;
+    ctx.fillStyle = "rgba(7,19,28,0.85)";
+    ctx.fillRect(x - w / 2, y - 22, w, 32);
+    ctx.strokeStyle = near.kind === "tree" ? "#4caf50" : "#ff9800";
+    ctx.strokeRect(x - w / 2, y - 22, w, 32);
+    ctx.fillStyle = "#eaf2f8";
+    ctx.fillText(label, x, y);
+  }
+
   private drawCreatures(creatures: CreatureState[]) {
     for (const c of creatures) {
       const { sx, sy } = this.toScreen(c.x, c.y);
@@ -480,11 +566,21 @@ export class Game {
     const event = snap.event === "tsunami" ? " ⚠ TSUNAMI" : snap.event === "king" ? " ⚠ King tide" : "";
     const hp = me ? Math.max(0, Math.round(me.hp)) : 0;
     const stam = me ? Math.max(0, Math.round(me.stamina)) : 0;
+    const skillsHtml = me
+      ? SKILL_NAMES.map((sk) => `${sk.slice(0,3).toUpperCase()}:${skillLevel(me.skills[sk])}`).join(" ")
+      : "";
+    const invItems = me
+      ? (ITEM_IDS as readonly ItemId[])
+          .filter((id) => (me.inventory[id] ?? 0) > 0)
+          .map((id) => `${ITEM_LABEL[id]}:${me.inventory[id]}`)
+          .join(" ")
+      : "";
     hud.innerHTML =
       `<b>${this.regionName}</b><br />` +
       `<b>Tide:</b> ${snap.phase} (${tidePct}%)${event}<br />` +
-      `<b>HP:</b> ${hp}/${me?.maxHp ?? 100}<br />` +
-      `<b>Stamina:</b> ${stam}/${me?.maxStamina ?? 100}<br />` +
+      `<b>HP:</b> ${hp}/${me?.maxHp ?? 100} &nbsp; <b>Stam:</b> ${stam}/${me?.maxStamina ?? 100}<br />` +
+      (skillsHtml ? `<b>Skills:</b> <span style="font-size:11px">${skillsHtml}</span><br />` : "") +
+      (invItems ? `<b>Inv:</b> <span style="font-size:11px">${invItems}</span><br />` : "") +
       `<b>Here:</b> ${snap.players.length}`;
   }
 
@@ -512,6 +608,80 @@ function waterShade(depth: number): string {
   const g = Math.round(127 + (34 - 127) * t);
   const b = Math.round(168 + (54 - 168) * t);
   return `rgb(${r},${g},${b})`;
+}
+
+// --- resource node sprites --------------------------------------------------
+function drawResourceSprite(ctx: CanvasRenderingContext2D, n: ResourceNode, x: number, y: number) {
+  const R = TILE_SIZE * 0.44;
+  if (n.depleted) {
+    // Ghost outline: stump or empty pit.
+    ctx.strokeStyle = n.kind === "tree" ? "#3a5c28" : "#5a4e3a";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.arc(x, y, R * 0.55, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    return;
+  }
+
+  if (n.kind === "tree") {
+    // Shadow
+    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    ctx.beginPath();
+    ctx.ellipse(x, y + R * 0.6, R * 0.85, R * 0.3, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Trunk
+    ctx.fillStyle = "#6b4423";
+    ctx.fillRect(x - 3, y, 6, R * 0.7);
+    // Canopy (layered circles for depth)
+    for (const [ox, oy, r, col] of [
+      [0, -R * 0.15, R, "#2d6e1e"],
+      [-R * 0.3, -R * 0.2, R * 0.7, "#3a8c28"],
+      [R * 0.3, -R * 0.15, R * 0.65, "#348a24"],
+      [0, -R * 0.45, R * 0.78, "#4aac32"],
+    ] as const) {
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else {
+    // Ore vein: rough rock cluster
+    const col = n.kind === "ironOre" ? "#8a6040" : "#8a8a8a";
+    const hi = n.kind === "ironOre" ? "#d4824a" : "#b8b8b8";
+    ctx.fillStyle = col;
+    for (const [ox, oy, r] of [
+      [0, 0, R],
+      [-R * 0.45, -R * 0.2, R * 0.6],
+      [R * 0.4, -R * 0.15, R * 0.55],
+      [0, -R * 0.4, R * 0.5],
+    ] as const) {
+      ctx.beginPath();
+      ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Ore sparkles
+    ctx.fillStyle = hi;
+    for (const [ox, oy] of [[-3, -8], [5, -3], [-6, 2], [3, 6]] as const) {
+      ctx.fillRect(x + ox, y + oy, 2, 2);
+    }
+    ctx.strokeStyle = "rgba(0,0,0,0.3)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(x, y, R, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // HP notches (dashes around the base to show how many hits are left).
+  const frac = n.hp / n.maxHp;
+  if (frac < 1) {
+    ctx.strokeStyle = "#ffb300";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(x, y, R + 4, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2);
+    ctx.stroke();
+  }
 }
 
 // --- vehicle sprites (top-down) ---------------------------------------------

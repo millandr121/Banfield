@@ -1,9 +1,17 @@
-import { BuildingState, Tile, TravelNode, VehicleKind, WorldMap } from "./protocol";
+import { BuildingState, ResourceKind, Tile, TravelNode, VehicleKind, WorldMap } from "./protocol";
 
 // Where a driveable vehicle starts life in a region.
 export interface VehicleSpawn {
   id: string;
   kind: VehicleKind;
+  x: number;
+  y: number;
+}
+
+// Static placement of a harvestable resource node.
+export interface ResourceNodeDef {
+  id: string;
+  kind: ResourceKind;
   x: number;
   y: number;
 }
@@ -84,6 +92,7 @@ export interface RegionDef {
   spawn: { x: number; y: number }; // default arrival / respawn point
   travelNodes: TravelNode[];
   vehicles: VehicleSpawn[];
+  resourceNodes: ResourceNodeDef[];
 }
 
 const idx = (x: number, y: number) => y * MAP_WIDTH + x;
@@ -283,6 +292,7 @@ export interface RegionData {
   spawn: { x: number; y: number };
   travelNodes: TravelNode[];
   vehicles?: VehicleSpawn[]; // optional; defaults to none
+  resourceNodes?: ResourceNodeDef[]; // optional; defaults to none
 }
 
 export function regionFromData(data: RegionData): RegionDef {
@@ -300,6 +310,7 @@ export function regionFromData(data: RegionData): RegionDef {
     spawn: data.spawn,
     travelNodes: data.travelNodes,
     vehicles: data.vehicles ?? [],
+    resourceNodes: data.resourceNodes ?? [],
   };
 }
 
@@ -339,6 +350,21 @@ export function buildRegions(): RegionDef[] {
       { id: "bf-boat-1", kind: "boat", x: 27, y: 18 }, // tied up in the inlet
       { id: "bf-boat-2", kind: "boat", x: 32, y: 26 }, // at the government dock
     ],
+    // Trees in the forested hills on both edges; iron+stone in the rocky hillside.
+    resourceNodes: [
+      { id: "bf-t1", kind: "tree",     x: 8,  y: 4  },
+      { id: "bf-t2", kind: "tree",     x: 9,  y: 12 },
+      { id: "bf-t3", kind: "tree",     x: 8,  y: 20 },
+      { id: "bf-t4", kind: "tree",     x: 10, y: 28 },
+      { id: "bf-t5", kind: "tree",     x: 49, y: 5  },
+      { id: "bf-t6", kind: "tree",     x: 50, y: 14 },
+      { id: "bf-t7", kind: "tree",     x: 49, y: 22 },
+      { id: "bf-t8", kind: "tree",     x: 51, y: 31 },
+      { id: "bf-i1", kind: "ironOre",  x: 5,  y: 8  },
+      { id: "bf-i2", kind: "ironOre",  x: 5,  y: 18 },
+      { id: "bf-s1", kind: "stoneOre", x: 54, y: 7  },
+      { id: "bf-s2", kind: "stoneOre", x: 54, y: 19 },
+    ],
   };
 
   const anacla: RegionDef = {
@@ -374,6 +400,17 @@ export function buildRegions(): RegionDef[] {
     vehicles: [
       { id: "an-car-1", kind: "car", x: 40, y: 18 }, // on the village road
       { id: "an-boat-1", kind: "boat", x: 26, y: 32 }, // on Pachena Bay
+    ],
+    resourceNodes: [
+      { id: "an-t1", kind: "tree",     x: 7,  y: 5  },
+      { id: "an-t2", kind: "tree",     x: 6,  y: 12 },
+      { id: "an-t3", kind: "tree",     x: 8,  y: 18 },
+      { id: "an-t4", kind: "tree",     x: 52, y: 6  },
+      { id: "an-t5", kind: "tree",     x: 53, y: 14 },
+      { id: "an-t6", kind: "tree",     x: 51, y: 20 },
+      { id: "an-i1", kind: "ironOre",  x: 4,  y: 9  },
+      { id: "an-s1", kind: "stoneOre", x: 4,  y: 3  },
+      { id: "an-s2", kind: "stoneOre", x: 55, y: 10 },
     ],
   };
 

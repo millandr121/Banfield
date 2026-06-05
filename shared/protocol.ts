@@ -57,6 +57,47 @@ export interface Appearance {
 
 export type RegionId = string;
 
+// --- Skills -----------------------------------------------------------------
+// Level = floor(sqrt(rawXP)), so early gains come fast, mastery takes real
+// time. Dying costs 25% of ALL raw XP — you can slide backwards, but never to
+// zero. No hard total cap: specialising is rewarded by the square-root curve
+// (being level 50 in one skill costs 2500 XP; being level 10 in five costs the
+// same — the maths nudge you to pick a lane without forcing it).
+export const SKILL_NAMES = [
+  "combat", "woodcutting", "mining", "swimming", "boating", "driving",
+] as const;
+export type SkillName = (typeof SKILL_NAMES)[number];
+export type Skills = Record<SkillName, number>; // stores raw XP
+export function skillLevel(xp: number): number { return Math.floor(Math.sqrt(xp)); }
+export function defaultSkills(): Skills {
+  return { combat: 0, woodcutting: 0, mining: 0, swimming: 0, boating: 0, driving: 0 };
+}
+
+// --- Inventory --------------------------------------------------------------
+export const ITEM_IDS = ["wood", "iron", "stone", "plank", "scrap"] as const;
+export type ItemId = (typeof ITEM_IDS)[number];
+export type Inventory = Partial<Record<ItemId, number>>;
+export const ITEM_LABEL: Record<ItemId, string> = {
+  wood: "Wood", iron: "Iron", stone: "Stone", plank: "Plank", scrap: "Scrap",
+};
+
+// --- Resource nodes ---------------------------------------------------------
+export type ResourceKind = "tree" | "ironOre" | "stoneOre";
+export interface ResourceNode {
+  id: string;
+  kind: ResourceKind;
+  region: RegionId;
+  x: number; // tile coords
+  y: number;
+  hp: number; // 0 = depleted; hits to deplete: maxHp
+  maxHp: number;
+  depleted: boolean;
+  respawnAt: number | null; // epoch ms when it regrows; null if healthy
+}
+
+// --- Crafting ---------------------------------------------------------------
+export type CraftRecipeId = "plank" | "repairVehicle";
+
 export interface PlayerState {
   id: string;
   name: string;
@@ -68,6 +109,8 @@ export interface PlayerState {
   maxHp: number;
   stamina: number; // 0..maxStamina, spent on attacks & dodges
   maxStamina: number;
+  skills: Skills;
+  inventory: Inventory;
   appearance: Appearance;
   swimming: boolean;
   dodging: boolean; // brief lunge with i-frames (client renders a streak)
@@ -156,6 +199,9 @@ export type ClientMessage =
   | { t: "attack"; charge?: number } // charge 0..1 from how long Space was held
   | { t: "dodge" } // quick lunge + i-frames in the current heading
   | { t: "board" } // get in / out of the nearest vehicle
+  | { t: "harvest" } // chop/mine nearest resource node
+  | { t: "craft"; recipe: CraftRecipeId } // craft at an adjacent shop/boathouse
+  | { t: "chat"; msg: string } // text message; / = global, // = team
   | { t: "repair" }
   | { t: "travel" };
 
@@ -169,13 +215,15 @@ export interface Snapshot {
   creatures: CreatureState[];
   buildings: BuildingState[];
   vehicles: VehicleState[];
+  resourceNodes: ResourceNode[];
 }
 
 export type ServerMessage =
   // Sent on join AND whenever the player changes region (the map swaps).
   | { t: "init"; id: string; region: RegionInfo; snapshot: Snapshot }
   | { t: "snapshot"; snapshot: Snapshot }
-  | { t: "log"; msg: string };
+  | { t: "log"; msg: string }
+  | { t: "chat"; from: string; msg: string; channel: "global" | "team" };
 
 // Helper shared by both sides: a tile is under water when its (per-tile)
 // elevation sits below the current waterline.

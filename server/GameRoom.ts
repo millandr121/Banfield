@@ -2,11 +2,16 @@ import {
   Appearance,
   BuildingState,
   ClientMessage,
+  CraftRecipeId,
   CreatureKind,
   CreatureState,
+  Inventory,
+  ItemId,
   PlayerState,
   RegionId,
+  ResourceNode,
   ServerMessage,
+  SkillName,
   Snapshot,
   Tile,
   TravelNode,
@@ -17,10 +22,12 @@ import {
   WATERLINE_HIGH,
   KING_TIDE_SURGE,
   TSUNAMI_SURGE,
+  defaultSkills,
+  skillLevel,
   submergedAt,
   phaseForTide,
 } from "../shared/protocol";
-import { DEFAULT_REGION, RegionDef, buildRegions } from "../shared/map";
+import { DEFAULT_REGION, RegionDef, ResourceNodeDef, buildRegions } from "../shared/map";
 
 interface Env {
   GAME_ROOM: DurableObjectNamespace;
@@ -34,7 +41,13 @@ interface Session {
   dy: number;
   lastAttack: number; // timestamp of last swing (for cooldown)
   lastDodge: number; // timestamp of last dodge (for cooldown)
+  lastHarvest: number; // debounce resource harvesting
   iframeUntil: number; // dodge i-frames: no damage taken until this time
+}
+
+// Server-side vehicle adds rust tracking (not sent to clients).
+interface VehicleRecord extends VehicleState {
+  lastDriven: number; // epoch ms of last time a player drove this
 }
 
 // A region's live, mutable state (its static def lives in shared/map.ts).
@@ -81,6 +94,42 @@ const BOAT_SPEED = 5.5; // tiles/sec on water
 const VEHICLE_BOARD_RANGE = 1.6; // how close you must be to board
 const VEHICLE_MAX_HP = 200;
 const TIDE_SWEEP = 1.4; // how fast a driverless boat/car drifts when afloat
+const RUST_START_MS = 20 * 60 * 1000; // idle this long before rusting
+const RUST_DPS = 200 / (40 * 60); // destroys a full-HP vehicle in ~40 min
+const COLLISION_RANGE = 0.85; // tiles; how close before a moving vehicle hits
+const COLLISION_MIN_SPEED = 2.0; // only dangerous above this tile/s threshold
+
+// Resources & crafting -------------------------------------------------------
+const HARVEST_RANGE = 1.8; // tiles from resource node centre
+const HARVEST_COOLDOWN_MS = 700; // min time between harvest presses
+const TREE_MAX_HP = 5; // hits to fell a tree (each gives wood)
+const ORE_MAX_HP = 4; // hits to exhaust an ore vein
+const TREE_RESPAWN_MS = 3 * 60 * 1000; // 3 minutes
+const ORE_RESPAWN_MS = 8 * 60 * 1000; // 8 minutes
+const MINING_LEVEL_REQ_IRON = 5; // need Mining 5 to extract iron
+
+// XP awards ------------------------------------------------------------------
+const XP_CHOP = 15; // per hit on a tree
+const XP_MINE = 20; // per hit on an ore vein
+const XP_KILL_PER_HP = 0.5; // per HP of killed creature
+const XP_SWIM_PER_SEC = 0.4;
+const XP_BOAT_PER_SEC = 0.6;
+const XP_DRIVE_PER_SEC = 0.5;
+const DEATH_XP_LOSS = 0.25; // fraction of raw XP lost on death
+
+// Crafting recipes -----------------------------------------------------------
+const RECIPES: Record<CraftRecipeId, { needs: Partial<Record<ItemId, number>>; gives: Partial<Record<ItemId, number>>; note: string }> = {
+  plank: {
+    needs: { wood: 3 },
+    gives: { plank: 1 },
+    note: "Craft planks from timber",
+  },
+  repairVehicle: {
+    needs: { plank: 2, scrap: 2 },
+    gives: {},
+    note: "Repair the nearest vehicle (+50 HP)",
+  },
+};
 
 export class GameRoom {
   private sessions = new Map<WebSocket, Session>();
@@ -88,7 +137,8 @@ export class GameRoom {
   private regions = new Map<RegionId, Region>();
   private players = new Map<string, PlayerState>();
   private creatures = new Map<string, CreatureState>();
-  private vehicles = new Map<string, VehicleState>();
+  private vehicles = new Map<string, VehicleRecord>();
+  private resourceNodes = new Map<string, ResourceNode>();
   // Transient knockback impulses by entity id (players + creatures).
   private kb = new Map<string, { x: number; y: number }>();
 
@@ -103,22 +153,29 @@ export class GameRoom {
   private nextEventCheck = Date.now() + 60_000;
 
   constructor(_state: DurableObjectState, _env: Env) {
+    const now = Date.now();
     for (const def of buildRegions()) {
       this.regions.set(def.id, this.toRegion(def));
       for (const v of def.vehicles) {
         this.vehicles.set(v.id, {
-          id: v.id,
-          kind: v.kind,
-          region: def.id,
-          x: v.x + 0.5,
-          y: v.y + 0.5,
-          dir: 0,
-          hp: VEHICLE_MAX_HP,
-          maxHp: VEHICLE_MAX_HP,
-          driverId: null,
+          id: v.id, kind: v.kind, region: def.id,
+          x: v.x + 0.5, y: v.y + 0.5, dir: 0,
+          hp: VEHICLE_MAX_HP, maxHp: VEHICLE_MAX_HP,
+          driverId: null, lastDriven: now,
         });
       }
+      for (const n of def.resourceNodes) {
+        this.resourceNodes.set(n.id, this.mkNode(n, def.id));
+      }
     }
+  }
+
+  private mkNode(def: ResourceNodeDef, regionId: string): ResourceNode {
+    const maxHp = def.kind === "tree" ? TREE_MAX_HP : ORE_MAX_HP;
+    return {
+      id: def.id, kind: def.kind, region: regionId,
+      x: def.x, y: def.y, hp: maxHp, maxHp, depleted: false, respawnAt: null,
+    };
   }
 
   private toRegion(def: RegionDef): Region {
@@ -147,7 +204,7 @@ export class GameRoom {
   // --- connection lifecycle -------------------------------------------------
   private onConnect(ws: WebSocket) {
     const playerId = `p${this.idCounter++}`;
-    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0, lastDodge: 0, iframeUntil: 0 });
+    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0, lastDodge: 0, lastHarvest: 0, iframeUntil: 0 });
     ws.addEventListener("message", (ev) => {
       try {
         this.onMessage(ws, JSON.parse(ev.data as string) as ClientMessage);
@@ -197,6 +254,8 @@ export class GameRoom {
           maxHp: PLAYER_MAX_HP,
           stamina: MAX_STAMINA,
           maxStamina: MAX_STAMINA,
+          skills: defaultSkills(),
+          inventory: {},
           appearance: sanitizeAppearance(msg.appearance),
           swimming: false,
           dodging: false,
@@ -224,6 +283,15 @@ export class GameRoom {
         break;
       case "board":
         this.doBoard(s.playerId);
+        break;
+      case "harvest":
+        this.doHarvest(s.playerId);
+        break;
+      case "craft":
+        this.doCraft(s.playerId, msg.recipe);
+        break;
+      case "chat":
+        this.doChat(s.playerId, msg.msg);
         break;
       case "repair":
         this.doRepair(s.playerId);
@@ -264,8 +332,10 @@ export class GameRoom {
     const waterline = this.currentWaterline(now);
     this.updateEvents(now);
     this.moveVehicles(dt, waterline, now);
-    this.movePlayers(dt, waterline);
+    this.movePlayers(dt, waterline, now);
     this.updateCreatures(dt, waterline, now);
+    this.updateResourceRespawn(now);
+    this.updateVehicleRust(dt, waterline, now);
     this.maybeSpawn(now, waterline);
 
     // Each player only sees their own region; cache one snapshot per region.
@@ -320,8 +390,7 @@ export class GameRoom {
   }
 
   // --- players --------------------------------------------------------------
-  private movePlayers(dt: number, waterline: number) {
-    const now = Date.now();
+  private movePlayers(dt: number, waterline: number, now: number) {
     for (const p of this.players.values()) {
       if (p.dead) continue;
       const s = this.sessionFor(p.id);
@@ -340,7 +409,11 @@ export class GameRoom {
 
       // You can now swim, but the water is slower than dry land.
       p.swimming = this.depthAt(region.map, p.x, p.y, waterline) > 0;
-      const speed = p.swimming ? SWIM_SPEED : PLAYER_SPEED;
+      if (p.swimming && (s.dx !== 0 || s.dy !== 0)) {
+        this.giveXP(p, "swimming", XP_SWIM_PER_SEC * dt);
+      }
+      const swimBonus = 1 + skillLevel(p.skills.swimming) * 0.003;
+      const speed = p.swimming ? SWIM_SPEED * swimBonus : PLAYER_SPEED;
       const imp = this.kb.get(p.id);
       const nx = p.x + (s.dx * speed + (imp?.x ?? 0)) * dt;
       const ny = p.y + (s.dy * speed + (imp?.y ?? 0)) * dt;
@@ -373,31 +446,79 @@ export class GameRoom {
       if (!region) continue;
       const driver = v.driverId ? this.players.get(v.driverId) : null;
 
+      let movedThisTick = false;
+      let activeSpeed = 0;
+
       if (driver && !driver.dead) {
         const s = this.sessionFor(driver.id);
         if (s && (s.dx !== 0 || s.dy !== 0)) {
           const onRoad = this.tileAt(region.map, v.x, v.y) === Tile.Road;
+          const skillBonus =
+            v.kind === "car"
+              ? 1 + skillLevel(driver.skills.driving) * 0.003
+              : 1 + skillLevel(driver.skills.boating) * 0.002;
           const base =
-            v.kind === "car" ? (onRoad ? CAR_SPEED : CAR_OFFROAD_SPEED) : BOAT_SPEED;
+            v.kind === "car"
+              ? (onRoad ? CAR_SPEED : CAR_OFFROAD_SPEED) * skillBonus
+              : BOAT_SPEED * skillBonus;
+          activeSpeed = base;
           const nx = v.x + s.dx * base * dt;
           const ny = v.y + s.dy * base * dt;
-          if (this.vehicleCanGo(v, region.map, nx, v.y, waterline)) v.x = nx;
-          if (this.vehicleCanGo(v, region.map, v.x, ny, waterline)) v.y = ny;
+          if (this.vehicleCanGo(v, region.map, nx, v.y, waterline)) { v.x = nx; movedThisTick = true; }
+          if (this.vehicleCanGo(v, region.map, v.x, ny, waterline)) { v.y = ny; movedThisTick = true; }
           v.dir = Math.atan2(s.dy, s.dx);
+          v.lastDriven = now;
+          // Skill XP for the driver.
+          if (v.kind === "car") this.giveXP(driver, "driving", XP_DRIVE_PER_SEC * dt);
+          else this.giveXP(driver, "boating", XP_BOAT_PER_SEC * dt);
         }
         // The driver rides along.
         driver.x = v.x;
         driver.y = v.y;
         driver.dir = v.dir;
-        continue;
+      } else {
+        // Driverless: a boat (or a car the tide has reached) drifts on the swell.
+        if (this.depthAt(region.map, v.x, v.y, waterline) > 1) {
+          const nx = v.x + Math.sin(now / 1700 + v.y) * TIDE_SWEEP * dt;
+          const ny = v.y + TIDE_SWEEP * 0.5 * dt;
+          if (this.vehicleCanGo(v, region.map, nx, v.y, waterline)) v.x = nx;
+          if (this.vehicleCanGo(v, region.map, v.x, ny, waterline)) v.y = ny;
+        }
       }
 
-      // Driverless: a boat (or a car the tide has reached) drifts on the swell.
-      if (this.depthAt(region.map, v.x, v.y, waterline) > 1) {
-        const nx = v.x + Math.sin(now / 1700 + v.y) * TIDE_SWEEP * dt;
-        const ny = v.y + TIDE_SWEEP * 0.5 * dt; // carried gently inland/along shore
-        if (this.vehicleCanGo(v, region.map, nx, v.y, waterline)) v.x = nx;
-        if (this.vehicleCanGo(v, region.map, v.x, ny, waterline)) v.y = ny;
+      // Collision: a moving vehicle above the danger threshold can hurt players.
+      if (movedThisTick && activeSpeed >= COLLISION_MIN_SPEED) {
+        for (const p of this.players.values()) {
+          if (!driver || p.id === driver.id || p.region !== v.region || p.dead) continue;
+          if (p.vehicleId) continue; // passengers are safe (future: separate seats)
+          const d = Math.hypot(p.x - v.x, p.y - v.y);
+          if (d < COLLISION_RANGE) {
+            const ts = this.sessionFor(p.id);
+            if (ts && now < ts.iframeUntil) continue; // dodging = you leaped clear
+            const dmg = activeSpeed * 6;
+            p.hp -= dmg;
+            this.applyKnockback(p.id, p.x - v.x, p.y - v.y, activeSpeed * 1.5);
+            v.hp -= dmg * 0.15; // vehicle takes minor impact damage too
+            this.broadcastLog(`${p.name} was hit by a ${v.kind}!`);
+            if (p.hp <= 0 && !p.dead) this.killPlayer(p);
+          }
+        }
+      }
+    }
+  }
+
+  private updateVehicleRust(dt: number, waterline: number, now: number) {
+    for (const [id, v] of this.vehicles) {
+      if (v.driverId) continue; // driven vehicles don't rust
+      if (now - v.lastDriven < RUST_START_MS) continue;
+      // Vehicles in deep water rust faster (salt damage + submersion).
+      const depth = this.depthAt(this.regions.get(v.region)?.map ?? { width: 0, height: 0, tiles: [], elevation: [] } as WorldMap, v.x, v.y, waterline);
+      const rate = RUST_DPS * (depth > 2 ? 3 : 1);
+      v.hp -= rate * dt;
+      if (v.hp <= 0) {
+        // Gone for good — log once then delete.
+        this.broadcastLog(`A ${v.kind} has rusted away.`);
+        this.vehicles.delete(id);
       }
     }
   }
@@ -407,6 +528,137 @@ export class GameRoom {
     if (!this.inBounds(map, x, y)) return false;
     const submerged = this.depthAt(map, x, y, waterline) > 0;
     return v.kind === "boat" ? submerged : !submerged;
+  }
+
+  // --- resources & crafting -------------------------------------------------
+  private doHarvest(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead || p.vehicleId) return;
+    const s = this.sessionFor(p.id);
+    if (!s) return;
+    const now = Date.now();
+    if (now - s.lastHarvest < HARVEST_COOLDOWN_MS) return;
+    s.lastHarvest = now;
+
+    // Find nearest un-depleted node in this region within reach.
+    let best: ResourceNode | null = null;
+    let bestD = HARVEST_RANGE;
+    for (const n of this.resourceNodes.values()) {
+      if (n.region !== p.region || n.depleted) continue;
+      const d = Math.hypot(n.x + 0.5 - p.x, n.y + 0.5 - p.y);
+      if (d <= bestD) { bestD = d; best = n; }
+    }
+    if (!best) return;
+
+    // Skill-level gate for iron ore.
+    if (best.kind === "ironOre" && skillLevel(p.skills.mining) < MINING_LEVEL_REQ_IRON) {
+      const ws = this.sessionFor(p.id);
+      if (ws) this.send(ws.ws, { t: "log", msg: `Need Mining level ${MINING_LEVEL_REQ_IRON} to extract iron.` });
+      return;
+    }
+
+    best.hp -= 1;
+    if (best.kind === "tree") {
+      this.addItem(p.inventory, "wood", 1);
+      this.giveXP(p, "woodcutting", XP_CHOP);
+    } else if (best.kind === "ironOre") {
+      this.addItem(p.inventory, "iron", 1);
+      this.giveXP(p, "mining", XP_MINE);
+    } else {
+      this.addItem(p.inventory, "stone", 1);
+      this.giveXP(p, "mining", XP_MINE);
+    }
+
+    if (best.hp <= 0) {
+      best.depleted = true;
+      best.hp = 0;
+      best.respawnAt = now + (best.kind === "tree" ? TREE_RESPAWN_MS : ORE_RESPAWN_MS);
+    }
+  }
+
+  private doCraft(playerId: string, recipeId: CraftRecipeId) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead) return;
+    const recipe = RECIPES[recipeId];
+    if (!recipe) return;
+
+    // Check and consume ingredients.
+    for (const [item, qty] of Object.entries(recipe.needs) as [ItemId, number][]) {
+      if ((p.inventory[item] ?? 0) < qty) {
+        const s = this.sessionFor(p.id);
+        if (s) this.send(s.ws, { t: "log", msg: `Need ${qty} ${item} to craft.` });
+        return;
+      }
+    }
+    for (const [item, qty] of Object.entries(recipe.needs) as [ItemId, number][]) {
+      p.inventory[item] = (p.inventory[item] ?? 0) - qty;
+    }
+
+    if (recipeId === "repairVehicle") {
+      // Repair the nearest vehicle.
+      let best: VehicleRecord | null = null;
+      let bestD = VEHICLE_BOARD_RANGE * 2;
+      for (const v of this.vehicles.values()) {
+        if (v.region !== p.region) continue;
+        const d = Math.hypot(v.x - p.x, v.y - p.y);
+        if (d <= bestD) { bestD = d; best = v; }
+      }
+      if (best) {
+        best.hp = Math.min(best.maxHp, best.hp + 50);
+        best.lastDriven = Date.now(); // reset rust timer
+        const s = this.sessionFor(p.id);
+        if (s) this.send(s.ws, { t: "log", msg: `Repaired the ${best.kind}.` });
+      }
+    } else {
+      // Regular item output.
+      for (const [item, qty] of Object.entries(recipe.gives) as [ItemId, number][]) {
+        this.addItem(p.inventory, item, qty);
+      }
+      const s = this.sessionFor(p.id);
+      if (s) this.send(s.ws, { t: "log", msg: `Crafted: ${recipeId}.` });
+    }
+  }
+
+  private doChat(playerId: string, rawMsg: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead) return;
+    const msg = rawMsg.slice(0, 120).trim();
+    if (!msg) return;
+    let channel: "global" | "team" = "global";
+    let text = msg;
+    if (msg.startsWith("//")) {
+      channel = "team";
+      text = msg.slice(2).trim();
+    } else if (msg.startsWith("/")) {
+      text = msg.slice(1).trim();
+    }
+    if (!text) return;
+    // Team chat stub: broadcast to same region for now (team system coming).
+    for (const s of this.sessions.values()) {
+      const sp = this.players.get(s.playerId);
+      if (!sp || sp.region !== p.region) continue;
+      this.send(s.ws, { t: "chat", from: p.name, msg: text, channel });
+    }
+  }
+
+  // --- skill helpers --------------------------------------------------------
+  private giveXP(p: PlayerState, skill: SkillName, amount: number) {
+    p.skills[skill] = p.skills[skill] + amount;
+  }
+
+  private addItem(inv: Inventory, item: ItemId, qty: number) {
+    inv[item] = (inv[item] ?? 0) + qty;
+  }
+
+  private updateResourceRespawn(now: number) {
+    for (const n of this.resourceNodes.values()) {
+      if (!n.depleted) continue;
+      if (n.respawnAt !== null && now >= n.respawnAt) {
+        n.depleted = false;
+        n.hp = n.maxHp;
+        n.respawnAt = null;
+      }
+    }
   }
 
   private doBoard(playerId: string) {
@@ -458,8 +710,10 @@ export class GameRoom {
     p.stamina -= ATTACK_STAMINA;
 
     // A held (charged) swing hits harder, reaches further, and knocks back more.
+    // Combat skill adds a passive bonus on top.
     const ch = Math.max(0, Math.min(1, charge));
-    const scale = 1 + CHARGE_BONUS * ch;
+    const combatBonus = 1 + skillLevel(p.skills.combat) * 0.005;
+    const scale = (1 + CHARGE_BONUS * ch) * combatBonus;
     const range = ATTACK_RANGE * (1 + 0.4 * ch);
     const damage = ATTACK_DAMAGE * scale;
     const knockback = ATTACK_KNOCKBACK * scale;
@@ -480,9 +734,12 @@ export class GameRoom {
       best = c;
     }
     if (best) {
+      const prevHp = best.hp;
       best.hp -= damage;
       this.applyKnockback(best.id, best.x - p.x, best.y - p.y, knockback);
       if (best.hp <= 0) {
+        // Combat XP proportional to the creature's total HP (harder kills = more XP).
+        this.giveXP(p, "combat", prevHp * XP_KILL_PER_HP);
         this.creatures.delete(best.id);
         this.kb.delete(best.id);
       }
@@ -680,7 +937,16 @@ export class GameRoom {
       if (v) v.driverId = null;
       p.vehicleId = null;
     }
-    this.broadcastLog(`${p.name} was dragged under.`);
+    // Death penalty: lose 25% of raw XP in every skill. You can slide back
+    // but never to zero — keeps the stakes real without being punishing.
+    for (const sk of Object.keys(p.skills) as SkillName[]) {
+      p.skills[sk] = Math.max(0, p.skills[sk] * (1 - DEATH_XP_LOSS));
+    }
+    // Drop half your inventory on death (items just vanish for now — future: loot crate).
+    for (const item of Object.keys(p.inventory) as ItemId[]) {
+      p.inventory[item] = Math.floor((p.inventory[item] ?? 0) / 2);
+    }
+    this.broadcastLog(`${p.name} was dragged under. Skills took a hit.`);
     setTimeout(() => {
       const region = this.regions.get(p.region);
       p.dead = false;
@@ -832,6 +1098,7 @@ export class GameRoom {
       creatures: [...this.creatures.values()].filter((c) => c.region === regionId),
       buildings: region.buildings,
       vehicles: [...this.vehicles.values()].filter((v) => v.region === regionId),
+      resourceNodes: [...this.resourceNodes.values()].filter((n) => n.region === regionId),
     };
   }
 
