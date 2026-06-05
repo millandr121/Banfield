@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-    <title>Bamfield Tides</title>
+    <title>Banfield, The Game</title>
     <style>
       :root {
         font-family: system-ui, sans-serif;
@@ -34,7 +34,19 @@
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
       }
       .card h1 { margin: 0 0 4px; font-size: 26px; }
-      .card p.sub { margin: 0 0 18px; color: #8fb4c9; font-size: 13px; }
+      .card p.sub { margin: 0 0 10px; color: #8fb4c9; font-size: 13px; }
+      .card p.joke {
+        margin: 0 0 18px;
+        padding: 10px 12px;
+        border-left: 3px solid #f4b400;
+        background: rgba(244, 180, 0, 0.08);
+        border-radius: 0 6px 6px 0;
+        color: #d9c9a3;
+        font-size: 12.5px;
+        font-style: italic;
+        line-height: 1.45;
+      }
+      .card p.joke b { color: #f4d27a; font-style: normal; }
       label { display: block; font-size: 13px; margin: 12px 0 4px; color: #b8d4e3; }
       input[type="text"] {
         width: 100%;
@@ -110,8 +122,13 @@
 
     <div id="creator">
       <div class="card">
-        <h1>Bamfield Tides</h1>
+        <h1>Banfield, The Game</h1>
         <p class="sub">Survive low tide and high tide on the coast of Barkley Sound.</p>
+        <p class="joke">
+          It was <i>supposed</i> to be called <b>Banfield</b> — but a clerk's
+          slip of the pen named the town <b>Bamfield</b>, and it stuck for over
+          a century. This game takes back the old, true name.
+        </p>
 
         <label for="name">Name</label>
         <input id="name" type="text" maxlength="16" placeholder="Settler" />
