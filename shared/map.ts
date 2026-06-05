@@ -1,5 +1,60 @@
 import { BuildingState, Tile, TravelNode, WorldMap } from "./protocol";
 
+// Build a sloped heightmap from the tile grid so the tide sweeps gradually.
+// Land rises ~SLOPE per tile away from the shore; the seabed drops the same
+// going offshore. Hills/rock/forest get a bump so they stay dry at high tide.
+const SHORE_ELEV = 8;
+const BEACH_SLOPE = 2;
+export function computeElevation(tiles: Tile[], w: number, h: number): number[] {
+  const isWater = (i: number) => tiles[i] === Tile.Water;
+  const bfs = (isSource: (i: number) => boolean): Int32Array => {
+    const d = new Int32Array(w * h).fill(-1);
+    const q: number[] = [];
+    for (let i = 0; i < w * h; i++) if (isSource(i)) { d[i] = 0; q.push(i); }
+    for (let head = 0; head < q.length; head++) {
+      const i = q[head];
+      const x = i % w;
+      const y = (i / w) | 0;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const ni = ny * w + nx;
+        if (d[ni] === -1) { d[ni] = d[i] + 1; q.push(ni); }
+      }
+    }
+    return d;
+  };
+  const fromWater = bfs(isWater); // land tiles -> distance to the sea
+  const fromLand = bfs((i) => !isWater(i)); // water tiles -> distance to land
+  const elev = new Array(w * h).fill(0);
+  for (let i = 0; i < w * h; i++) {
+    if (isWater(i)) {
+      const wd = fromLand[i] <= 0 ? 1 : fromLand[i];
+      elev[i] = SHORE_ELEV - wd * BEACH_SLOPE; // seabed drops offshore
+    } else {
+      const ld = fromWater[i] < 0 ? 20 : fromWater[i]; // no sea in map -> high & dry
+      let e = SHORE_ELEV + ld * BEACH_SLOPE;
+      const t = tiles[i];
+      if (t === Tile.Hill) e += 34;
+      else if (t === Tile.Rock) e += 50;
+      else if (t === Tile.Forest) e += 8;
+      else if (t === Tile.Dock) e -= 4; // docks sit low, flood first
+      elev[i] = Math.min(100, e);
+    }
+  }
+  return elev;
+}
+
+function worldMap(tiles: Tile[]): WorldMap {
+  return {
+    width: MAP_WIDTH,
+    height: MAP_HEIGHT,
+    tiles,
+    elevation: computeElevation(tiles, MAP_WIDTH, MAP_HEIGHT),
+  };
+}
+
 // The world is a set of REGIONS that share one tide clock. Right now there are
 // two, a couple of km apart in reality, linked by travel (bus / car / boat):
 //
@@ -108,7 +163,7 @@ function generateBamfieldMap(): WorldMap {
     }
   }
 
-  return { width: MAP_WIDTH, height: MAP_HEIGHT, tiles };
+  return worldMap(tiles);
 }
 
 function bamfieldBuildings(): BuildingState[] {
@@ -166,7 +221,7 @@ function generateAnaclaMap(): WorldMap {
     if (tiles[idx(roadX, y)] !== Tile.Water) tiles[idx(roadX, y)] = Tile.Road;
   }
 
-  return { width: MAP_WIDTH, height: MAP_HEIGHT, tiles };
+  return worldMap(tiles);
 }
 
 function anaclaBuildings(): BuildingState[] {
@@ -214,16 +269,23 @@ export interface RegionData {
   width: number;
   height: number;
   tiles: number[];
+  elevation?: number[]; // optional; derived from the tile grid if omitted
   buildings: BuildingState[];
   spawn: { x: number; y: number };
   travelNodes: TravelNode[];
 }
 
 export function regionFromData(data: RegionData): RegionDef {
+  const tiles = data.tiles as Tile[];
   return {
     id: data.id,
     name: data.name,
-    map: { width: data.width, height: data.height, tiles: data.tiles as Tile[] },
+    map: {
+      width: data.width,
+      height: data.height,
+      tiles,
+      elevation: data.elevation ?? computeElevation(tiles, data.width, data.height),
+    },
     buildings: data.buildings,
     spawn: data.spawn,
     travelNodes: data.travelNodes,

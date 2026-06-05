@@ -15,9 +15,9 @@ export enum Tile {
   Dock = 7,
 }
 
-// Base elevation per tile (0 = deep sea, 100 = mountain top). The current tide
-// "waterline" is compared against this: any tile whose elevation is below the
-// waterline is currently submerged.
+// Base elevation per tile type, used only as a seed/bump. The AUTHORITATIVE
+// per-tile elevation lives in WorldMap.elevation (a sloped heightmap), so the
+// tide can sweep gradually across a beach instead of toggling one tile.
 export const TILE_ELEVATION: Record<Tile, number> = {
   [Tile.Water]: 4,
   [Tile.Sand]: 18,
@@ -30,11 +30,13 @@ export const TILE_ELEVATION: Record<Tile, number> = {
 };
 
 // --- Tide model -------------------------------------------------------------
+// Elevations now run on a gentle ~2-per-tile beach slope, so a wide waterline
+// band makes the tide crawl across many tiles each cycle.
 export const TIDE_CYCLE_MS = 900_000; // one full low->high->low cycle = 15 min
-export const WATERLINE_LOW = 10; // elevation covered at lowest tide
-export const WATERLINE_HIGH = 30; // elevation covered at highest tide
-export const KING_TIDE_SURGE = 12; // extra waterline during a king tide
-export const TSUNAMI_SURGE = 34; // extra waterline during a (rare) tsunami
+export const WATERLINE_LOW = 1; // elevation covered at lowest tide
+export const WATERLINE_HIGH = 20; // elevation covered at highest tide
+export const KING_TIDE_SURGE = 10; // extra waterline during a king tide
+export const TSUNAMI_SURGE = 30; // extra waterline during a (rare) tsunami
 
 export type TidePhase = "low" | "mid" | "high";
 
@@ -43,6 +45,7 @@ export interface WorldMap {
   width: number;
   height: number;
   tiles: Tile[]; // length = width * height, row-major
+  elevation: number[]; // per-tile height; tile is submerged when elevation < waterline
 }
 
 // --- Entities ---------------------------------------------------------------
@@ -60,9 +63,11 @@ export interface PlayerState {
   region: RegionId;
   x: number; // tile-space float
   y: number;
+  dir: number; // facing angle in radians (for arms / directional attacks)
   hp: number;
   maxHp: number;
   appearance: Appearance;
+  swimming: boolean;
   dead: boolean;
 }
 
@@ -145,9 +150,10 @@ export type ServerMessage =
   | { t: "snapshot"; snapshot: Snapshot }
   | { t: "log"; msg: string };
 
-// Helper shared by both sides.
-export function isSubmerged(tile: Tile, waterline: number): boolean {
-  return TILE_ELEVATION[tile] < waterline;
+// Helper shared by both sides: a tile is under water when its (per-tile)
+// elevation sits below the current waterline.
+export function submergedAt(elevation: number, waterline: number): boolean {
+  return elevation < waterline;
 }
 
 export function phaseForTide(tide: number): TidePhase {

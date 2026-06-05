@@ -11,13 +11,12 @@ import {
   Tile,
   TravelNode,
   WorldMap,
-  TILE_ELEVATION,
   TIDE_CYCLE_MS,
   WATERLINE_LOW,
   WATERLINE_HIGH,
   KING_TIDE_SURGE,
   TSUNAMI_SURGE,
-  isSubmerged,
+  submergedAt,
   phaseForTide,
 } from "../shared/protocol";
 import { DEFAULT_REGION, RegionDef, buildRegions } from "../shared/map";
@@ -32,6 +31,7 @@ interface Session {
   playerId: string;
   dx: number; // last input direction, normalized to length <= 1
   dy: number;
+  lastAttack: number; // timestamp of last swing (for cooldown)
 }
 
 // A region's live, mutable state (its static def lives in shared/map.ts).
@@ -45,15 +45,21 @@ interface Region {
 }
 
 const TICK_MS = 100; // server simulation step (10 Hz)
-const PLAYER_SPEED = 4.0; // tiles per second
+const PLAYER_SPEED = 4.5; // tiles per second on land
+const SWIM_SPEED = 2.4; // tiles per second in water
 const PLAYER_MAX_HP = 100;
-const ATTACK_RANGE = 1.4; // tiles
-const ATTACK_DAMAGE = 18;
+const ATTACK_RANGE = 1.5; // tiles
+const ATTACK_ARC = Math.PI * 0.6; // must be roughly facing the target
+const ATTACK_DAMAGE = 22;
+const ATTACK_COOLDOWN_MS = 450; // skill: you can't just spam swings
+const ATTACK_KNOCKBACK = 6; // impulse applied to a struck creature
+const HIT_KNOCKBACK = 5; // impulse applied to a player who gets hit
+const KB_FRICTION = 6; // how fast knockback decays per second
 const REPAIR_RATE = 25; // hp per second
 const CREATURE_CAP_PER_REGION = 7;
 const SPAWN_INTERVAL_MS = 7000; // how often a region may gain one creature
-const SINK_DEPTH = 8; // how far under the waterline counts as "deep"
-const SINK_DPS = 14; // hp/sec lost while standing still in deep water
+const SINK_DEPTH = 7; // how far under the waterline counts as "deep"
+const SINK_DPS = 12; // hp/sec lost while standing still in deep water
 
 export class GameRoom {
   private sessions = new Map<WebSocket, Session>();
@@ -61,6 +67,8 @@ export class GameRoom {
   private regions = new Map<RegionId, Region>();
   private players = new Map<string, PlayerState>();
   private creatures = new Map<string, CreatureState>();
+  // Transient knockback impulses by entity id (players + creatures).
+  private kb = new Map<string, { x: number; y: number }>();
 
   private startedAt = Date.now();
   private loop: ReturnType<typeof setInterval> | null = null;
@@ -102,7 +110,7 @@ export class GameRoom {
   // --- connection lifecycle -------------------------------------------------
   private onConnect(ws: WebSocket) {
     const playerId = `p${this.idCounter++}`;
-    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0 });
+    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0 });
     ws.addEventListener("message", (ev) => {
       try {
         this.onMessage(ws, JSON.parse(ev.data as string) as ClientMessage);
@@ -118,7 +126,10 @@ export class GameRoom {
 
   private onDisconnect(ws: WebSocket) {
     const s = this.sessions.get(ws);
-    if (s) this.players.delete(s.playerId);
+    if (s) {
+      this.players.delete(s.playerId);
+      this.kb.delete(s.playerId);
+    }
     this.sessions.delete(ws);
     if (this.sessions.size === 0 && this.loop) {
       clearInterval(this.loop);
@@ -139,9 +150,11 @@ export class GameRoom {
           region: region.id,
           x: spawn.x,
           y: spawn.y,
+          dir: 0,
           hp: PLAYER_MAX_HP,
           maxHp: PLAYER_MAX_HP,
           appearance: sanitizeAppearance(msg.appearance),
+          swimming: false,
           dead: false,
         };
         this.players.set(s.playerId, player);
@@ -153,6 +166,8 @@ export class GameRoom {
         const len = Math.hypot(msg.dx, msg.dy);
         s.dx = len > 1 ? msg.dx / len : msg.dx;
         s.dy = len > 1 ? msg.dy / len : msg.dy;
+        const p = this.players.get(s.playerId);
+        if (p && (msg.dx !== 0 || msg.dy !== 0)) p.dir = Math.atan2(msg.dy, msg.dx);
         break;
       }
       case "attack":
@@ -258,50 +273,66 @@ export class GameRoom {
       const s = this.sessionFor(p.id);
       const region = this.regions.get(p.region);
       if (!s || !region) continue;
-      const nx = p.x + s.dx * PLAYER_SPEED * dt;
-      const ny = p.y + s.dy * PLAYER_SPEED * dt;
+
+      // You can now swim, but the water is slower than dry land.
+      p.swimming = this.depthAt(region.map, p.x, p.y, waterline) > 0;
+      const speed = p.swimming ? SWIM_SPEED : PLAYER_SPEED;
+      const imp = this.kb.get(p.id);
+      const nx = p.x + (s.dx * speed + (imp?.x ?? 0)) * dt;
+      const ny = p.y + (s.dy * speed + (imp?.y ?? 0)) * dt;
       let moved = false;
-      if (this.walkable(region.map, nx, p.y, waterline, false)) {
+      if (this.inBounds(region.map, nx, p.y)) {
         if (nx !== p.x) moved = true;
         p.x = nx;
       }
-      if (this.walkable(region.map, p.x, ny, waterline, false)) {
+      if (this.inBounds(region.map, p.x, ny)) {
         if (ny !== p.y) moved = true;
         p.y = ny;
       }
 
-      // Tides: if the rising water has caught you in DEEP water and you stand
-      // still, you start to sink. Keep moving (toward land) to stay afloat.
-      const tx = Math.floor(p.x);
-      const ty = Math.floor(p.y);
-      if (tx >= 0 && ty >= 0 && tx < region.map.width && ty < region.map.height) {
-        const tile = region.map.tiles[ty * region.map.width + tx] as Tile;
-        const depth = waterline - TILE_ELEVATION[tile];
-        const submerged = tile === Tile.Water || depth > 0;
-        if (submerged && depth > SINK_DEPTH && !moved) {
-          p.hp -= SINK_DPS * dt;
-          if (p.hp <= 0 && !p.dead) this.killPlayer(p);
-        }
+      // Tides: caught in DEEP water and standing still -> you sink. Keep moving
+      // (toward land) to stay afloat.
+      const depth = this.depthAt(region.map, p.x, p.y, waterline);
+      const movingInput = s.dx !== 0 || s.dy !== 0;
+      if (depth > SINK_DEPTH && !movingInput && !moved) {
+        p.hp -= SINK_DPS * dt;
+        if (p.hp <= 0 && !p.dead) this.killPlayer(p);
       }
     }
+    this.decayKnockback(dt);
   }
 
   private doAttack(playerId: string) {
     const p = this.players.get(playerId);
     if (!p || p.dead) return;
+    const s = this.sessionFor(p.id);
+    if (!s) return;
+    const now = Date.now();
+    if (now - s.lastAttack < ATTACK_COOLDOWN_MS) return; // skill: respect cooldown
+    s.lastAttack = now;
+
+    // Hit the nearest creature that's in range AND roughly in front of you.
     let best: CreatureState | null = null;
     let bestD = ATTACK_RANGE;
     for (const c of this.creatures.values()) {
       if (c.region !== p.region) continue;
-      const d = Math.hypot(c.x - p.x, c.y - p.y);
-      if (d <= bestD) {
-        bestD = d;
-        best = c;
-      }
+      const dx = c.x - p.x;
+      const dy = c.y - p.y;
+      const d = Math.hypot(dx, dy);
+      if (d > bestD) continue;
+      let diff = Math.abs(Math.atan2(dy, dx) - p.dir);
+      if (diff > Math.PI) diff = Math.PI * 2 - diff;
+      if (diff > ATTACK_ARC) continue;
+      bestD = d;
+      best = c;
     }
     if (best) {
       best.hp -= ATTACK_DAMAGE;
-      if (best.hp <= 0) this.creatures.delete(best.id);
+      this.applyKnockback(best.id, best.x - p.x, best.y - p.y, ATTACK_KNOCKBACK);
+      if (best.hp <= 0) {
+        this.creatures.delete(best.id);
+        this.kb.delete(best.id);
+      }
     }
   }
 
@@ -375,17 +406,22 @@ export class GameRoom {
       }
 
       const target = this.creatureTarget(region, c);
-      if (!target) continue;
-      const dirx = target.x - c.x;
-      const diry = target.y - c.y;
-      const dist = Math.hypot(dirx, diry) || 1;
-      const spd = creatureSpeed(c.kind);
+      const imp = this.kb.get(c.id);
       const swims = swimmer(c.kind);
-      const nx = c.x + (dirx / dist) * spd * dt;
-      const ny = c.y + (diry / dist) * spd * dt;
-      if (this.walkable(region.map, nx, c.y, waterline, swims)) c.x = nx;
-      if (this.walkable(region.map, c.x, ny, waterline, swims)) c.y = ny;
-      if (dist < 1.2) this.creatureAttack(c, target);
+      if (target) {
+        const dirx = target.x - c.x;
+        const diry = target.y - c.y;
+        const dist = Math.hypot(dirx, diry) || 1;
+        const spd = creatureSpeed(c.kind);
+        const vx = (dirx / dist) * spd + (imp?.x ?? 0);
+        const vy = (diry / dist) * spd + (imp?.y ?? 0);
+        if (this.walkable(region.map, c.x + vx * dt, c.y, waterline, swims)) c.x += vx * dt;
+        if (this.walkable(region.map, c.x, c.y + vy * dt, waterline, swims)) c.y += vy * dt;
+        if (dist < 1.2) this.creatureAttack(c, target);
+      } else if (imp) {
+        if (this.walkable(region.map, c.x + imp.x * dt, c.y, waterline, swims)) c.x += imp.x * dt;
+        if (this.walkable(region.map, c.x, c.y + imp.y * dt, waterline, swims)) c.y += imp.y * dt;
+      }
     }
   }
 
@@ -419,6 +455,8 @@ export class GameRoom {
     const dmg = creatureDamage(c.kind) * (TICK_MS / 1000);
     if (target.player) {
       target.player.hp -= dmg;
+      // Shove the player away from the attacker (bounce-back).
+      this.applyKnockback(target.player.id, target.player.x - c.x, target.player.y - c.y, HIT_KNOCKBACK);
       if (target.player.hp <= 0 && !target.player.dead) this.killPlayer(target.player);
     } else if (target.building && target.building.kind !== "rubble") {
       target.building.hp -= dmg;
@@ -448,13 +486,42 @@ export class GameRoom {
   }
 
   // --- helpers --------------------------------------------------------------
-  private walkable(map: WorldMap, x: number, y: number, waterline: number, swimmer: boolean): boolean {
+  private inBounds(map: WorldMap, x: number, y: number): boolean {
     const tx = Math.floor(x);
     const ty = Math.floor(y);
-    if (tx < 0 || ty < 0 || tx >= map.width || ty >= map.height) return false;
+    return tx >= 0 && ty >= 0 && tx < map.width && ty < map.height;
+  }
+
+  // How far the given point is under water (>0 means submerged).
+  private depthAt(map: WorldMap, x: number, y: number, waterline: number): number {
+    const tx = Math.floor(x);
+    const ty = Math.floor(y);
+    if (!this.inBounds(map, x, y)) return 0;
+    return waterline - map.elevation[ty * map.width + tx];
+  }
+
+  // Creatures still respect land/water boundaries (players can swim freely).
+  private walkable(map: WorldMap, x: number, y: number, waterline: number, swimmer: boolean): boolean {
+    if (!this.inBounds(map, x, y)) return false;
+    const tx = Math.floor(x);
+    const ty = Math.floor(y);
     const tile = map.tiles[ty * map.width + tx] as Tile;
-    const submerged = isSubmerged(tile, waterline) || tile === Tile.Water;
+    const submerged = submergedAt(map.elevation[ty * map.width + tx], waterline) || tile === Tile.Water;
     return swimmer ? submerged : !submerged;
+  }
+
+  private applyKnockback(id: string, dx: number, dy: number, strength: number) {
+    const len = Math.hypot(dx, dy) || 1;
+    this.kb.set(id, { x: (dx / len) * strength, y: (dy / len) * strength });
+  }
+
+  private decayKnockback(dt: number) {
+    for (const [id, v] of this.kb) {
+      const f = Math.max(0, 1 - KB_FRICTION * dt);
+      v.x *= f;
+      v.y *= f;
+      if (Math.hypot(v.x, v.y) < 0.05) this.kb.delete(id);
+    }
   }
 
   private findSpawnTile(

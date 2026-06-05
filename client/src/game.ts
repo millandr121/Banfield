@@ -9,7 +9,6 @@ import {
   Tile,
   TravelNode,
   WorldMap,
-  TILE_ELEVATION,
   WATERLINE_HIGH,
 } from "../../shared/protocol";
 import { Net } from "./net";
@@ -151,23 +150,27 @@ export class Game {
 
     for (let y = startY; y < endY; y++) {
       for (let x = startX; x < endX; x++) {
-        const tile = map.tiles[y * map.width + x] as Tile;
+        const i = y * map.width + x;
+        const tile = map.tiles[i] as Tile;
+        const elev = map.elevation[i];
         const { sx, sy } = this.toScreen(x, y);
-        const elev = TILE_ELEVATION[tile];
         const depth = snap.waterline - elev; // >0 means under water right now
-        const submerged = tile === Tile.Water || depth > 0;
 
-        if (submerged) {
-          // The water has actually taken this tile. Deeper = darker.
+        if (depth > 0) {
+          // The water has actually risen over this tile. Deeper = darker.
           ctx.fillStyle = waterShade(depth);
+          ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
+        } else if (tile === Tile.Water) {
+          // Seabed the tide has receded from: exposed wet mudflat at low tide.
+          ctx.fillStyle = "#6c5b3e";
           ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
         } else {
           ctx.fillStyle = TILE_COLORS[tile];
           ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
-          // Brown high-tide line: ground that the tide *will* reach looks wet.
+          // Brown high-tide line: dry ground the tide still reaches looks wet.
           if (elev < WATERLINE_HIGH) {
             const wet = (WATERLINE_HIGH - elev) / WATERLINE_HIGH;
-            ctx.fillStyle = `rgba(86,58,33,${(0.12 + 0.32 * wet).toFixed(3)})`;
+            ctx.fillStyle = `rgba(86,58,33,${(0.1 + 0.3 * wet).toFixed(3)})`;
             ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
           }
         }
@@ -234,18 +237,37 @@ export class Game {
       if (b.kind === "rubble") {
         ctx.fillStyle = "#4a4038";
         ctx.fillRect(sx, sy, w, h);
-      } else {
-        ctx.fillStyle = buildingColor(b.kind);
-        ctx.fillRect(sx, sy, w, h);
-        ctx.strokeStyle = "#1a1a1a";
-        ctx.strokeRect(sx, sy, w, h);
-        // HP bar.
-        const frac = Math.max(0, b.hp / b.maxHp);
-        ctx.fillStyle = "#222";
-        ctx.fillRect(sx, sy - 6, w, 4);
-        ctx.fillStyle = frac > 0.5 ? "#4caf50" : frac > 0.25 ? "#ffb300" : "#e53935";
-        ctx.fillRect(sx, sy - 6, w * frac, 4);
+        // scattered debris
+        ctx.fillStyle = "#5e5347";
+        for (let i = 0; i < 5; i++) {
+          ctx.fillRect(sx + ((i * 7) % w), sy + ((i * 11) % h), 4, 4);
+        }
+        continue;
       }
+
+      // Walls + a darker pitched-roof band along the top, plus a door.
+      ctx.fillStyle = buildingColor(b.kind);
+      ctx.fillRect(sx, sy, w, h);
+      ctx.fillStyle = "rgba(0,0,0,0.28)";
+      ctx.fillRect(sx, sy, w, Math.max(5, h * 0.34)); // roof
+      ctx.strokeStyle = "#15110d";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(sx, sy, w, h);
+      // door
+      ctx.fillStyle = "#2c2018";
+      ctx.fillRect(sx + w / 2 - 3, sy + h - 9, 6, 9);
+      // a small sign marking what it is
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.font = "9px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText(buildingLabel(b.kind), sx + w / 2, sy + h * 0.34 + 9);
+
+      // HP bar.
+      const frac = Math.max(0, b.hp / b.maxHp);
+      ctx.fillStyle = "#222";
+      ctx.fillRect(sx, sy - 6, w, 4);
+      ctx.fillStyle = frac > 0.5 ? "#4caf50" : frac > 0.25 ? "#ffb300" : "#e53935";
+      ctx.fillRect(sx, sy - 6, w * frac, 4);
     }
   }
 
@@ -259,30 +281,68 @@ export class Game {
   private drawPlayer(p: PlayerState, isMe: boolean) {
     const ctx = this.ctx;
     const { sx, sy } = this.toScreen(p.x, p.y);
-    if (p.dead) {
-      ctx.globalAlpha = 0.3;
+    const R = TILE_SIZE * 0.4;
+    if (p.dead) ctx.globalAlpha = 0.3;
+
+    // A faint wake ring when swimming.
+    if (p.swimming) {
+      ctx.strokeStyle = "rgba(220,240,255,0.45)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sx, sy, R * 1.25, 0, Math.PI * 2);
+      ctx.stroke();
     }
+
+    // Arms reaching out to the sides of the facing direction.
+    ctx.strokeStyle = p.appearance.skin;
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    for (const off of [-1.1, 1.1]) {
+      const a = p.dir + off;
+      const hx = sx + Math.cos(a) * R * 1.15;
+      const hy = sy + Math.sin(a) * R * 1.15;
+      ctx.beginPath();
+      ctx.moveTo(sx + Math.cos(a) * R * 0.4, sy + Math.sin(a) * R * 0.4);
+      ctx.lineTo(hx, hy);
+      ctx.stroke();
+      ctx.fillStyle = p.appearance.skin;
+      ctx.beginPath();
+      ctx.arc(hx, hy, R * 0.16, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     // Body (shirt).
     ctx.fillStyle = p.appearance.shirt;
     ctx.beginPath();
-    ctx.arc(sx, sy, TILE_SIZE * 0.42, 0, Math.PI * 2);
+    ctx.arc(sx, sy, R, 0, Math.PI * 2);
     ctx.fill();
-    // Head (skin).
+    // Head (skin) + hair cap on the back (away from facing).
     ctx.fillStyle = p.appearance.skin;
     ctx.beginPath();
-    ctx.arc(sx, sy, TILE_SIZE * 0.26, 0, Math.PI * 2);
+    ctx.arc(sx, sy, R * 0.62, 0, Math.PI * 2);
     ctx.fill();
-    // Hair cap.
     ctx.fillStyle = p.appearance.hair;
     ctx.beginPath();
-    ctx.arc(sx, sy, TILE_SIZE * 0.26, Math.PI, Math.PI * 2);
+    ctx.arc(sx, sy, R * 0.62, p.dir + Math.PI / 2, p.dir + (Math.PI * 3) / 2);
     ctx.fill();
-    // Outline for self.
+
+    // HP ring (green -> red), starting at the top and going clockwise.
+    const frac = Math.max(0, Math.min(1, p.hp / p.maxHp));
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(sx, sy, R + 4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = hpColor(frac);
+    ctx.beginPath();
+    ctx.arc(sx, sy, R + 4, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2);
+    ctx.stroke();
+
     if (isMe) {
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(255,255,255,0.8)";
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.arc(sx, sy, TILE_SIZE * 0.46, 0, Math.PI * 2);
+      ctx.arc(sx, sy, R + 7, 0, Math.PI * 2);
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
@@ -290,7 +350,7 @@ export class Game {
     ctx.fillStyle = "#eaf2f8";
     ctx.font = "11px system-ui";
     ctx.textAlign = "center";
-    ctx.fillText(p.name, sx, sy - TILE_SIZE * 0.6);
+    ctx.fillText(p.name, sx, sy - TILE_SIZE * 0.7);
   }
 
   private drawHud(snap: Snapshot, me?: PlayerState) {
@@ -488,6 +548,25 @@ function drawWhale(ctx: CanvasRenderingContext2D, x: number, y: number, color: s
   ctx.beginPath();
   ctx.arc(x + L * 0.6, y - L * 0.1, L * 0.07, 0, Math.PI * 2);
   ctx.fill();
+}
+
+function hpColor(frac: number): string {
+  const r = Math.round(235 * (1 - frac));
+  const g = Math.round(190 * frac + 20);
+  return `rgb(${r},${g},60)`;
+}
+
+function buildingLabel(kind: BuildingState["kind"]): string {
+  switch (kind) {
+    case "shop":
+      return "MARKET";
+    case "boathouse":
+      return "BOATS";
+    case "dock":
+      return "DOCK";
+    default:
+      return "";
+  }
 }
 
 function buildingColor(kind: BuildingState["kind"]): string {
