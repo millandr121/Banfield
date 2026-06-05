@@ -10,6 +10,7 @@ import {
   TravelNode,
   WorldMap,
   TILE_ELEVATION,
+  WATERLINE_HIGH,
 } from "../../shared/protocol";
 import { Net } from "./net";
 
@@ -22,16 +23,6 @@ const TILE_COLORS: Record<Tile, string> = {
   [Tile.Rock]: "#7d7d7d",
   [Tile.Road]: "#5b524a",
   [Tile.Dock]: "#7a5a36",
-};
-
-const CREATURE_STYLE: Record<string, { color: string; r: number }> = {
-  crab: { color: "#c0392b", r: 0.35 },
-  octopus: { color: "#8e44ad", r: 0.45 },
-  dogfish: { color: "#566573", r: 0.5 },
-  sixgill: { color: "#34495e", r: 0.7 },
-  orca: { color: "#11151a", r: 0.85 },
-  humpback: { color: "#3a4750", r: 1.1 },
-  greywhale: { color: "#69707a", r: 1.1 },
 };
 
 export class Game {
@@ -162,12 +153,23 @@ export class Game {
       for (let x = startX; x < endX; x++) {
         const tile = map.tiles[y * map.width + x] as Tile;
         const { sx, sy } = this.toScreen(x, y);
-        ctx.fillStyle = TILE_COLORS[tile];
-        ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
-        // Tiles currently under the tide get a translucent water overlay.
-        if (tile !== Tile.Water && TILE_ELEVATION[tile] < snap.waterline) {
-          ctx.fillStyle = "rgba(28,95,134,0.55)";
+        const elev = TILE_ELEVATION[tile];
+        const depth = snap.waterline - elev; // >0 means under water right now
+        const submerged = tile === Tile.Water || depth > 0;
+
+        if (submerged) {
+          // The water has actually taken this tile. Deeper = darker.
+          ctx.fillStyle = waterShade(depth);
           ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
+        } else {
+          ctx.fillStyle = TILE_COLORS[tile];
+          ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
+          // Brown high-tide line: ground that the tide *will* reach looks wet.
+          if (elev < WATERLINE_HIGH) {
+            const wet = (WATERLINE_HIGH - elev) / WATERLINE_HIGH;
+            ctx.fillStyle = `rgba(86,58,33,${(0.12 + 0.32 * wet).toFixed(3)})`;
+            ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
+          }
         }
       }
     }
@@ -248,14 +250,9 @@ export class Game {
   }
 
   private drawCreatures(creatures: CreatureState[]) {
-    const ctx = this.ctx;
     for (const c of creatures) {
-      const style = CREATURE_STYLE[c.kind] ?? { color: "#fff", r: 0.4 };
       const { sx, sy } = this.toScreen(c.x, c.y);
-      ctx.fillStyle = style.color;
-      ctx.beginPath();
-      ctx.arc(sx, sy, style.r * TILE_SIZE, 0, Math.PI * 2);
-      ctx.fill();
+      drawCreatureSprite(this.ctx, c.kind, sx, sy);
     }
   }
 
@@ -326,6 +323,172 @@ const TRAVEL_ICON: Record<TravelNode["kind"], string> = {
   car: "CAR",
   boat: "BOAT",
 };
+
+// Deeper water renders darker (shallow teal -> deep navy).
+function waterShade(depth: number): string {
+  const t = Math.max(0, Math.min(1, depth / 30));
+  const r = Math.round(47 + (10 - 47) * t);
+  const g = Math.round(127 + (34 - 127) * t);
+  const b = Math.round(168 + (54 - 168) * t);
+  return `rgb(${r},${g},${b})`;
+}
+
+// --- creature sprites (top-down, recognizable silhouettes) ------------------
+function drawCreatureSprite(ctx: CanvasRenderingContext2D, kind: string, x: number, y: number) {
+  switch (kind) {
+    case "crab":
+      return drawCrab(ctx, x, y);
+    case "octopus":
+      return drawOctopus(ctx, x, y);
+    case "dogfish":
+      return drawShark(ctx, x, y, 0.55, "#5a6b78", false);
+    case "sixgill":
+      return drawShark(ctx, x, y, 0.8, "#3b4a57", false);
+    case "orca":
+      return drawShark(ctx, x, y, 0.9, "#10141a", true);
+    case "humpback":
+      return drawWhale(ctx, x, y, "#33414b");
+    case "greywhale":
+      return drawWhale(ctx, x, y, "#6b7480");
+  }
+}
+
+function drawCrab(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const r = TILE_SIZE * 0.3;
+  ctx.strokeStyle = "#7b241c";
+  ctx.lineWidth = 2;
+  for (const sgn of [-1, 1]) {
+    for (let i = 0; i < 3; i++) {
+      const yy = y - r * 0.5 + i * r * 0.55;
+      ctx.beginPath();
+      ctx.moveTo(x, yy);
+      ctx.lineTo(x + sgn * r * 1.7, yy - r * 0.25 + i * r * 0.25);
+      ctx.stroke();
+    }
+  }
+  ctx.fillStyle = "#c0392b";
+  ctx.beginPath();
+  ctx.ellipse(x, y, r * 1.2, r * 0.95, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#a93226";
+  for (const sgn of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(x + sgn * r * 1.35, y - r * 0.9, r * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = "#fff";
+  for (const sgn of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(x + sgn * r * 0.4, y - r * 0.5, r * 0.18, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawOctopus(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const r = TILE_SIZE * 0.34;
+  ctx.strokeStyle = "#7d3c98";
+  ctx.lineWidth = 3;
+  for (let i = 0; i < 6; i++) {
+    const a = Math.PI * 0.15 + (i / 5) * Math.PI * 0.7;
+    ctx.beginPath();
+    ctx.moveTo(x, y + r * 0.3);
+    ctx.quadraticCurveTo(
+      x + Math.cos(a) * r * 1.2,
+      y + r * 1.0,
+      x + Math.cos(a) * r * 1.8,
+      y + Math.sin(a) * r * 1.4,
+    );
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#8e44ad";
+  ctx.beginPath();
+  ctx.arc(x, y - r * 0.2, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  for (const sgn of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(x + sgn * r * 0.4, y - r * 0.25, r * 0.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = "#1a1a1a";
+  for (const sgn of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(x + sgn * r * 0.4, y - r * 0.25, r * 0.09, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawShark(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  scale: number,
+  color: string,
+  orca: boolean,
+) {
+  const L = TILE_SIZE * scale;
+  ctx.fillStyle = color;
+  // tail fluke
+  ctx.beginPath();
+  ctx.moveTo(x - L, y);
+  ctx.lineTo(x - L * 1.5, y - L * 0.5);
+  ctx.lineTo(x - L * 1.35, y);
+  ctx.lineTo(x - L * 1.5, y + L * 0.5);
+  ctx.closePath();
+  ctx.fill();
+  // body
+  ctx.beginPath();
+  ctx.ellipse(x, y, L, L * 0.42, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // dorsal fin
+  ctx.beginPath();
+  ctx.moveTo(x, y - L * 0.4);
+  ctx.lineTo(x - L * 0.2, y - L * 0.95);
+  ctx.lineTo(x + L * 0.18, y - L * 0.4);
+  ctx.closePath();
+  ctx.fill();
+  if (orca) {
+    ctx.fillStyle = "#f2f2f2";
+    ctx.beginPath();
+    ctx.ellipse(x - L * 0.1, y + L * 0.18, L * 0.6, L * 0.22, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(x + L * 0.5, y - L * 0.12, L * 0.18, L * 0.1, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = "#000";
+  ctx.beginPath();
+  ctx.arc(x + L * 0.62, y - L * 0.08, L * 0.08, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawWhale(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
+  const L = TILE_SIZE * 1.15;
+  ctx.fillStyle = color;
+  // fluke
+  ctx.beginPath();
+  ctx.moveTo(x - L, y);
+  ctx.lineTo(x - L * 1.4, y - L * 0.55);
+  ctx.lineTo(x - L * 1.4, y + L * 0.55);
+  ctx.closePath();
+  ctx.fill();
+  // body
+  ctx.beginPath();
+  ctx.ellipse(x, y, L, L * 0.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // blow spout
+  ctx.strokeStyle = "rgba(220,235,245,0.7)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x + L * 0.45, y - L * 0.5);
+  ctx.lineTo(x + L * 0.45, y - L * 0.95);
+  ctx.stroke();
+  ctx.fillStyle = "#000";
+  ctx.beginPath();
+  ctx.arc(x + L * 0.6, y - L * 0.1, L * 0.07, 0, Math.PI * 2);
+  ctx.fill();
+}
 
 function buildingColor(kind: BuildingState["kind"]): string {
   switch (kind) {

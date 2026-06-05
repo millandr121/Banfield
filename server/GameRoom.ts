@@ -11,6 +11,7 @@ import {
   Tile,
   TravelNode,
   WorldMap,
+  TILE_ELEVATION,
   TIDE_CYCLE_MS,
   WATERLINE_LOW,
   WATERLINE_HIGH,
@@ -49,7 +50,10 @@ const PLAYER_MAX_HP = 100;
 const ATTACK_RANGE = 1.4; // tiles
 const ATTACK_DAMAGE = 18;
 const REPAIR_RATE = 25; // hp per second
-const CREATURE_CAP_PER_REGION = 16;
+const CREATURE_CAP_PER_REGION = 7;
+const SPAWN_INTERVAL_MS = 7000; // how often a region may gain one creature
+const SINK_DEPTH = 8; // how far under the waterline counts as "deep"
+const SINK_DPS = 14; // hp/sec lost while standing still in deep water
 
 export class GameRoom {
   private sessions = new Map<WebSocket, Session>();
@@ -128,12 +132,13 @@ export class GameRoom {
     switch (msg.t) {
       case "join": {
         const region = this.regions.get(DEFAULT_REGION)!;
+        const spawn = this.landSpawn(region, region.spawn.x, region.spawn.y);
         const player: PlayerState = {
           id: s.playerId,
           name: (msg.name || "Settler").slice(0, 16),
           region: region.id,
-          x: region.spawn.x,
-          y: region.spawn.y,
+          x: spawn.x,
+          y: spawn.y,
           hp: PLAYER_MAX_HP,
           maxHp: PLAYER_MAX_HP,
           appearance: sanitizeAppearance(msg.appearance),
@@ -255,8 +260,29 @@ export class GameRoom {
       if (!s || !region) continue;
       const nx = p.x + s.dx * PLAYER_SPEED * dt;
       const ny = p.y + s.dy * PLAYER_SPEED * dt;
-      if (this.walkable(region.map, nx, p.y, waterline, false)) p.x = nx;
-      if (this.walkable(region.map, p.x, ny, waterline, false)) p.y = ny;
+      let moved = false;
+      if (this.walkable(region.map, nx, p.y, waterline, false)) {
+        if (nx !== p.x) moved = true;
+        p.x = nx;
+      }
+      if (this.walkable(region.map, p.x, ny, waterline, false)) {
+        if (ny !== p.y) moved = true;
+        p.y = ny;
+      }
+
+      // Tides: if the rising water has caught you in DEEP water and you stand
+      // still, you start to sink. Keep moving (toward land) to stay afloat.
+      const tx = Math.floor(p.x);
+      const ty = Math.floor(p.y);
+      if (tx >= 0 && ty >= 0 && tx < region.map.width && ty < region.map.height) {
+        const tile = region.map.tiles[ty * region.map.width + tx] as Tile;
+        const depth = waterline - TILE_ELEVATION[tile];
+        const submerged = tile === Tile.Water || depth > 0;
+        if (submerged && depth > SINK_DEPTH && !moved) {
+          p.hp -= SINK_DPS * dt;
+          if (p.hp <= 0 && !p.dead) this.killPlayer(p);
+        }
+      }
     }
   }
 
@@ -303,9 +329,10 @@ export class GameRoom {
     if (!node) return;
     const dest = this.regions.get(node.toRegion);
     if (!dest) return;
+    const arrive = this.landSpawn(dest, node.toSpawn.x, node.toSpawn.y);
     p.region = dest.id;
-    p.x = node.toSpawn.x;
-    p.y = node.toSpawn.y;
+    p.x = arrive.x;
+    p.y = arrive.y;
     this.sendInit(ws, p);
     this.broadcastLog(`${p.name} arrived in ${dest.name}.`);
   }
@@ -313,7 +340,7 @@ export class GameRoom {
   // --- creatures ------------------------------------------------------------
   private maybeSpawn(now: number, waterline: number) {
     if (now < this.nextSpawn) return;
-    this.nextSpawn = now + 2500;
+    this.nextSpawn = now + SPAWN_INTERVAL_MS;
     const phase = phaseForTide(this.tideLevel(now));
 
     // Only populate regions that currently have players.
@@ -413,8 +440,9 @@ export class GameRoom {
       p.dead = false;
       p.hp = p.maxHp;
       if (region) {
-        p.x = region.spawn.x;
-        p.y = region.spawn.y;
+        const sp = this.landSpawn(region, region.spawn.x, region.spawn.y);
+        p.x = sp.x;
+        p.y = sp.y;
       }
     }, 4000);
   }
@@ -443,6 +471,26 @@ export class GameRoom {
       }
     }
     return null;
+  }
+
+  // Snap a desired spawn to the nearest tile that stays DRY even at high tide,
+  // so players never spawn (and get stuck) in the inlet.
+  private landSpawn(region: Region, sx: number, sy: number): { x: number; y: number } {
+    const dry = (x: number, y: number) =>
+      this.walkable(region.map, x + 0.5, y + 0.5, WATERLINE_HIGH, false);
+    const cx = Math.floor(sx);
+    const cy = Math.floor(sy);
+    if (dry(cx, cy)) return { x: cx + 0.5, y: cy + 0.5 };
+    const maxR = Math.max(region.map.width, region.map.height);
+    for (let r = 1; r < maxR; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          if (dry(cx + dx, cy + dy)) return { x: cx + dx + 0.5, y: cy + dy + 0.5 };
+        }
+      }
+    }
+    return { x: sx, y: sy };
   }
 
   private nearestBuilding(region: Region, x: number, y: number, range: number): BuildingState | null {

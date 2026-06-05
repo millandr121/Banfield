@@ -58,39 +58,53 @@ function beachify(tiles: Tile[]) {
 function generateBamfieldMap(): WorldMap {
   let tiles = fill(Tile.Grass);
 
-  // Grappler/Bamfield Inlet: a wavy channel north->south, widening to the sound.
+  // Bamfield Inlet: a narrow channel that splits the town in two — West
+  // Bamfield (the boardwalk, no road) on the left bank, East Bamfield (road
+  // access) on the right — and opens south into Barkley Sound / Trevor Channel.
+  const center = 27;
   for (let y = 0; y < MAP_HEIGHT; y++) {
-    const center = 30 + Math.round(4 * Math.sin(y / 5));
-    const widen = y > MAP_HEIGHT - 12 ? (y - (MAP_HEIGHT - 12)) * 0.9 : 0;
-    const half = 3 + widen;
+    const wig = y < 6 ? Math.round(Math.sin(y)) : 0; // wiggle only at the north end
+    const c = center + wig;
+    const half = y >= 30 ? 2 + (y - 29) * 2 : 2; // flare wide into the sound
     for (let x = 0; x < MAP_WIDTH; x++) {
-      if (Math.abs(x - center) <= half) tiles[idx(x, y)] = Tile.Water;
+      if (Math.abs(x - c) <= half) tiles[idx(x, y)] = Tile.Water;
     }
+  }
+
+  // Grappler Inlet: a side-arm branching east off the main inlet to the north.
+  for (let y = 7; y <= 9; y++) {
+    for (let x = center; x <= 36; x++) tiles[idx(x, y)] = Tile.Water;
+  }
+
+  // Brady's Beach: the open-coast (Pacific-facing) water pocket on the far west.
+  for (let y = 22; y < 31; y++) {
+    for (let x = 0; x < 4; x++) tiles[idx(x, y)] = Tile.Water;
   }
 
   tiles = beachify(tiles);
 
-  // Inland forest + hills on the far edges (West and East Bamfield rise inland).
+  // Forested hills frame the town inland on both edges.
   for (let y = 0; y < MAP_HEIGHT; y++) {
     for (let x = 0; x < MAP_WIDTH; x++) {
       if (tiles[idx(x, y)] !== Tile.Grass) continue;
       const distToEdge = Math.min(x, MAP_WIDTH - 1 - x);
-      if (distToEdge < 4) tiles[idx(x, y)] = Tile.Hill;
-      else if (distToEdge < 7) tiles[idx(x, y)] = Tile.Forest;
+      if (distToEdge < 3) tiles[idx(x, y)] = Tile.Hill;
+      else if (distToEdge < 6) tiles[idx(x, y)] = Tile.Forest;
     }
   }
 
-  // Bamfield Main: the east-side road running up the hill (north end).
-  const roadX = 40;
-  for (let y = 2; y < MAP_HEIGHT - 4; y++) {
-    if (tiles[idx(roadX, y)] !== Tile.Water) tiles[idx(roadX, y)] = Tile.Road;
-  }
+  // Bamfield Main: the road into East Bamfield, ending up the hill in the south.
+  const setRoad = (x: number, y: number) => {
+    if (tiles[idx(x, y)] !== Tile.Water) tiles[idx(x, y)] = Tile.Road;
+  };
+  for (let x = 38; x <= 53; x++) setRoad(x, 3); // arriving from the northeast
+  for (let y = 3; y <= 30; y++) setRoad(38, y); // south through town to the road's end
 
-  // West-side boardwalk docks reaching into the inlet.
-  for (const dy of [8, 16, 24]) {
-    for (let x = 24; x < 28; x++) {
-      const t = tiles[idx(x, dy)];
-      if (t === Tile.Water || t === Tile.Sand) tiles[idx(x, dy)] = Tile.Dock;
+  // West Bamfield boardwalk: docks/piers reaching into the inlet.
+  for (const py of [12, 16, 20, 26]) {
+    for (let x = 23; x <= 25; x++) {
+      const t = tiles[idx(x, py)];
+      if (t === Tile.Grass || t === Tile.Sand || t === Tile.Water) tiles[idx(x, py)] = Tile.Dock;
     }
   }
 
@@ -99,13 +113,15 @@ function generateBamfieldMap(): WorldMap {
 
 function bamfieldBuildings(): BuildingState[] {
   return mkBuildings("bf", [
-    { kind: "house", x: 21, y: 6, w: 2, h: 2, hp: 100 },
-    { kind: "house", x: 21, y: 12, w: 2, h: 2, hp: 100 },
-    { kind: "shop", x: 20, y: 18, w: 3, h: 2, hp: 140 }, // the market
-    { kind: "boathouse", x: 21, y: 24, w: 2, h: 3, hp: 120 },
-    { kind: "house", x: 22, y: 30, w: 2, h: 2, hp: 100 },
-    { kind: "house", x: 43, y: 10, w: 2, h: 2, hp: 100 },
-    { kind: "shop", x: 43, y: 20, w: 3, h: 2, hp: 140 },
+    // West Bamfield — boardwalk houses along the west bank.
+    { kind: "house", x: 20, y: 10, w: 2, h: 2, hp: 100 },
+    { kind: "house", x: 20, y: 14, w: 2, h: 2, hp: 100 },
+    { kind: "boathouse", x: 20, y: 24, w: 2, h: 3, hp: 120 },
+    // East Bamfield — road-side village with the market.
+    { kind: "shop", x: 34, y: 13, w: 3, h: 2, hp: 140 }, // the market (bus stop)
+    { kind: "house", x: 34, y: 17, w: 2, h: 2, hp: 100 },
+    { kind: "house", x: 35, y: 21, w: 2, h: 2, hp: 100 },
+    { kind: "boathouse", x: 32, y: 25, w: 2, h: 2, hp: 120 }, // government dock
   ]);
 }
 
@@ -220,25 +236,25 @@ export function buildRegions(): RegionDef[] {
     name: "Bamfield",
     map: generateBamfieldMap(),
     buildings: bamfieldBuildings(),
-    spawn: { x: 36, y: 6 },
+    spawn: { x: 33, y: 15 }, // East Bamfield, by the market (~242 Frigate Rd)
     travelNodes: [
       {
         id: "bf-bus",
         kind: "bus",
-        x: 19,
-        y: 21,
+        x: 33,
+        y: 15,
         w: 2,
         h: 1,
         label: "Catch the bus at the market to Anacla",
         toRegion: "anacla",
-        toSpawn: { x: 38, y: 24 },
+        toSpawn: { x: 37, y: 22 },
       },
       {
         id: "bf-car",
         kind: "car",
-        x: 39,
-        y: 2,
-        w: 2,
+        x: 38,
+        y: 29,
+        w: 1,
         h: 1,
         label: "Drive up Bamfield Main to Anacla",
         toRegion: "anacla",
@@ -247,13 +263,13 @@ export function buildRegions(): RegionDef[] {
       {
         id: "bf-boat",
         kind: "boat",
-        x: 30,
-        y: 37,
-        w: 3,
-        h: 2,
+        x: 22,
+        y: 26,
+        w: 2,
+        h: 1,
         label: "Boat out the inlet to Pachena Bay",
         toRegion: "anacla",
-        toSpawn: { x: 30, y: 33 },
+        toSpawn: { x: 30, y: 30 },
       },
     ],
   };

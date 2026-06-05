@@ -30,7 +30,7 @@ export const TILE_ELEVATION: Record<Tile, number> = {
 };
 
 // --- Tide model -------------------------------------------------------------
-export const TIDE_CYCLE_MS = 240_000; // one full low->high->low cycle = 4 min
+export const TIDE_CYCLE_MS = 900_000; // one full low->high->low cycle = 15 min
 export const WATERLINE_LOW = 10; // elevation covered at lowest tide
 export const WATERLINE_HIGH = 30; // elevation covered at highest tide
 export const KING_TIDE_SURGE = 12; // extra waterline during a king tide
