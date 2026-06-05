@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <title>Bamfield Tides</title>
+    <style>
+      :root {
+        font-family: system-ui, sans-serif;
+        color: #eaf2f8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: #0b1d2a;
+        overflow: hidden;
+      }
+      #game { display: block; width: 100vw; height: 100vh; }
+
+      #creator {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(circle at 50% 30%, #15384f, #07131c);
+      }
+      .card {
+        width: min(420px, 92vw);
+        background: #0f2738;
+        border: 1px solid #1d4a66;
+        border-radius: 14px;
+        padding: 22px 24px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+      }
+      .card h1 { margin: 0 0 4px; font-size: 26px; }
+      .card p.sub { margin: 0 0 18px; color: #8fb4c9; font-size: 13px; }
+      label { display: block; font-size: 13px; margin: 12px 0 4px; color: #b8d4e3; }
+      input[type="text"] {
+        width: 100%;
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid #2a5a78;
+        background: #0a1c29;
+        color: #eaf2f8;
+        font-size: 15px;
+      }
+      .swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+      .swatches input[type="color"] {
+        width: 44px; height: 36px; border: none; background: none; cursor: pointer;
+      }
+      .row { display: flex; gap: 16px; }
+      .row > div { flex: 1; }
+      #preview { display: block; margin: 14px auto 4px; background: #0a1c29; border-radius: 8px; }
+      button {
+        width: 100%;
+        margin-top: 16px;
+        padding: 12px;
+        border: none;
+        border-radius: 8px;
+        background: #1e88e5;
+        color: white;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover { background: #1976d2; }
+
+      #hud {
+        position: fixed;
+        left: 12px;
+        top: 12px;
+        font-size: 13px;
+        text-shadow: 0 1px 2px #000;
+        pointer-events: none;
+      }
+      #log {
+        position: fixed;
+        left: 12px;
+        bottom: 12px;
+        max-width: 360px;
+        font-size: 12px;
+        color: #cfe3ef;
+        text-shadow: 0 1px 2px #000;
+        pointer-events: none;
+      }
+      #help {
+        position: fixed;
+        right: 12px;
+        top: 12px;
+        font-size: 12px;
+        color: #9fc2d6;
+        text-align: right;
+        text-shadow: 0 1px 2px #000;
+        pointer-events: none;
+      }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+
+    <div id="hud" class="hidden"></div>
+    <div id="help" class="hidden">
+      WASD / arrows: move<br />
+      Space: attack&nbsp;&nbsp; E: repair
+    </div>
+    <div id="log" class="hidden"></div>
+
+    <div id="creator">
+      <div class="card">
+        <h1>Bamfield Tides</h1>
+        <p class="sub">Survive low tide and high tide on the coast of Barkley Sound.</p>
+
+        <label for="name">Name</label>
+        <input id="name" type="text" maxlength="16" placeholder="Settler" />
+
+        <div class="row">
+          <div>
+            <label>Skin</label>
+            <div class="swatches"><input id="skin" type="color" value="#e0ac69" /></div>
+          </div>
+          <div>
+            <label>Hair</label>
+            <div class="swatches"><input id="hair" type="color" value="#3b2a1a" /></div>
+          </div>
+          <div>
+            <label>Shirt</label>
+            <div class="swatches"><input id="shirt" type="color" value="#2e7d32" /></div>
+          </div>
+        </div>
+
+        <canvas id="preview" width="96" height="96"></canvas>
+        <button id="play">Wash ashore</button>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

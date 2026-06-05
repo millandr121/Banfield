@@ -1,0 +1,20 @@
+{
+  "name": "bamfield-tides",
+  "version": "0.1.0",
+  "description": "Bamfield Tides - a top-down tile-based coastal survival game",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:client": "vite build",
+    "dev": "npm run build:client && concurrently -k -n SERVER,CLIENT -c blue,green \"wrangler dev\" \"vite\"",
+    "deploy": "npm run build:client && wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "concurrently": "^9.0.1",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.6",
+    "wrangler": "^3.78.0"
+  }
+}

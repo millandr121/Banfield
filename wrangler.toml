@@ -1,0 +1,17 @@
+name = "bamfield-tides"
+main = "server/index.ts"
+compatibility_date = "2024-09-23"
+
+# Serve the built client (Vite outputs here) as static assets.
+[assets]
+directory = "./dist/client"
+binding = "ASSETS"
+
+# The single authoritative game room lives in one Durable Object instance.
+[[durable_objects.bindings]]
+name = "GAME_ROOM"
+class_name = "GameRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["GameRoom"]
