@@ -19,6 +19,12 @@ high water can sweep vehicles away.
 It runs in the browser and is **online by default** — one shared world, a few
 players at a time — using an authoritative server.
 
+The world spans two **regions** that share one tide clock, linked by travel:
+**Bamfield** (West & East Bamfield + Grappler Inlet) and **Anacla / Pachena
+Bay** (~5 km down the road). Travel between them by **bus** (at the market),
+**car** (up Bamfield Main), or **boat** (out the inlet) — stand on a pad and
+press **T**.
+
 ## Tech stack
 
 | Layer | Choice | Why |
@@ -33,9 +39,10 @@ building HP) so clients can't cheat. Shared types live in `shared/` so the wire
 format never drifts.
 
 ```
-shared/      protocol.ts (types, tide model)   map.ts (Bamfield map + buildings)
+shared/      protocol.ts (types, tide model)   map.ts (regions, maps, travel nodes)
 server/      index.ts (Worker)                 GameRoom.ts (Durable Object = the world)
 client/      index.html (character creator)    src/main.ts  src/game.ts  src/net.ts
+tools/       import-image-map.mjs (real-map importer)
 ```
 
 ## Run it locally
@@ -53,6 +60,7 @@ WebSocket (`/ws`) to `wrangler dev` running the Worker + Durable Object.
 - Move: **WASD** / arrow keys
 - Attack: **Space**
 - Repair a nearby building: **E**
+- Travel (on a bus/car/boat pad): **T**
 
 Open the page in two tabs (or two devices on your network) to see multiplayer.
 
@@ -74,20 +82,22 @@ your `*.workers.dev` URL. (Run `npx wrangler login` once first.)
 - A building at 0 HP becomes **rubble**; stand next to it and hold **E** to
   rebuild it.
 
-## Getting the *real* Bamfield into the game
+## Getting the *real* Bamfield & Anacla into the game
 
-Right now the map is a handcrafted, Bamfield-inspired layout in
-`shared/map.ts` (`generateBamfieldMap()`). To use the town you built, replace
-that function — its only contract is "return a `WorldMap` of tiles". Options,
-easiest first:
+Right now both regions use handcrafted, recognizable approximations in
+`shared/map.ts`. To use the real geography, **see [REGION_IMPORT.md](REGION_IMPORT.md)**.
+In short: trace a top-down image (your Minecraft screenshot, or satellite
+imagery you're allowed to trace) and convert it with the importer:
 
-1. **Trace your Minecraft build.** Take a top-down screenshot, load it into the
-   [Tiled](https://www.mapeditor.org/) map editor, and paint tiles over it.
-2. **Color → tile script.** Export a top-down image and map each pixel color to
-   a tile type (blue→water, green→hill, grey→road).
-3. **Real geographic data.** Bamfield is ~48.83°N, 125.13°W. Pull elevation
-   (DEM) from Natural Resources Canada and roads/buildings from OpenStreetMap,
-   then bucket elevation into tiles.
+```bash
+npm run import-map -- --image maps/bamfield.png --id bamfield \
+  --name "Bamfield" --out shared/regions/bamfield.json
+```
+
+For maximum authenticity, REGION_IMPORT.md also covers pulling real data from
+**OpenStreetMap** (roads/water/buildings) + **open elevation** (NRCan DEM).
+**Note:** Google Earth/Maps imagery is licensed and can't be shipped — use OSM
++ open DEM instead (details in that doc).
 
 Tile elevations in `shared/protocol.ts` (`TILE_ELEVATION`) drive what floods at
 each tide — tune them to match your terrain.

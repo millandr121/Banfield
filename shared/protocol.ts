@@ -52,9 +52,12 @@ export interface Appearance {
   shirt: string;
 }
 
+export type RegionId = string;
+
 export interface PlayerState {
   id: string;
   name: string;
+  region: RegionId;
   x: number; // tile-space float
   y: number;
   hp: number;
@@ -75,6 +78,7 @@ export type CreatureKind =
 export interface CreatureState {
   id: string;
   kind: CreatureKind;
+  region: RegionId;
   x: number;
   y: number;
   hp: number;
@@ -93,12 +97,36 @@ export interface BuildingState {
   maxHp: number;
 }
 
+// --- Travel between regions -------------------------------------------------
+// A travel node is a pad you stand on and activate to move to another region:
+// catch the bus at the market, drive from the road's end, or boat out the inlet.
+export interface TravelNode {
+  id: string;
+  kind: "bus" | "car" | "boat";
+  x: number; // top-left tile
+  y: number;
+  w: number;
+  h: number;
+  label: string; // e.g. "Catch the bus to Anacla"
+  toRegion: RegionId;
+  toSpawn: { x: number; y: number };
+}
+
+// Static, per-region info the client needs once on entry.
+export interface RegionInfo {
+  id: RegionId;
+  name: string;
+  map: WorldMap;
+  travelNodes: TravelNode[];
+}
+
 // --- Messages: client -> server --------------------------------------------
 export type ClientMessage =
   | { t: "join"; name: string; appearance: Appearance }
   | { t: "input"; dx: number; dy: number } // intended direction, each -1..1
   | { t: "attack" }
-  | { t: "repair" };
+  | { t: "repair" }
+  | { t: "travel" };
 
 // --- Messages: server -> client --------------------------------------------
 export interface Snapshot {
@@ -112,7 +140,8 @@ export interface Snapshot {
 }
 
 export type ServerMessage =
-  | { t: "init"; id: string; map: WorldMap; snapshot: Snapshot }
+  // Sent on join AND whenever the player changes region (the map swaps).
+  | { t: "init"; id: string; region: RegionInfo; snapshot: Snapshot }
   | { t: "snapshot"; snapshot: Snapshot }
   | { t: "log"; msg: string };
 

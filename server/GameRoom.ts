@@ -5,9 +5,11 @@ import {
   CreatureKind,
   CreatureState,
   PlayerState,
+  RegionId,
   ServerMessage,
   Snapshot,
   Tile,
+  TravelNode,
   WorldMap,
   TIDE_CYCLE_MS,
   WATERLINE_LOW,
@@ -17,12 +19,7 @@ import {
   isSubmerged,
   phaseForTide,
 } from "../shared/protocol";
-import {
-  MAP_HEIGHT,
-  SPAWN,
-  generateBamfieldMap,
-  initialBuildings,
-} from "../shared/map";
+import { DEFAULT_REGION, RegionDef, buildRegions } from "../shared/map";
 
 interface Env {
   GAME_ROOM: DurableObjectNamespace;
@@ -32,9 +29,18 @@ interface Env {
 interface Session {
   ws: WebSocket;
   playerId: string;
-  // last input direction, normalized to length <= 1
-  dx: number;
+  dx: number; // last input direction, normalized to length <= 1
   dy: number;
+}
+
+// A region's live, mutable state (its static def lives in shared/map.ts).
+interface Region {
+  id: RegionId;
+  name: string;
+  map: WorldMap;
+  buildings: BuildingState[];
+  spawn: { x: number; y: number };
+  travelNodes: TravelNode[];
 }
 
 const TICK_MS = 100; // server simulation step (10 Hz)
@@ -43,15 +49,14 @@ const PLAYER_MAX_HP = 100;
 const ATTACK_RANGE = 1.4; // tiles
 const ATTACK_DAMAGE = 18;
 const REPAIR_RATE = 25; // hp per second
-const CREATURE_CAP = 18;
+const CREATURE_CAP_PER_REGION = 16;
 
 export class GameRoom {
   private sessions = new Map<WebSocket, Session>();
 
-  private map: WorldMap;
+  private regions = new Map<RegionId, Region>();
   private players = new Map<string, PlayerState>();
   private creatures = new Map<string, CreatureState>();
-  private buildings: BuildingState[];
 
   private startedAt = Date.now();
   private loop: ReturnType<typeof setInterval> | null = null;
@@ -59,14 +64,23 @@ export class GameRoom {
   private nextSpawn = 0;
   private idCounter = 0;
 
-  // Active special event window.
   private event: "none" | "king" | "tsunami" = "none";
   private eventUntil = 0;
   private nextEventCheck = Date.now() + 60_000;
 
   constructor(_state: DurableObjectState, _env: Env) {
-    this.map = generateBamfieldMap();
-    this.buildings = initialBuildings();
+    for (const def of buildRegions()) this.regions.set(def.id, this.toRegion(def));
+  }
+
+  private toRegion(def: RegionDef): Region {
+    return {
+      id: def.id,
+      name: def.name,
+      map: def.map,
+      buildings: def.buildings,
+      spawn: def.spawn,
+      travelNodes: def.travelNodes,
+    };
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -75,20 +89,16 @@ export class GameRoom {
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response("expected websocket", { status: 426 });
     }
-
     const pair = new WebSocketPair();
-    const client = pair[0];
-    const server = pair[1];
-    server.accept();
-    this.onConnect(server);
-    return new Response(null, { status: 101, webSocket: client });
+    pair[1].accept();
+    this.onConnect(pair[1]);
+    return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
   // --- connection lifecycle -------------------------------------------------
   private onConnect(ws: WebSocket) {
     const playerId = `p${this.idCounter++}`;
     this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0 });
-
     ws.addEventListener("message", (ev) => {
       try {
         this.onMessage(ws, JSON.parse(ev.data as string) as ClientMessage);
@@ -99,7 +109,6 @@ export class GameRoom {
     const drop = () => this.onDisconnect(ws);
     ws.addEventListener("close", drop);
     ws.addEventListener("error", drop);
-
     this.ensureLoop();
   }
 
@@ -116,33 +125,29 @@ export class GameRoom {
   private onMessage(ws: WebSocket, msg: ClientMessage) {
     const s = this.sessions.get(ws);
     if (!s) return;
-
     switch (msg.t) {
       case "join": {
+        const region = this.regions.get(DEFAULT_REGION)!;
         const player: PlayerState = {
           id: s.playerId,
           name: (msg.name || "Settler").slice(0, 16),
-          x: SPAWN.x,
-          y: SPAWN.y,
+          region: region.id,
+          x: region.spawn.x,
+          y: region.spawn.y,
           hp: PLAYER_MAX_HP,
           maxHp: PLAYER_MAX_HP,
           appearance: sanitizeAppearance(msg.appearance),
           dead: false,
         };
         this.players.set(s.playerId, player);
-        this.send(ws, {
-          t: "init",
-          id: s.playerId,
-          map: this.map,
-          snapshot: this.snapshot(),
-        });
-        this.broadcastLog(`${player.name} washed ashore.`);
+        this.sendInit(ws, player);
+        this.broadcastLog(`${player.name} washed ashore in ${region.name}.`);
         break;
       }
       case "input": {
-        const len = Math.hypot(msg.dx, msg.dy) || 1;
-        s.dx = msg.dx / Math.max(1, len);
-        s.dy = msg.dy / Math.max(1, len);
+        const len = Math.hypot(msg.dx, msg.dy);
+        s.dx = len > 1 ? msg.dx / len : msg.dx;
+        s.dy = len > 1 ? msg.dy / len : msg.dy;
         break;
       }
       case "attack":
@@ -151,7 +156,25 @@ export class GameRoom {
       case "repair":
         this.doRepair(s.playerId);
         break;
+      case "travel":
+        this.doTravel(ws, s.playerId);
+        break;
     }
+  }
+
+  private sendInit(ws: WebSocket, player: PlayerState) {
+    const region = this.regions.get(player.region)!;
+    this.send(ws, {
+      t: "init",
+      id: player.id,
+      region: {
+        id: region.id,
+        name: region.name,
+        map: region.map,
+        travelNodes: region.travelNodes,
+      },
+      snapshot: this.snapshot(region.id),
+    });
   }
 
   // --- main loop ------------------------------------------------------------
@@ -169,22 +192,31 @@ export class GameRoom {
     const waterline = this.currentWaterline(now);
     this.updateEvents(now);
     this.movePlayers(dt, waterline);
-    this.updateCreatures(dt, now, waterline);
+    this.updateCreatures(dt, waterline);
     this.maybeSpawn(now, waterline);
 
-    this.broadcast({ t: "snapshot", snapshot: this.snapshot() });
+    // Each player only sees their own region; cache one snapshot per region.
+    const cache = new Map<RegionId, Snapshot>();
+    for (const s of this.sessions.values()) {
+      const p = this.players.get(s.playerId);
+      if (!p) continue;
+      let snap = cache.get(p.region);
+      if (!snap) {
+        snap = this.snapshot(p.region);
+        cache.set(p.region, snap);
+      }
+      this.send(s.ws, { t: "snapshot", snapshot: snap });
+    }
   }
 
   // --- tide -----------------------------------------------------------------
   private tideLevel(now: number): number {
-    // Smooth 0..1 cosine wave: 0 = low water, 1 = high water.
     const phase = ((now - this.startedAt) % TIDE_CYCLE_MS) / TIDE_CYCLE_MS;
     return 0.5 - 0.5 * Math.cos(phase * Math.PI * 2);
   }
 
   private currentWaterline(now: number): number {
-    const tide = this.tideLevel(now);
-    let wl = WATERLINE_LOW + (WATERLINE_HIGH - WATERLINE_LOW) * tide;
+    let wl = WATERLINE_LOW + (WATERLINE_HIGH - WATERLINE_LOW) * this.tideLevel(now);
     if (this.event === "king") wl += KING_TIDE_SURGE;
     if (this.event === "tsunami") wl += TSUNAMI_SURGE;
     return wl;
@@ -199,7 +231,6 @@ export class GameRoom {
     }
     if (now > this.nextEventCheck) {
       this.nextEventCheck = now + 60_000;
-      // Only surge near high tide, and rarely.
       if (this.tideLevel(now) > 0.6) {
         const roll = Math.random();
         if (roll < 0.04) {
@@ -220,12 +251,12 @@ export class GameRoom {
     for (const p of this.players.values()) {
       if (p.dead) continue;
       const s = this.sessionFor(p.id);
-      if (!s) continue;
+      const region = this.regions.get(p.region);
+      if (!s || !region) continue;
       const nx = p.x + s.dx * PLAYER_SPEED * dt;
       const ny = p.y + s.dy * PLAYER_SPEED * dt;
-      // Players can't walk into submerged tiles (no boats yet).
-      if (this.walkable(nx, p.y, waterline, false)) p.x = nx;
-      if (this.walkable(p.x, ny, waterline, false)) p.y = ny;
+      if (this.walkable(region.map, nx, p.y, waterline, false)) p.x = nx;
+      if (this.walkable(region.map, p.x, ny, waterline, false)) p.y = ny;
     }
   }
 
@@ -235,6 +266,7 @@ export class GameRoom {
     let best: CreatureState | null = null;
     let bestD = ATTACK_RANGE;
     for (const c of this.creatures.values()) {
+      if (c.region !== p.region) continue;
       const d = Math.hypot(c.x - p.x, c.y - p.y);
       if (d <= bestD) {
         bestD = d;
@@ -250,7 +282,9 @@ export class GameRoom {
   private doRepair(playerId: string) {
     const p = this.players.get(playerId);
     if (!p || p.dead) return;
-    const b = this.nearestBuilding(p.x, p.y, 1.6);
+    const region = this.regions.get(p.region);
+    if (!region) return;
+    const b = this.nearestBuilding(region, p.x, p.y, 1.6);
     if (!b) return;
     b.hp = Math.min(b.maxHp, b.hp + REPAIR_RATE * (TICK_MS / 1000) * 4);
     if (b.kind === "rubble" && b.hp > b.maxHp * 0.5) {
@@ -258,64 +292,84 @@ export class GameRoom {
     }
   }
 
+  private doTravel(ws: WebSocket, playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead) return;
+    const region = this.regions.get(p.region);
+    if (!region) return;
+    const node = region.travelNodes.find(
+      (n) => p.x >= n.x - 0.6 && p.x <= n.x + n.w + 0.6 && p.y >= n.y - 0.6 && p.y <= n.y + n.h + 0.6,
+    );
+    if (!node) return;
+    const dest = this.regions.get(node.toRegion);
+    if (!dest) return;
+    p.region = dest.id;
+    p.x = node.toSpawn.x;
+    p.y = node.toSpawn.y;
+    this.sendInit(ws, p);
+    this.broadcastLog(`${p.name} arrived in ${dest.name}.`);
+  }
+
   // --- creatures ------------------------------------------------------------
   private maybeSpawn(now: number, waterline: number) {
     if (now < this.nextSpawn) return;
     this.nextSpawn = now + 2500;
-    if (this.creatures.size >= CREATURE_CAP) return;
-
     const phase = phaseForTide(this.tideLevel(now));
-    const kind = pickKind(phase, this.event);
-    if (!kind) return;
 
-    const spot = this.findSpawnTile(kind, waterline);
-    if (!spot) return;
+    // Only populate regions that currently have players.
+    const active = new Set<RegionId>();
+    for (const p of this.players.values()) active.add(p.region);
 
-    this.creatures.set(`c${this.idCounter++}`, {
-      id: `c${this.idCounter}`,
-      kind,
-      x: spot.x,
-      y: spot.y,
-      hp: creatureHp(kind),
-    });
+    for (const regionId of active) {
+      const region = this.regions.get(regionId)!;
+      const count = [...this.creatures.values()].filter((c) => c.region === regionId).length;
+      if (count >= CREATURE_CAP_PER_REGION) continue;
+      const kind = pickKind(phase, this.event);
+      if (!kind) continue;
+      const spot = this.findSpawnTile(region, kind, waterline);
+      if (!spot) continue;
+      const id = `c${this.idCounter++}`;
+      this.creatures.set(id, { id, kind, region: regionId, x: spot.x, y: spot.y, hp: creatureHp(kind) });
+    }
   }
 
-  private updateCreatures(dt: number, _now: number, waterline: number) {
+  private updateCreatures(dt: number, waterline: number) {
     for (const c of this.creatures.values()) {
+      const region = this.regions.get(c.region);
+      if (!region) {
+        this.creatures.delete(c.id);
+        continue;
+      }
       if (isNeutral(c.kind)) {
-        // Whales drift slowly through deep water, harmless.
         c.x += Math.sin(c.y + c.x) * 0.2 * dt;
         c.y += 0.4 * dt;
-        if (c.y > MAP_HEIGHT) this.creatures.delete(c.id);
+        if (c.y > region.map.height) this.creatures.delete(c.id);
         continue;
       }
 
-      const target = this.creatureTarget(c);
+      const target = this.creatureTarget(region, c);
       if (!target) continue;
       const dirx = target.x - c.x;
       const diry = target.y - c.y;
       const dist = Math.hypot(dirx, diry) || 1;
       const spd = creatureSpeed(c.kind);
+      const swims = swimmer(c.kind);
       const nx = c.x + (dirx / dist) * spd * dt;
       const ny = c.y + (diry / dist) * spd * dt;
-      const swims = swimmer(c.kind);
-      if (this.walkable(nx, c.y, waterline, swims)) c.x = nx;
-      if (this.walkable(c.x, ny, waterline, swims)) c.y = ny;
-
-      // Attack whatever we're touching.
+      if (this.walkable(region.map, nx, c.y, waterline, swims)) c.x = nx;
+      if (this.walkable(region.map, c.x, ny, waterline, swims)) c.y = ny;
       if (dist < 1.2) this.creatureAttack(c, target);
     }
   }
 
   private creatureTarget(
+    region: Region,
     c: CreatureState,
   ): { x: number; y: number; building?: BuildingState; player?: PlayerState } | null {
-    // Prefer a nearby player, otherwise the nearest standing building.
-    let best: { x: number; y: number; player?: PlayerState; building?: BuildingState } | null =
-      null;
+    let best: { x: number; y: number; player?: PlayerState } | null = null;
     let bestD = Infinity;
     for (const p of this.players.values()) {
-      if (p.dead) continue;
+      if (p.dead || p.region !== region.id) continue;
       const d = Math.hypot(p.x - c.x, p.y - c.y);
       if (d < 6 && d < bestD) {
         bestD = d;
@@ -323,7 +377,7 @@ export class GameRoom {
       }
     }
     if (best) return best;
-    const b = this.buildings
+    const b = region.buildings
       .filter((b) => b.kind !== "rubble")
       .map((b) => ({ b, d: Math.hypot(b.x + b.w / 2 - c.x, b.y + b.h / 2 - c.y) }))
       .sort((a, z) => a.d - z.d)[0];
@@ -355,37 +409,46 @@ export class GameRoom {
     p.hp = 0;
     this.broadcastLog(`${p.name} was dragged under.`);
     setTimeout(() => {
+      const region = this.regions.get(p.region);
       p.dead = false;
       p.hp = p.maxHp;
-      p.x = SPAWN.x;
-      p.y = SPAWN.y;
+      if (region) {
+        p.x = region.spawn.x;
+        p.y = region.spawn.y;
+      }
     }, 4000);
   }
 
   // --- helpers --------------------------------------------------------------
-  private walkable(x: number, y: number, waterline: number, swimmer: boolean): boolean {
+  private walkable(map: WorldMap, x: number, y: number, waterline: number, swimmer: boolean): boolean {
     const tx = Math.floor(x);
     const ty = Math.floor(y);
-    if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return false;
-    const tile = this.map.tiles[ty * this.map.width + tx] as Tile;
+    if (tx < 0 || ty < 0 || tx >= map.width || ty >= map.height) return false;
+    const tile = map.tiles[ty * map.width + tx] as Tile;
     const submerged = isSubmerged(tile, waterline) || tile === Tile.Water;
     return swimmer ? submerged : !submerged;
   }
 
-  private findSpawnTile(kind: CreatureKind, waterline: number): { x: number; y: number } | null {
+  private findSpawnTile(
+    region: Region,
+    kind: CreatureKind,
+    waterline: number,
+  ): { x: number; y: number } | null {
     const swims = swimmer(kind);
     for (let i = 0; i < 30; i++) {
-      const x = Math.floor(Math.random() * this.map.width);
-      const y = Math.floor(Math.random() * this.map.height);
-      if (this.walkable(x + 0.5, y + 0.5, waterline, swims)) return { x: x + 0.5, y: y + 0.5 };
+      const x = Math.floor(Math.random() * region.map.width);
+      const y = Math.floor(Math.random() * region.map.height);
+      if (this.walkable(region.map, x + 0.5, y + 0.5, waterline, swims)) {
+        return { x: x + 0.5, y: y + 0.5 };
+      }
     }
     return null;
   }
 
-  private nearestBuilding(x: number, y: number, range: number): BuildingState | null {
+  private nearestBuilding(region: Region, x: number, y: number, range: number): BuildingState | null {
     let best: BuildingState | null = null;
     let bestD = range;
-    for (const b of this.buildings) {
+    for (const b of region.buildings) {
       const d = Math.hypot(b.x + b.w / 2 - x, b.y + b.h / 2 - y);
       if (d <= bestD) {
         bestD = d;
@@ -400,17 +463,18 @@ export class GameRoom {
     return undefined;
   }
 
-  private snapshot(): Snapshot {
+  private snapshot(regionId: RegionId): Snapshot {
     const now = Date.now();
     const tide = this.tideLevel(now);
+    const region = this.regions.get(regionId)!;
     return {
       tide,
       waterline: this.currentWaterline(now),
       phase: phaseForTide(tide),
       event: this.event,
-      players: [...this.players.values()],
-      creatures: [...this.creatures.values()],
-      buildings: this.buildings,
+      players: [...this.players.values()].filter((p) => p.region === regionId),
+      creatures: [...this.creatures.values()].filter((c) => c.region === regionId),
+      buildings: region.buildings,
     };
   }
 
@@ -443,23 +507,16 @@ function pickKind(
   phase: ReturnType<typeof phaseForTide>,
   event: "none" | "king" | "tsunami",
 ): CreatureKind | null {
-  if (event === "tsunami") {
-    return Math.random() < 0.5 ? "orca" : "sixgill";
-  }
-  if (phase === "low") {
-    const r = Math.random();
-    if (r < 0.8) return "crab";
-    return "octopus";
-  }
+  if (event === "tsunami") return Math.random() < 0.5 ? "orca" : "sixgill";
+  if (phase === "low") return Math.random() < 0.8 ? "crab" : "octopus";
   if (phase === "high") {
     const r = Math.random();
     if (r < 0.4) return "dogfish";
     if (r < 0.6) return "sixgill";
     if (r < 0.72) return "orca";
     if (r < 0.85) return "octopus";
-    return Math.random() < 0.5 ? "humpback" : "greywhale"; // neutral
+    return Math.random() < 0.5 ? "humpback" : "greywhale";
   }
-  // mid tide: a light mix
   return Math.random() < 0.5 ? "crab" : "octopus";
 }
 
@@ -476,7 +533,7 @@ function creatureHp(kind: CreatureKind): number {
     case "orca":
       return 160;
     default:
-      return 200; // whales, but they're neutral so it rarely matters
+      return 200;
   }
 }
 
@@ -519,7 +576,6 @@ function isNeutral(kind: CreatureKind): boolean {
 }
 
 function swimmer(kind: CreatureKind): boolean {
-  // Crabs scuttle on exposed land/sand; everything else here is aquatic.
   return kind !== "crab";
 }
 

@@ -7,6 +7,7 @@ import {
   Snapshot,
   TILE_SIZE,
   Tile,
+  TravelNode,
   WorldMap,
   TILE_ELEVATION,
 } from "../../shared/protocol";
@@ -40,6 +41,8 @@ export class Game {
 
   private myId = "";
   private map: WorldMap | null = null;
+  private regionName = "";
+  private travelNodes: TravelNode[] = [];
   private snap: Snapshot | null = null;
 
   private keys = new Set<string>();
@@ -73,6 +76,7 @@ export class Game {
     if (down) {
       if (k === " ") this.net.send({ t: "attack" });
       if (k === "e") this.net.send({ t: "repair" });
+      if (k === "t") this.net.send({ t: "travel" });
     }
     if (
       ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)
@@ -99,7 +103,9 @@ export class Game {
   private onServer(m: ServerMessage) {
     if (m.t === "init") {
       this.myId = m.id;
-      this.map = m.map;
+      this.map = m.region.map;
+      this.regionName = m.region.name;
+      this.travelNodes = m.region.travelNodes;
       this.snap = m.snapshot;
     } else if (m.t === "snapshot") {
       this.snap = m.snapshot;
@@ -131,10 +137,12 @@ export class Game {
     }
 
     this.drawTiles();
+    this.drawTravelNodes();
     this.drawBuildings(this.snap.buildings);
     this.drawCreatures(this.snap.creatures);
     for (const p of this.snap.players) this.drawPlayer(p, p.id === this.myId);
     this.drawHud(this.snap, me);
+    this.drawTravelPrompt(me);
   }
 
   private toScreen(tx: number, ty: number) {
@@ -163,6 +171,56 @@ export class Game {
         }
       }
     }
+  }
+
+  private drawTravelNodes() {
+    const ctx = this.ctx;
+    for (const n of this.travelNodes) {
+      const { sx, sy } = this.toScreen(n.x, n.y);
+      const w = n.w * TILE_SIZE;
+      const h = n.h * TILE_SIZE;
+      ctx.fillStyle = TRAVEL_COLOR[n.kind];
+      ctx.globalAlpha = 0.55;
+      ctx.fillRect(sx, sy, w, h);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = "#f1f1f1";
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(sx, sy, w, h);
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#fff";
+      ctx.font = "12px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText(TRAVEL_ICON[n.kind], sx + w / 2, sy + h / 2 + 4);
+    }
+  }
+
+  private nodeUnder(me?: PlayerState): TravelNode | undefined {
+    if (!me) return undefined;
+    return this.travelNodes.find(
+      (n) =>
+        me.x >= n.x - 0.6 &&
+        me.x <= n.x + n.w + 0.6 &&
+        me.y >= n.y - 0.6 &&
+        me.y <= n.y + n.h + 0.6,
+    );
+  }
+
+  private drawTravelPrompt(me?: PlayerState) {
+    const node = this.nodeUnder(me);
+    if (!node) return;
+    const ctx = this.ctx;
+    const text = `Press T — ${node.label}`;
+    ctx.font = "15px system-ui";
+    ctx.textAlign = "center";
+    const w = ctx.measureText(text).width + 28;
+    const x = this.canvas.width / 2;
+    const y = this.canvas.height - 70;
+    ctx.fillStyle = "rgba(7,19,28,0.85)";
+    ctx.fillRect(x - w / 2, y - 22, w, 32);
+    ctx.strokeStyle = "#1e88e5";
+    ctx.strokeRect(x - w / 2, y - 22, w, 32);
+    ctx.fillStyle = "#eaf2f8";
+    ctx.fillText(text, x, y);
   }
 
   private drawBuildings(buildings: BuildingState[]) {
@@ -244,9 +302,10 @@ export class Game {
     const event = snap.event === "tsunami" ? " ⚠ TSUNAMI" : snap.event === "king" ? " ⚠ King tide" : "";
     const hp = me ? Math.max(0, Math.round(me.hp)) : 0;
     hud.innerHTML =
+      `<b>${this.regionName}</b><br />` +
       `<b>Tide:</b> ${snap.phase} (${tidePct}%)${event}<br />` +
       `<b>HP:</b> ${hp}/${me?.maxHp ?? 100}<br />` +
-      `<b>Online:</b> ${snap.players.length}`;
+      `<b>Here:</b> ${snap.players.length}`;
   }
 
   private renderLog() {
@@ -255,6 +314,18 @@ export class Game {
       .join("<br />");
   }
 }
+
+const TRAVEL_COLOR: Record<TravelNode["kind"], string> = {
+  bus: "#f4b400",
+  car: "#4285f4",
+  boat: "#00acc1",
+};
+
+const TRAVEL_ICON: Record<TravelNode["kind"], string> = {
+  bus: "BUS",
+  car: "CAR",
+  boat: "BOAT",
+};
 
 function buildingColor(kind: BuildingState["kind"]): string {
   switch (kind) {
