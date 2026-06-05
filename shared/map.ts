@@ -1,4 +1,12 @@
-import { BuildingState, Tile, TravelNode, WorldMap } from "./protocol";
+import { BuildingState, Tile, TravelNode, VehicleKind, WorldMap } from "./protocol";
+
+// Where a driveable vehicle starts life in a region.
+export interface VehicleSpawn {
+  id: string;
+  kind: VehicleKind;
+  x: number;
+  y: number;
+}
 
 // Build a sloped heightmap from the tile grid so the tide sweeps gradually.
 // Land rises ~SLOPE per tile away from the shore; the seabed drops the same
@@ -75,6 +83,7 @@ export interface RegionDef {
   buildings: BuildingState[];
   spawn: { x: number; y: number }; // default arrival / respawn point
   travelNodes: TravelNode[];
+  vehicles: VehicleSpawn[];
 }
 
 const idx = (x: number, y: number) => y * MAP_WIDTH + x;
@@ -273,6 +282,7 @@ export interface RegionData {
   buildings: BuildingState[];
   spawn: { x: number; y: number };
   travelNodes: TravelNode[];
+  vehicles?: VehicleSpawn[]; // optional; defaults to none
 }
 
 export function regionFromData(data: RegionData): RegionDef {
@@ -289,6 +299,7 @@ export function regionFromData(data: RegionData): RegionDef {
     buildings: data.buildings,
     spawn: data.spawn,
     travelNodes: data.travelNodes,
+    vehicles: data.vehicles ?? [],
   };
 }
 
@@ -312,27 +323,21 @@ export function buildRegions(): RegionDef[] {
         toSpawn: { x: 37, y: 22 },
       },
       {
-        id: "bf-car",
-        kind: "car",
+        id: "bf-gate",
+        kind: "gate",
         x: 38,
         y: 29,
         w: 1,
         h: 1,
-        label: "Drive up Bamfield Main to Anacla",
+        label: "Hike the road's end up Bamfield Main to Anacla",
         toRegion: "anacla",
         toSpawn: { x: 40, y: 1 },
       },
-      {
-        id: "bf-boat",
-        kind: "boat",
-        x: 22,
-        y: 26,
-        w: 2,
-        h: 1,
-        label: "Boat out the inlet to Pachena Bay",
-        toRegion: "anacla",
-        toSpawn: { x: 30, y: 30 },
-      },
+    ],
+    vehicles: [
+      { id: "bf-car-1", kind: "car", x: 38, y: 6 }, // parked on Bamfield Main
+      { id: "bf-boat-1", kind: "boat", x: 27, y: 18 }, // tied up in the inlet
+      { id: "bf-boat-2", kind: "boat", x: 32, y: 26 }, // at the government dock
     ],
   };
 
@@ -355,27 +360,20 @@ export function buildRegions(): RegionDef[] {
         toSpawn: { x: 20, y: 20 },
       },
       {
-        id: "an-car",
-        kind: "car",
+        id: "an-gate",
+        kind: "gate",
         x: 39,
         y: 0,
         w: 2,
         h: 1,
-        label: "Drive back to Bamfield",
+        label: "Hike the road back to Bamfield",
         toRegion: "bamfield",
-        toSpawn: { x: 40, y: 3 },
+        toSpawn: { x: 38, y: 28 },
       },
-      {
-        id: "an-boat",
-        kind: "boat",
-        x: 28,
-        y: 32,
-        w: 3,
-        h: 2,
-        label: "Boat back to Bamfield Inlet",
-        toRegion: "bamfield",
-        toSpawn: { x: 30, y: 35 },
-      },
+    ],
+    vehicles: [
+      { id: "an-car-1", kind: "car", x: 40, y: 18 }, // on the village road
+      { id: "an-boat-1", kind: "boat", x: 26, y: 32 }, // on Pachena Bay
     ],
   };
 

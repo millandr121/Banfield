@@ -66,8 +66,12 @@ export interface PlayerState {
   dir: number; // facing angle in radians (for arms / directional attacks)
   hp: number;
   maxHp: number;
+  stamina: number; // 0..maxStamina, spent on attacks & dodges
+  maxStamina: number;
   appearance: Appearance;
   swimming: boolean;
+  dodging: boolean; // brief lunge with i-frames (client renders a streak)
+  vehicleId: string | null; // id of the vehicle being driven, else null
   dead: boolean;
 }
 
@@ -89,6 +93,25 @@ export interface CreatureState {
   hp: number;
 }
 
+// --- Vehicles ---------------------------------------------------------------
+// Driveable boats & cars. They are persistent world entities (not teleports):
+// you walk up and BOARD one, then your movement keys steer it. Cars are quick
+// on roads but can't enter deep water; boats only move on water. Leave one and
+// it stays put (until the tide carries it off).
+export type VehicleKind = "car" | "boat";
+
+export interface VehicleState {
+  id: string;
+  kind: VehicleKind;
+  region: RegionId;
+  x: number;
+  y: number;
+  dir: number; // heading in radians
+  hp: number;
+  maxHp: number;
+  driverId: string | null; // player currently driving, else null
+}
+
 export type BuildingKind = "house" | "shop" | "boathouse" | "dock" | "rubble";
 
 export interface BuildingState {
@@ -103,11 +126,12 @@ export interface BuildingState {
 }
 
 // --- Travel between regions -------------------------------------------------
-// A travel node is a pad you stand on and activate to move to another region:
-// catch the bus at the market, drive from the road's end, or boat out the inlet.
+// A travel node is a pad you stand on and activate to move *yourself* (on foot)
+// to another region — vehicles stay behind. Catch the scheduled bus at the
+// market, or walk through the gate at the road's end up Bamfield Main.
 export interface TravelNode {
   id: string;
-  kind: "bus" | "car" | "boat";
+  kind: "bus" | "gate";
   x: number; // top-left tile
   y: number;
   w: number;
@@ -129,7 +153,9 @@ export interface RegionInfo {
 export type ClientMessage =
   | { t: "join"; name: string; appearance: Appearance }
   | { t: "input"; dx: number; dy: number } // intended direction, each -1..1
-  | { t: "attack" }
+  | { t: "attack"; charge?: number } // charge 0..1 from how long Space was held
+  | { t: "dodge" } // quick lunge + i-frames in the current heading
+  | { t: "board" } // get in / out of the nearest vehicle
   | { t: "repair" }
   | { t: "travel" };
 
@@ -142,6 +168,7 @@ export interface Snapshot {
   players: PlayerState[];
   creatures: CreatureState[];
   buildings: BuildingState[];
+  vehicles: VehicleState[];
 }
 
 export type ServerMessage =

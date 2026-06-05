@@ -10,6 +10,7 @@ import {
   Snapshot,
   Tile,
   TravelNode,
+  VehicleState,
   WorldMap,
   TIDE_CYCLE_MS,
   WATERLINE_LOW,
@@ -32,6 +33,8 @@ interface Session {
   dx: number; // last input direction, normalized to length <= 1
   dy: number;
   lastAttack: number; // timestamp of last swing (for cooldown)
+  lastDodge: number; // timestamp of last dodge (for cooldown)
+  iframeUntil: number; // dodge i-frames: no damage taken until this time
 }
 
 // A region's live, mutable state (its static def lives in shared/map.ts).
@@ -48,18 +51,36 @@ const TICK_MS = 100; // server simulation step (10 Hz)
 const PLAYER_SPEED = 4.5; // tiles per second on land
 const SWIM_SPEED = 2.4; // tiles per second in water
 const PLAYER_MAX_HP = 100;
-const ATTACK_RANGE = 1.5; // tiles
+
+// Combat is stamina-gated so it rewards timing over button-mashing.
+const ATTACK_RANGE = 1.5; // tiles (light swing); charged swings reach further
 const ATTACK_ARC = Math.PI * 0.6; // must be roughly facing the target
-const ATTACK_DAMAGE = 22;
-const ATTACK_COOLDOWN_MS = 450; // skill: you can't just spam swings
-const ATTACK_KNOCKBACK = 6; // impulse applied to a struck creature
+const ATTACK_DAMAGE = 18; // base (light) damage; scales up with charge
+const ATTACK_COOLDOWN_MS = 380; // skill: you can't just spam swings
+const ATTACK_KNOCKBACK = 5; // impulse applied to a struck creature
+const ATTACK_STAMINA = 18; // stamina a swing costs
+const CHARGE_BONUS = 1.6; // a full charge adds this fraction to dmg/range/kb
 const HIT_KNOCKBACK = 5; // impulse applied to a player who gets hit
 const KB_FRICTION = 6; // how fast knockback decays per second
+const MAX_STAMINA = 100;
+const STAMINA_REGEN = 24; // per second
+const DODGE_STAMINA = 34; // stamina a dodge costs
+const DODGE_COOLDOWN_MS = 650;
+const DODGE_IMPULSE = 14; // lunge speed (tiles/sec) at the start of a dodge
+const DODGE_IFRAMES_MS = 360; // invulnerability window during a dodge
 const REPAIR_RATE = 25; // hp per second
 const CREATURE_CAP_PER_REGION = 7;
 const SPAWN_INTERVAL_MS = 7000; // how often a region may gain one creature
 const SINK_DEPTH = 7; // how far under the waterline counts as "deep"
 const SINK_DPS = 12; // hp/sec lost while standing still in deep water
+
+// Vehicles -------------------------------------------------------------------
+const CAR_SPEED = 7.5; // tiles/sec on a road
+const CAR_OFFROAD_SPEED = 3.0; // sluggish on grass/sand
+const BOAT_SPEED = 5.5; // tiles/sec on water
+const VEHICLE_BOARD_RANGE = 1.6; // how close you must be to board
+const VEHICLE_MAX_HP = 200;
+const TIDE_SWEEP = 1.4; // how fast a driverless boat/car drifts when afloat
 
 export class GameRoom {
   private sessions = new Map<WebSocket, Session>();
@@ -67,6 +88,7 @@ export class GameRoom {
   private regions = new Map<RegionId, Region>();
   private players = new Map<string, PlayerState>();
   private creatures = new Map<string, CreatureState>();
+  private vehicles = new Map<string, VehicleState>();
   // Transient knockback impulses by entity id (players + creatures).
   private kb = new Map<string, { x: number; y: number }>();
 
@@ -81,7 +103,22 @@ export class GameRoom {
   private nextEventCheck = Date.now() + 60_000;
 
   constructor(_state: DurableObjectState, _env: Env) {
-    for (const def of buildRegions()) this.regions.set(def.id, this.toRegion(def));
+    for (const def of buildRegions()) {
+      this.regions.set(def.id, this.toRegion(def));
+      for (const v of def.vehicles) {
+        this.vehicles.set(v.id, {
+          id: v.id,
+          kind: v.kind,
+          region: def.id,
+          x: v.x + 0.5,
+          y: v.y + 0.5,
+          dir: 0,
+          hp: VEHICLE_MAX_HP,
+          maxHp: VEHICLE_MAX_HP,
+          driverId: null,
+        });
+      }
+    }
   }
 
   private toRegion(def: RegionDef): Region {
@@ -110,7 +147,7 @@ export class GameRoom {
   // --- connection lifecycle -------------------------------------------------
   private onConnect(ws: WebSocket) {
     const playerId = `p${this.idCounter++}`;
-    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0 });
+    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0, lastDodge: 0, iframeUntil: 0 });
     ws.addEventListener("message", (ev) => {
       try {
         this.onMessage(ws, JSON.parse(ev.data as string) as ClientMessage);
@@ -127,6 +164,11 @@ export class GameRoom {
   private onDisconnect(ws: WebSocket) {
     const s = this.sessions.get(ws);
     if (s) {
+      const p = this.players.get(s.playerId);
+      if (p?.vehicleId) {
+        const v = this.vehicles.get(p.vehicleId);
+        if (v) v.driverId = null;
+      }
       this.players.delete(s.playerId);
       this.kb.delete(s.playerId);
     }
@@ -153,8 +195,12 @@ export class GameRoom {
           dir: 0,
           hp: PLAYER_MAX_HP,
           maxHp: PLAYER_MAX_HP,
+          stamina: MAX_STAMINA,
+          maxStamina: MAX_STAMINA,
           appearance: sanitizeAppearance(msg.appearance),
           swimming: false,
+          dodging: false,
+          vehicleId: null,
           dead: false,
         };
         this.players.set(s.playerId, player);
@@ -171,7 +217,13 @@ export class GameRoom {
         break;
       }
       case "attack":
-        this.doAttack(s.playerId);
+        this.doAttack(s.playerId, typeof msg.charge === "number" ? msg.charge : 0);
+        break;
+      case "dodge":
+        this.doDodge(s.playerId);
+        break;
+      case "board":
+        this.doBoard(s.playerId);
         break;
       case "repair":
         this.doRepair(s.playerId);
@@ -211,8 +263,9 @@ export class GameRoom {
 
     const waterline = this.currentWaterline(now);
     this.updateEvents(now);
+    this.moveVehicles(dt, waterline, now);
     this.movePlayers(dt, waterline);
-    this.updateCreatures(dt, waterline);
+    this.updateCreatures(dt, waterline, now);
     this.maybeSpawn(now, waterline);
 
     // Each player only sees their own region; cache one snapshot per region.
@@ -268,11 +321,22 @@ export class GameRoom {
 
   // --- players --------------------------------------------------------------
   private movePlayers(dt: number, waterline: number) {
+    const now = Date.now();
     for (const p of this.players.values()) {
       if (p.dead) continue;
       const s = this.sessionFor(p.id);
       const region = this.regions.get(p.region);
       if (!s || !region) continue;
+
+      // Stamina trickles back when you're not spending it.
+      p.stamina = Math.min(p.maxStamina, p.stamina + STAMINA_REGEN * dt);
+      p.dodging = now < s.iframeUntil;
+
+      // While driving, the vehicle carries you — moveVehicles set our position.
+      if (p.vehicleId) {
+        p.swimming = false;
+        continue;
+      }
 
       // You can now swim, but the water is slower than dry land.
       p.swimming = this.depthAt(region.map, p.x, p.y, waterline) > 0;
@@ -302,18 +366,107 @@ export class GameRoom {
     this.decayKnockback(dt);
   }
 
-  private doAttack(playerId: string) {
+  // --- vehicles -------------------------------------------------------------
+  private moveVehicles(dt: number, waterline: number, now: number) {
+    for (const v of this.vehicles.values()) {
+      const region = this.regions.get(v.region);
+      if (!region) continue;
+      const driver = v.driverId ? this.players.get(v.driverId) : null;
+
+      if (driver && !driver.dead) {
+        const s = this.sessionFor(driver.id);
+        if (s && (s.dx !== 0 || s.dy !== 0)) {
+          const onRoad = this.tileAt(region.map, v.x, v.y) === Tile.Road;
+          const base =
+            v.kind === "car" ? (onRoad ? CAR_SPEED : CAR_OFFROAD_SPEED) : BOAT_SPEED;
+          const nx = v.x + s.dx * base * dt;
+          const ny = v.y + s.dy * base * dt;
+          if (this.vehicleCanGo(v, region.map, nx, v.y, waterline)) v.x = nx;
+          if (this.vehicleCanGo(v, region.map, v.x, ny, waterline)) v.y = ny;
+          v.dir = Math.atan2(s.dy, s.dx);
+        }
+        // The driver rides along.
+        driver.x = v.x;
+        driver.y = v.y;
+        driver.dir = v.dir;
+        continue;
+      }
+
+      // Driverless: a boat (or a car the tide has reached) drifts on the swell.
+      if (this.depthAt(region.map, v.x, v.y, waterline) > 1) {
+        const nx = v.x + Math.sin(now / 1700 + v.y) * TIDE_SWEEP * dt;
+        const ny = v.y + TIDE_SWEEP * 0.5 * dt; // carried gently inland/along shore
+        if (this.vehicleCanGo(v, region.map, nx, v.y, waterline)) v.x = nx;
+        if (this.vehicleCanGo(v, region.map, v.x, ny, waterline)) v.y = ny;
+      }
+    }
+  }
+
+  // Cars ride land (and roads); boats ride water. Neither leaves the map.
+  private vehicleCanGo(v: VehicleState, map: WorldMap, x: number, y: number, waterline: number): boolean {
+    if (!this.inBounds(map, x, y)) return false;
+    const submerged = this.depthAt(map, x, y, waterline) > 0;
+    return v.kind === "boat" ? submerged : !submerged;
+  }
+
+  private doBoard(playerId: string) {
     const p = this.players.get(playerId);
     if (!p || p.dead) return;
+
+    // Already driving? Step out onto the nearest safe tile.
+    if (p.vehicleId) {
+      const v = this.vehicles.get(p.vehicleId);
+      if (v) v.driverId = null;
+      p.vehicleId = null;
+      const region = this.regions.get(p.region);
+      if (region) {
+        // Boats drop you on the nearest land so you don't instantly drown.
+        const spot = this.landSpawn(region, Math.round(p.x), Math.round(p.y));
+        p.x = spot.x;
+        p.y = spot.y;
+      }
+      return;
+    }
+
+    // Otherwise board the closest free vehicle in this region within reach.
+    let best: VehicleState | null = null;
+    let bestD = VEHICLE_BOARD_RANGE;
+    for (const v of this.vehicles.values()) {
+      if (v.region !== p.region || v.driverId) continue;
+      const d = Math.hypot(v.x - p.x, v.y - p.y);
+      if (d <= bestD) {
+        bestD = d;
+        best = v;
+      }
+    }
+    if (best) {
+      best.driverId = p.id;
+      p.vehicleId = best.id;
+      this.kb.delete(p.id);
+    }
+  }
+
+  private doAttack(playerId: string, charge: number) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead || p.vehicleId) return; // no swinging from the driver's seat
     const s = this.sessionFor(p.id);
     if (!s) return;
     const now = Date.now();
     if (now - s.lastAttack < ATTACK_COOLDOWN_MS) return; // skill: respect cooldown
+    if (p.stamina < ATTACK_STAMINA) return; // too winded to swing
     s.lastAttack = now;
+    p.stamina -= ATTACK_STAMINA;
+
+    // A held (charged) swing hits harder, reaches further, and knocks back more.
+    const ch = Math.max(0, Math.min(1, charge));
+    const scale = 1 + CHARGE_BONUS * ch;
+    const range = ATTACK_RANGE * (1 + 0.4 * ch);
+    const damage = ATTACK_DAMAGE * scale;
+    const knockback = ATTACK_KNOCKBACK * scale;
 
     // Hit the nearest creature that's in range AND roughly in front of you.
     let best: CreatureState | null = null;
-    let bestD = ATTACK_RANGE;
+    let bestD = range;
     for (const c of this.creatures.values()) {
       if (c.region !== p.region) continue;
       const dx = c.x - p.x;
@@ -327,13 +480,35 @@ export class GameRoom {
       best = c;
     }
     if (best) {
-      best.hp -= ATTACK_DAMAGE;
-      this.applyKnockback(best.id, best.x - p.x, best.y - p.y, ATTACK_KNOCKBACK);
+      best.hp -= damage;
+      this.applyKnockback(best.id, best.x - p.x, best.y - p.y, knockback);
       if (best.hp <= 0) {
         this.creatures.delete(best.id);
         this.kb.delete(best.id);
       }
     }
+  }
+
+  private doDodge(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead || p.vehicleId) return;
+    const s = this.sessionFor(p.id);
+    if (!s) return;
+    const now = Date.now();
+    if (now - s.lastDodge < DODGE_COOLDOWN_MS) return;
+    if (p.stamina < DODGE_STAMINA) return;
+    s.lastDodge = now;
+    s.iframeUntil = now + DODGE_IFRAMES_MS;
+    p.stamina -= DODGE_STAMINA;
+    p.dodging = true;
+    // Lunge: prefer the current input direction, fall back to facing.
+    let dx = s.dx;
+    let dy = s.dy;
+    if (dx === 0 && dy === 0) {
+      dx = Math.cos(p.dir);
+      dy = Math.sin(p.dir);
+    }
+    this.applyKnockback(p.id, dx, dy, DODGE_IMPULSE);
   }
 
   private doRepair(playerId: string) {
@@ -351,7 +526,7 @@ export class GameRoom {
 
   private doTravel(ws: WebSocket, playerId: string) {
     const p = this.players.get(playerId);
-    if (!p || p.dead) return;
+    if (!p || p.dead || p.vehicleId) return; // vehicles stay behind — travel on foot
     const region = this.regions.get(p.region);
     if (!region) return;
     const node = region.travelNodes.find(
@@ -391,7 +566,10 @@ export class GameRoom {
     }
   }
 
-  private updateCreatures(dt: number, waterline: number) {
+  private updateCreatures(dt: number, waterline: number, now: number) {
+    // When the tide comes in, crabs scuttle back to the sea before they drown
+    // on land — they head for the water and vanish into it.
+    const crabsRetreat = phaseForTide(this.tideLevel(now)) === "high";
     for (const c of this.creatures.values()) {
       const region = this.regions.get(c.region);
       if (!region) {
@@ -402,6 +580,28 @@ export class GameRoom {
         c.x += Math.sin(c.y + c.x) * 0.2 * dt;
         c.y += 0.4 * dt;
         if (c.y > region.map.height) this.creatures.delete(c.id);
+        continue;
+      }
+
+      // Crabs flee to the water when the tide comes in (gradient-descend the
+      // heightmap toward the sea, then vanish once they reach it).
+      if (c.kind === "crab" && crabsRetreat) {
+        if (
+          this.depthAt(region.map, c.x, c.y, waterline) > 0 ||
+          this.tileAt(region.map, c.x, c.y) === Tile.Water
+        ) {
+          this.creatures.delete(c.id); // made it back to the sea
+          this.kb.delete(c.id);
+          continue;
+        }
+        const grad = this.downhill(region.map, c.x, c.y);
+        const spd = creatureSpeed(c.kind) * 1.4; // a little urgency
+        const imp = this.kb.get(c.id);
+        const vx = grad.x * spd + (imp?.x ?? 0);
+        const vy = grad.y * spd + (imp?.y ?? 0);
+        // Heading shoreward, a crab may cross the wet flats it normally avoids.
+        if (this.inBounds(region.map, c.x + vx * dt, c.y)) c.x += vx * dt;
+        if (this.inBounds(region.map, c.x, c.y + vy * dt)) c.y += vy * dt;
         continue;
       }
 
@@ -454,6 +654,9 @@ export class GameRoom {
   ) {
     const dmg = creatureDamage(c.kind) * (TICK_MS / 1000);
     if (target.player) {
+      // A well-timed dodge phases you through the hit entirely.
+      const ts = this.sessionFor(target.player.id);
+      if (ts && Date.now() < ts.iframeUntil) return;
       target.player.hp -= dmg;
       // Shove the player away from the attacker (bounce-back).
       this.applyKnockback(target.player.id, target.player.x - c.x, target.player.y - c.y, HIT_KNOCKBACK);
@@ -472,11 +675,17 @@ export class GameRoom {
   private killPlayer(p: PlayerState) {
     p.dead = true;
     p.hp = 0;
+    if (p.vehicleId) {
+      const v = this.vehicles.get(p.vehicleId);
+      if (v) v.driverId = null;
+      p.vehicleId = null;
+    }
     this.broadcastLog(`${p.name} was dragged under.`);
     setTimeout(() => {
       const region = this.regions.get(p.region);
       p.dead = false;
       p.hp = p.maxHp;
+      p.stamina = p.maxStamina;
       if (region) {
         const sp = this.landSpawn(region, region.spawn.x, region.spawn.y);
         p.x = sp.x;
@@ -490,6 +699,38 @@ export class GameRoom {
     const tx = Math.floor(x);
     const ty = Math.floor(y);
     return tx >= 0 && ty >= 0 && tx < map.width && ty < map.height;
+  }
+
+  private tileAt(map: WorldMap, x: number, y: number): Tile | null {
+    if (!this.inBounds(map, x, y)) return null;
+    return map.tiles[Math.floor(y) * map.width + Math.floor(x)] as Tile;
+  }
+
+  // Unit vector toward the lowest-elevation 8-neighbour — i.e. downhill toward
+  // the sea. Used so crabs can find the water without a full pathfind.
+  private downhill(map: WorldMap, x: number, y: number): { x: number; y: number } {
+    const tx = Math.floor(x);
+    const ty = Math.floor(y);
+    const here = map.elevation[ty * map.width + tx];
+    let bx = 0;
+    let by = 0;
+    let bestDrop = 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const nx = tx + dx;
+        const ny = ty + dy;
+        if (nx < 0 || ny < 0 || nx >= map.width || ny >= map.height) continue;
+        const drop = here - map.elevation[ny * map.width + nx];
+        if (drop > bestDrop) {
+          bestDrop = drop;
+          bx = dx;
+          by = dy;
+        }
+      }
+    }
+    const len = Math.hypot(bx, by) || 1;
+    return { x: bx / len, y: by / len };
   }
 
   // How far the given point is under water (>0 means submerged).
@@ -590,6 +831,7 @@ export class GameRoom {
       players: [...this.players.values()].filter((p) => p.region === regionId),
       creatures: [...this.creatures.values()].filter((c) => c.region === regionId),
       buildings: region.buildings,
+      vehicles: [...this.vehicles.values()].filter((v) => v.region === regionId),
     };
   }
 

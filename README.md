@@ -13,17 +13,22 @@ Barkley Sound:
   normal — get to high ground.
 
 Structures are **semi-permanent**: they can be smashed into rubble, but you can
-always rebuild them. Boats and vehicles (coming) let you move and shelter, but
-high water can sweep vehicles away.
+always rebuild them. **Driveable cars and boats** sit around the regions — walk
+up and press **F** to board, then steer with WASD (cars are quick on roads,
+boats ride the water). Leave a boat in the water and the tide can carry it off.
+
+Combat rewards timing: swings cost **stamina**, holding **Space** charges a
+heavier hit, and **Shift** is a dodge with brief invulnerability. **Crabs**
+swarm at low tide but scuttle back to the sea as the tide comes in.
 
 It runs in the browser and is **online by default** — one shared world, a few
 players at a time — using an authoritative server.
 
 The world spans two **regions** that share one tide clock, linked by travel:
 **Bamfield** (West & East Bamfield + Grappler Inlet) and **Anacla / Pachena
-Bay** (~5 km down the road). Travel between them by **bus** (at the market),
-**car** (up Bamfield Main), or **boat** (out the inlet) — stand on a pad and
-press **T**.
+Bay** (~5 km down the road). Travel between them **on foot** — catch the **bus**
+at the market or hike the **gate** at the road's end up Bamfield Main; stand on
+a pad and press **T**. Vehicles stay in their own region.
 
 ## Tech stack
 
@@ -104,8 +109,9 @@ each tide — tune them to match your terrain.
 
 ## Roadmap ideas
 
-- Boats/vehicles (cross water; can be swept away at high tide)
+- Crafting vehicles at the boat shop / mechanic (build your own car or boat)
 - Resource gathering + a real build/crafting system
+- Food/hunger (eat at the market or restaurants), fishing rods, fire-building
 - Persistent world + player accounts (Cloudflare D1 / Durable Object storage)
 - Photo-ish avatars via a richer part-based character creator
 - Day/night on top of the tide cycle

@@ -119,24 +119,35 @@ export function buildRegions(): RegionDef[] {
 
 ---
 
-## Travel nodes (bus / car / boat)
+## Travel nodes (bus / gate) and vehicles
 
-Each region lists the pads that move you elsewhere. From the current Bamfield:
+Travel between regions is now **on foot** — vehicles stay in their region. A
+travel node is a pad you stand on and press **T**: either a scheduled `bus` at
+the market, or a `gate` at the road's end you hike through.
 
 ```ts
 travelNodes: [
   { id: "bf-bus",  kind: "bus",  x: 19, y: 21, w: 2, h: 1,
     label: "Catch the bus at the market to Anacla",
     toRegion: "anacla", toSpawn: { x: 38, y: 24 } },
-  { id: "bf-car",  kind: "car",  x: 39, y: 2,  w: 2, h: 1,
-    label: "Drive up Bamfield Main to Anacla",
+  { id: "bf-gate", kind: "gate", x: 39, y: 2,  w: 1, h: 1,
+    label: "Hike the road's end up Bamfield Main to Anacla",
     toRegion: "anacla", toSpawn: { x: 40, y: 1 } },
-  { id: "bf-boat", kind: "boat", x: 30, y: 37, w: 3, h: 2,
-    label: "Boat out the inlet to Pachena Bay",
-    toRegion: "anacla", toSpawn: { x: 30, y: 33 } },
 ]
 ```
 
-Stand on a pad and press **T**. Put the matching return pads in the destination
-region so travel is two-way. `toSpawn` must land on a walkable (non-submerged)
-tile in the destination.
+Put matching return pads in the destination region so travel is two-way.
+`toSpawn` must land on a walkable (non-submerged) tile in the destination.
+
+**Driveable cars & boats** are separate, persistent world entities. List them
+per region with `vehicles`; walk up and press **F** to board, then steer with
+WASD (cars are fast on roads, boats ride water):
+
+```ts
+vehicles: [
+  { id: "bf-car-1",  kind: "car",  x: 38, y: 6 },
+  { id: "bf-boat-1", kind: "boat", x: 27, y: 18 },
+]
+```
+
+In imported region JSON, `vehicles` is optional (defaults to none).

@@ -8,10 +8,13 @@ import {
   TILE_SIZE,
   Tile,
   TravelNode,
+  VehicleState,
   WorldMap,
   WATERLINE_HIGH,
 } from "../../shared/protocol";
 import { Net } from "./net";
+
+const CHARGE_MAX_MS = 600; // hold Space this long for a full-power swing
 
 const TILE_COLORS: Record<Tile, string> = {
   [Tile.Water]: "#1c5f86",
@@ -39,6 +42,7 @@ export class Game {
   private lastDir = { x: 0, y: 0 };
   private cam = { x: 0, y: 0 };
   private logLines: string[] = [];
+  private chargeStart: number | null = null; // when Space went down (for charged swings)
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -64,9 +68,24 @@ export class Game {
   private onKey(e: KeyboardEvent, down: boolean) {
     const k = e.key.toLowerCase();
     if (down) {
-      if (k === " ") this.net.send({ t: "attack" });
-      if (k === "e") this.net.send({ t: "repair" });
-      if (k === "t") this.net.send({ t: "travel" });
+      if (k === " ") {
+        // Start charging on first press; the swing fires on release.
+        if (this.chargeStart === null) this.chargeStart = performance.now();
+        e.preventDefault();
+      } else if (!e.repeat) {
+        if (k === "shift") this.net.send({ t: "dodge" });
+        else if (k === "f") this.net.send({ t: "board" });
+        else if (k === "e") this.net.send({ t: "repair" });
+        else if (k === "t") this.net.send({ t: "travel" });
+      }
+    } else if (k === " ") {
+      if (this.chargeStart !== null) {
+        const held = performance.now() - this.chargeStart;
+        this.chargeStart = null;
+        const charge = Math.max(0, Math.min(1, held / CHARGE_MAX_MS));
+        this.net.send({ t: "attack", charge });
+        e.preventDefault();
+      }
     }
     if (
       ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)
@@ -129,10 +148,31 @@ export class Game {
     this.drawTiles();
     this.drawTravelNodes();
     this.drawBuildings(this.snap.buildings);
+    this.drawVehicles(this.snap.vehicles);
     this.drawCreatures(this.snap.creatures);
     for (const p of this.snap.players) this.drawPlayer(p, p.id === this.myId);
+    if (me) this.drawSelfOverlay(me);
     this.drawHud(this.snap, me);
     this.drawTravelPrompt(me);
+    this.drawBoardPrompt(me);
+  }
+
+  // Charge meter under your feet while you wind up a swing.
+  private drawSelfOverlay(me: PlayerState) {
+    if (this.chargeStart === null || me.vehicleId) return;
+    const ctx = this.ctx;
+    const { sx, sy } = this.toScreen(me.x, me.y);
+    const charge = Math.max(0, Math.min(1, (performance.now() - this.chargeStart) / CHARGE_MAX_MS));
+    const r = TILE_SIZE * 0.4 + 11;
+    ctx.strokeStyle = "rgba(0,0,0,0.4)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(sx, sy, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = charge >= 1 ? "#ffd54f" : "#ff8a3d";
+    ctx.beginPath();
+    ctx.arc(sx, sy, r, -Math.PI / 2, -Math.PI / 2 + charge * Math.PI * 2);
+    ctx.stroke();
   }
 
   private toScreen(tx: number, ty: number) {
@@ -271,6 +311,52 @@ export class Game {
     }
   }
 
+  private drawVehicles(vehicles: VehicleState[]) {
+    for (const v of vehicles) {
+      const { sx, sy } = this.toScreen(v.x, v.y);
+      drawVehicleSprite(this.ctx, v, sx, sy);
+    }
+  }
+
+  private vehicleNear(me?: PlayerState): VehicleState | undefined {
+    if (!me || !this.snap) return undefined;
+    let best: VehicleState | undefined;
+    let bestD = 1.6;
+    for (const v of this.snap.vehicles) {
+      if (v.driverId) continue;
+      const d = Math.hypot(v.x - me.x, v.y - me.y);
+      if (d <= bestD) {
+        bestD = d;
+        best = v;
+      }
+    }
+    return best;
+  }
+
+  private drawBoardPrompt(me?: PlayerState) {
+    if (!me) return;
+    let text: string | null = null;
+    if (me.vehicleId) {
+      text = "Press F — step out";
+    } else {
+      const v = this.vehicleNear(me);
+      if (v) text = `Press F — board the ${v.kind}`;
+    }
+    if (!text) return;
+    const ctx = this.ctx;
+    ctx.font = "15px system-ui";
+    ctx.textAlign = "center";
+    const w = ctx.measureText(text).width + 28;
+    const x = this.canvas.width / 2;
+    const y = this.canvas.height - 108;
+    ctx.fillStyle = "rgba(7,19,28,0.85)";
+    ctx.fillRect(x - w / 2, y - 22, w, 32);
+    ctx.strokeStyle = "#00acc1";
+    ctx.strokeRect(x - w / 2, y - 22, w, 32);
+    ctx.fillStyle = "#eaf2f8";
+    ctx.fillText(text, x, y);
+  }
+
   private drawCreatures(creatures: CreatureState[]) {
     for (const c of creatures) {
       const { sx, sy } = this.toScreen(c.x, c.y);
@@ -282,7 +368,28 @@ export class Game {
     const ctx = this.ctx;
     const { sx, sy } = this.toScreen(p.x, p.y);
     const R = TILE_SIZE * 0.4;
+
+    // While driving, the vehicle sprite represents you — just float your name.
+    if (p.vehicleId) {
+      ctx.fillStyle = "#eaf2f8";
+      ctx.font = "11px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText(p.name, sx, sy - TILE_SIZE * 0.95);
+      return;
+    }
+
     if (p.dead) ctx.globalAlpha = 0.3;
+
+    // A motion streak behind a dodging player (i-frames active).
+    if (p.dodging) {
+      ctx.strokeStyle = "rgba(255,255,255,0.5)";
+      ctx.lineWidth = R * 1.1;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(sx - Math.cos(p.dir) * R * 1.6, sy - Math.sin(p.dir) * R * 1.6);
+      ctx.lineTo(sx, sy);
+      ctx.stroke();
+    }
 
     // A faint wake ring when swimming.
     if (p.swimming) {
@@ -344,6 +451,20 @@ export class Game {
       ctx.beginPath();
       ctx.arc(sx, sy, R + 7, 0, Math.PI * 2);
       ctx.stroke();
+      // Stamina arc just outside the HP ring (your own gauge only).
+      const sfrac = Math.max(0, Math.min(1, p.stamina / p.maxStamina));
+      if (sfrac < 1) {
+        ctx.strokeStyle = "rgba(0,0,0,0.3)";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(sx, sy, R + 9, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = "#42c0ff";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy, R + 9, -Math.PI / 2, -Math.PI / 2 + sfrac * Math.PI * 2);
+      ctx.stroke();
     }
     ctx.globalAlpha = 1;
     // Name.
@@ -358,10 +479,12 @@ export class Game {
     const tidePct = Math.round(snap.tide * 100);
     const event = snap.event === "tsunami" ? " ⚠ TSUNAMI" : snap.event === "king" ? " ⚠ King tide" : "";
     const hp = me ? Math.max(0, Math.round(me.hp)) : 0;
+    const stam = me ? Math.max(0, Math.round(me.stamina)) : 0;
     hud.innerHTML =
       `<b>${this.regionName}</b><br />` +
       `<b>Tide:</b> ${snap.phase} (${tidePct}%)${event}<br />` +
       `<b>HP:</b> ${hp}/${me?.maxHp ?? 100}<br />` +
+      `<b>Stamina:</b> ${stam}/${me?.maxStamina ?? 100}<br />` +
       `<b>Here:</b> ${snap.players.length}`;
   }
 
@@ -374,14 +497,12 @@ export class Game {
 
 const TRAVEL_COLOR: Record<TravelNode["kind"], string> = {
   bus: "#f4b400",
-  car: "#4285f4",
-  boat: "#00acc1",
+  gate: "#7e57c2",
 };
 
 const TRAVEL_ICON: Record<TravelNode["kind"], string> = {
   bus: "BUS",
-  car: "CAR",
-  boat: "BOAT",
+  gate: "GATE",
 };
 
 // Deeper water renders darker (shallow teal -> deep navy).
@@ -391,6 +512,90 @@ function waterShade(depth: number): string {
   const g = Math.round(127 + (34 - 127) * t);
   const b = Math.round(168 + (54 - 168) * t);
   return `rgb(${r},${g},${b})`;
+}
+
+// --- vehicle sprites (top-down) ---------------------------------------------
+function drawVehicleSprite(ctx: CanvasRenderingContext2D, v: VehicleState, x: number, y: number) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(v.dir);
+  if (v.kind === "car") drawCar(ctx);
+  else drawBoat(ctx);
+  ctx.restore();
+
+  // Shared damage bar above the hull when it's taken a beating.
+  const frac = Math.max(0, v.hp / v.maxHp);
+  if (frac < 1) {
+    const w = TILE_SIZE * 1.4;
+    ctx.fillStyle = "#222";
+    ctx.fillRect(x - w / 2, y - TILE_SIZE, w, 3);
+    ctx.fillStyle = frac > 0.5 ? "#4caf50" : frac > 0.25 ? "#ffb300" : "#e53935";
+    ctx.fillRect(x - w / 2, y - TILE_SIZE, w * frac, 3);
+  }
+}
+
+function drawCar(ctx: CanvasRenderingContext2D) {
+  const L = TILE_SIZE * 1.5; // length (along heading)
+  const W = TILE_SIZE * 0.82; // width
+  // body
+  ctx.fillStyle = "#c0392b";
+  roundRect(ctx, -L / 2, -W / 2, L, W, 5);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.5)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  // cabin / windshield (toward the front = +x)
+  ctx.fillStyle = "#1c2a33";
+  roundRect(ctx, -L * 0.05, -W * 0.34, L * 0.34, W * 0.68, 3);
+  ctx.fill();
+  // headlights at the nose
+  ctx.fillStyle = "#ffe082";
+  ctx.beginPath();
+  ctx.arc(L / 2 - 3, -W * 0.28, 2.2, 0, Math.PI * 2);
+  ctx.arc(L / 2 - 3, W * 0.28, 2.2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawBoat(ctx: CanvasRenderingContext2D) {
+  const L = TILE_SIZE * 1.7;
+  const W = TILE_SIZE * 0.78;
+  // pointed hull (bow toward +x)
+  ctx.fillStyle = "#e8e2d0";
+  ctx.beginPath();
+  ctx.moveTo(L / 2, 0); // bow
+  ctx.lineTo(L * 0.05, -W / 2);
+  ctx.lineTo(-L / 2, -W * 0.36);
+  ctx.lineTo(-L / 2, W * 0.36);
+  ctx.lineTo(L * 0.05, W / 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = "#7a6f53";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  // open cockpit / inner well
+  ctx.fillStyle = "#3a5a6a";
+  roundRect(ctx, -L * 0.32, -W * 0.26, L * 0.5, W * 0.52, 3);
+  ctx.fill();
+  // little outboard motor at the stern
+  ctx.fillStyle = "#222";
+  ctx.fillRect(-L / 2 - 3, -3, 5, 6);
+}
+
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
 
 // --- creature sprites (top-down, recognizable silhouettes) ------------------
