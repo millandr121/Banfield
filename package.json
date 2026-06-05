@@ -9,6 +9,7 @@
     "dev": "npm run build:client && concurrently -k -n SERVER,CLIENT -c blue,green \"wrangler dev\" \"vite\"",
     "deploy": "npm run build:client && wrangler deploy",
     "import-map": "node tools/import-image-map.mjs",
+    "import-osm": "node tools/import-osm.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

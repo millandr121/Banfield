@@ -60,23 +60,43 @@ This reuses the importer at `tools/import-image-map.mjs`. Each pixel = one tile.
 
 ---
 
-## Option 2 — Real OSM + elevation data (most authentic)
+## Option 2 — Real OSM data, automatically (most authentic)
 
-1. Pick a bounding box. Bamfield core (West/East/Grappler) is roughly
-   **48.828–48.845 N, 125.150–125.125 W** — about 2 km, exactly as you said.
-   Anacla/Pachena Bay is ~5 km southeast.
-2. Export **OpenStreetMap** features for that box (the
-   [Overpass API](https://overpass-turbo.eu/) or QGIS): `natural=water`,
-   `natural=coastline`, `natural=beach`, `natural=wood`, `highway=*`,
-   `building=*`.
-3. Download an **elevation** tile for the box (NRCan CDEM/HRDEM).
-4. Rasterize both onto your tile grid (a GIS/QGIS render to PNG, or a script):
-   water/beach/forest/road from OSM, building footprints as the magenta marker,
-   grass elsewhere; bucket elevation into hill/rock.
-5. Feed the rendered PNGs through Option 1's importer.
+`tools/import-osm.mjs` pulls real OpenStreetMap geometry (coastline, inlet,
+rivers, roads, building footprints) and rasterizes it straight into a region
+JSON. Bamfield core (West/East/Grappler) is roughly **48.815–48.85 N,
+125.16–125.11 W** — about 2 km, as you said. Anacla/Pachena Bay is ~5 km
+southeast.
 
-The tile **elevations** in `shared/protocol.ts` (`TILE_ELEVATION`) are what
-decide how high the tide climbs each cycle — tune them to match your terrain.
+**Run it live** (needs internet — run on your own machine, not the web sandbox
+whose network is locked down):
+
+```bash
+npm run import-osm -- \
+  --bbox 48.815,-125.16,48.85,-125.11 \
+  --width 90 --id bamfield --name "Bamfield" \
+  --sea-seed 0,89 \
+  --out shared/regions/bamfield.json
+```
+
+`--sea-seed X,Y` is a tile in the **open ocean**; the sea is flood-filled from
+there up to the coastline (bottom-left works for Bamfield). Height is derived
+automatically from the bbox so tiles stay roughly square.
+
+**Run it offline** (e.g. inside the web sandbox): first save the Overpass JSON
+to a file — paste the query from the script into <https://overpass-turbo.eu/>,
+export as raw JSON — then point the importer at it:
+
+```bash
+npm run import-osm -- --osm-json maps/bamfield.osm.json \
+  --bbox 48.815,-125.16,48.85,-125.11 --width 90 \
+  --id bamfield --name "Bamfield" --sea-seed 0,89 \
+  --out shared/regions/bamfield.json
+```
+
+Then set `spawn` + `travelNodes` in the JSON and register it (next section).
+Elevation: the tile **elevations** in `shared/protocol.ts` (`TILE_ELEVATION`)
+decide how high the tide climbs each cycle — tune them to match the terrain.
 
 ---
 
