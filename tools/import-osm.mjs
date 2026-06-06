@@ -105,14 +105,36 @@ out body geom;`;
 }
 
 async function fetchOsm(S, W, N, E) {
-  const OVERPASS = "https://overpass-api.de/api/interpreter";
-  const res = await fetch(OVERPASS, {
-    method: "POST",
-    body: "data=" + encodeURIComponent(buildOverpassQuery(S, W, N, E)),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-  });
-  if (!res.ok) throw new Error(`Overpass HTTP ${res.status}: ${await res.text()}`);
-  return res.json();
+  // Try multiple Overpass mirrors in order.
+  const mirrors = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+  ];
+  const query = buildOverpassQuery(S, W, N, E);
+  let lastErr;
+  for (const url of mirrors) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        body: "data=" + encodeURIComponent(query),
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Accept": "application/json",
+        },
+      });
+      if (res.ok) return res.json();
+      lastErr = new Error(`Overpass HTTP ${res.status} from ${url}`);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  // All mirrors failed — print the query so the user can fetch it manually.
+  console.error("\n⚠  All Overpass mirrors failed. Paste this query at https://overpass-turbo.eu/,");
+  console.error('   click Run → Export → "Download as raw OSM data (JSON)", then re-run with:');
+  console.error("   --osm-json <downloaded-file.json>\n");
+  console.error("Query:\n" + query);
+  throw lastErr;
 }
 
 // ---------------------------------------------------------------------------

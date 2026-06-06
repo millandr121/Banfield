@@ -91,8 +91,9 @@ const DODGE_COOLDOWN_MS = 650;
 const DODGE_IMPULSE = 14; // lunge speed (tiles/sec) at the start of a dodge
 const DODGE_IFRAMES_MS = 360; // invulnerability window during a dodge
 const REPAIR_RATE = 25; // hp per second
-const CREATURE_CAP_PER_REGION = 7;
-const SPAWN_INTERVAL_MS = 7000; // how often a region may gain one creature
+const CREATURE_CAP_PER_REGION = 22; // scaled for the large (200×120) maps
+const SPAWN_INTERVAL_MS = 5000; // how often a region tops up its creatures
+const SPAWN_BATCH = 4; // creatures added per region per interval (up to the cap)
 const SINK_DEPTH = 7; // how far under the waterline counts as "deep"
 const SINK_DPS = 12; // hp/sec lost while standing still in deep water
 
@@ -1314,14 +1315,17 @@ export class GameRoom {
 
     for (const regionId of active) {
       const region = this.regions.get(regionId)!;
-      const count = [...this.creatures.values()].filter((c) => c.region === regionId).length;
-      if (count >= CREATURE_CAP_PER_REGION) continue;
-      const kind = pickKind(phase, this.event);
-      if (!kind) continue;
-      const spot = this.findSpawnTile(region, kind, waterline);
-      if (!spot) continue;
-      const id = `c${this.idCounter++}`;
-      this.creatures.set(id, { id, kind, region: regionId, x: spot.x, y: spot.y, hp: creatureHp(kind) });
+      let count = [...this.creatures.values()].filter((c) => c.region === regionId).length;
+      // Spawn a small batch each tick so the large maps fill in reasonably fast.
+      for (let n = 0; n < SPAWN_BATCH && count < CREATURE_CAP_PER_REGION; n++) {
+        const kind = pickKind(phase, this.event);
+        if (!kind) break;
+        const spot = this.findSpawnTile(region, kind, waterline);
+        if (!spot) continue;
+        const id = `c${this.idCounter++}`;
+        this.creatures.set(id, { id, kind, region: regionId, x: spot.x, y: spot.y, hp: creatureHp(kind) });
+        count++;
+      }
     }
   }
 
