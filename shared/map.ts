@@ -244,7 +244,11 @@ function generateBamfieldMap(): WorldMap {
   }
 
   // --- BARKLEY SOUND / TREVOR CHANNEL (open water, south) ---
-  rect(tiles, 35, 155, W - 20, H - 1, Tile.Water);
+  // Start at y=138 — well south of the last building (y≈123). The inlet
+  // has already widened to ~50 tiles at this point, so the channel
+  // transitions naturally into open sound. Depth in the centre reaches
+  // the DEPTH_OCEAN (abyss-tier) zone, giving prawn and whale territory.
+  rect(tiles, 0, 138, W - 1, H - 1, Tile.Water);
 
   // --- BRADY'S BEACH (Pacific-facing beach, far west) ---
   // Large open-coast bay: x=20-70, y=90-155, connects south to Barkley Sound.

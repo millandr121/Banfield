@@ -42,6 +42,13 @@ export const TSUNAMI_SURGE = 30; // extra waterline during a (rare) tsunami
 
 export type TidePhase = "low" | "mid" | "high";
 
+// --- Water depth tiers -------------------------------------------------------
+// depth = waterline - tile_elevation (positive = underwater)
+export const DEPTH_ANKLE  =  4; // ankle/knee — cars wade, crabs, octopus
+export const DEPTH_SWIM   = 10; // waist/swim — player swimming, small boats
+export const DEPTH_DEEP   = 30; // deep water — sharks, big boats
+export const DEPTH_OCEAN  = 60; // open ocean — orca, whales, prawn zone
+
 // --- World map --------------------------------------------------------------
 export interface WorldMap {
   width: number;

@@ -24,6 +24,10 @@ import {
   VehicleState,
   WorldMap,
   WATERLINE_HIGH,
+  DEPTH_ANKLE,
+  DEPTH_SWIM,
+  DEPTH_DEEP,
+  DEPTH_OCEAN,
   skillLevel,
 } from "../../shared/protocol";
 import { Net } from "./net";
@@ -340,8 +344,8 @@ export class Game {
         const depth = snap.waterline - elev; // >0 means under water right now
 
         if (depth > 0) {
-          // The water has actually risen over this tile. Deeper = darker.
-          ctx.fillStyle = waterShade(depth);
+          // Colour by depth tier — ankle turquoise → abyss near-black.
+          ctx.fillStyle = waterDepthColor(depth);
           ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
         } else if (tile === Tile.Water) {
           // Seabed the tide has receded from: exposed wet mudflat at low tide.
@@ -1110,10 +1114,20 @@ export class Game {
     ctx.fillText(label, x, y);
   }
 
+  private clientDepthAt(wx: number, wy: number): number {
+    if (!this.map || !this.snap) return 0;
+    const tx = Math.floor(wx), ty = Math.floor(wy);
+    if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return 0;
+    return Math.max(0, this.snap.waterline - this.map.elevation[ty * this.map.width + tx]);
+  }
+
   private drawCreatures(creatures: CreatureState[]) {
+    const me = this.snap?.players.find((p) => p.id === this.myId);
     for (const c of creatures) {
       const { sx, sy } = this.toScreen(c.x, c.y);
-      drawCreatureSprite(this.ctx, c.kind, sx, sy);
+      const depth = this.clientDepthAt(c.x, c.y);
+      const dist = me ? Math.hypot(c.x - me.x, c.y - me.y) : 999;
+      drawCreatureSprite(this.ctx, c.kind, sx, sy, depth, dist);
     }
   }
 
@@ -1417,13 +1431,14 @@ const TRAVEL_ICON: Record<TravelNode["kind"], string> = {
   sea: "~ SEA ~",
 };
 
-// Deeper water renders darker (shallow teal -> deep navy).
-function waterShade(depth: number): string {
-  const t = Math.max(0, Math.min(1, depth / 30));
-  const r = Math.round(47 + (10 - 47) * t);
-  const g = Math.round(127 + (34 - 127) * t);
-  const b = Math.round(168 + (54 - 168) * t);
-  return `rgb(${r},${g},${b})`;
+// Tiered water colour matching the DEPTH_* constants from protocol.
+function waterDepthColor(depth: number): string {
+  if (depth < DEPTH_ANKLE) return "#7ad4e2"; // ankle — very light turquoise
+  if (depth < DEPTH_SWIM)  return "#3aadbe"; // knee — teal
+  if (depth < DEPTH_DEEP)  return "#1c7fa8"; // waist/swim — medium blue
+  if (depth < DEPTH_OCEAN) return "#0f5278"; // deep — dark blue
+  if (depth < DEPTH_OCEAN * 1.5) return "#082e50"; // ocean — near-navy
+  return "#040f22";                              // abyss — near-black
 }
 
 // --- resource node sprites --------------------------------------------------
@@ -1800,23 +1815,104 @@ function roundRect(
 }
 
 // --- creature sprites (top-down, recognizable silhouettes) ------------------
-function drawCreatureSprite(ctx: CanvasRenderingContext2D, kind: string, x: number, y: number) {
-  switch (kind) {
-    case "crab":
-      return drawCrab(ctx, x, y);
-    case "octopus":
-      return drawOctopus(ctx, x, y);
-    case "dogfish":
-      return drawShark(ctx, x, y, 0.55, "#5a6b78", false);
-    case "sixgill":
-      return drawShark(ctx, x, y, 0.8, "#3b4a57", false);
-    case "orca":
-      return drawShark(ctx, x, y, 0.9, "#10141a", true);
-    case "humpback":
-      return drawWhale(ctx, x, y, "#33414b");
-    case "greywhale":
-      return drawWhale(ctx, x, y, "#6b7480");
+// Creatures hide in deep water: ripple → dorsal fin → full body as player nears.
+function drawCreatureSprite(
+  ctx: CanvasRenderingContext2D,
+  kind: string,
+  x: number,
+  y: number,
+  depth: number,
+  distToPlayer: number,
+) {
+  const inWater = depth > 0;
+  const closeEnough = distToPlayer < 5; // within 5 tiles → always show full
+  const nearish = distToPlayer < 12;    // 5-12 tiles → fin only for big predators
+
+  if (!inWater || closeEnough) {
+    // On land or player right next to it — full sprite.
+    switch (kind) {
+      case "crab":    return drawCrab(ctx, x, y);
+      case "octopus": return drawOctopus(ctx, x, y);
+      case "dogfish": return drawShark(ctx, x, y, 0.55, "#5a6b78", false);
+      case "sixgill": return drawShark(ctx, x, y, 0.8,  "#3b4a57", false);
+      case "orca":    return drawShark(ctx, x, y, 0.9,  "#10141a", true);
+      case "humpback":  return drawWhale(ctx, x, y, "#33414b");
+      case "greywhale": return drawWhale(ctx, x, y, "#6b7480");
+    }
+    return;
   }
+
+  // In water, far away — show ripple or dorsal fin based on creature type.
+  const bigPredator = kind === "dogfish" || kind === "sixgill" || kind === "orca";
+  const whale = kind === "humpback" || kind === "greywhale";
+
+  if (bigPredator && nearish) {
+    // Dorsal fin breaks the surface — telltale sign of a predator.
+    const orcaFin = kind === "orca";
+    drawDorsalFin(ctx, x, y, orcaFin);
+  } else if (whale && nearish) {
+    // Whale blow: a gentle spout visible at range.
+    drawWhaleBlow(ctx, x, y);
+  } else {
+    // Just a water ripple — something is moving under the surface.
+    drawRipple(ctx, x, y);
+  }
+}
+
+// Expanding ring ripple — creature beneath the surface.
+function drawRipple(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const t = (Date.now() % 1200) / 1200; // 0..1 over 1.2 s
+  const r1 = 3 + t * 7;
+  const r2 = 3 + ((t + 0.4) % 1) * 7;
+  const alpha = (v: number) => (0.55 - v * 0.55).toFixed(3);
+  ctx.strokeStyle = `rgba(255,255,255,${alpha(t)})`;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.arc(x, y, r1, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = `rgba(255,255,255,${alpha((t + 0.4) % 1)})`;
+  ctx.beginPath(); ctx.arc(x, y, r2, 0, Math.PI * 2); ctx.stroke();
+}
+
+// Shark/orca dorsal fin slicing through the surface.
+function drawDorsalFin(ctx: CanvasRenderingContext2D, x: number, y: number, orca: boolean) {
+  const h = orca ? TILE_SIZE * 0.75 : TILE_SIZE * 0.45;
+  const w = orca ? TILE_SIZE * 0.35 : TILE_SIZE * 0.22;
+  const col = orca ? "#10141a" : "#3b4a57";
+  // Tiny wake ripple behind the fin.
+  ctx.strokeStyle = "rgba(255,255,255,0.3)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x - w * 0.8, y + 2);
+  ctx.lineTo(x - w * 2.5, y + 4);
+  ctx.stroke();
+  // The fin itself.
+  ctx.fillStyle = col;
+  ctx.beginPath();
+  ctx.moveTo(x, y);            // tip of fin at water surface
+  ctx.lineTo(x - w, y + h);   // trailing edge
+  ctx.lineTo(x + w * 0.6, y + h * 0.7); // leading edge
+  ctx.closePath();
+  ctx.fill();
+}
+
+// Whale blow spout visible at range.
+function drawWhaleBlow(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  ctx.strokeStyle = "rgba(200,230,245,0.65)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x - 4, y - 14);
+  ctx.lineTo(x + 2, y - 22);
+  ctx.stroke();
+  // Mist cloud at top.
+  ctx.fillStyle = "rgba(200,230,245,0.3)";
+  ctx.beginPath();
+  ctx.ellipse(x + 2, y - 24, 6, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Hint of back above the water.
+  ctx.fillStyle = "rgba(100,120,130,0.5)";
+  ctx.beginPath();
+  ctx.ellipse(x, y + 4, 10, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function drawCrab(ctx: CanvasRenderingContext2D, x: number, y: number) {

@@ -34,6 +34,10 @@ import {
   KING_TIDE_SURGE,
   TSUNAMI_SURGE,
   STARTING_MONEY,
+  DEPTH_ANKLE,
+  DEPTH_SWIM,
+  DEPTH_DEEP,
+  DEPTH_OCEAN,
   defaultSkills,
   skillLevel,
   submergedAt,
@@ -702,11 +706,13 @@ export class GameRoom {
     }
   }
 
-  // Cars ride land (and roads); boats ride water. Neither leaves the map.
+  // Cars ride land and ankle-deep water; boats need real water depth.
   private vehicleCanGo(v: VehicleState, map: WorldMap, x: number, y: number, waterline: number): boolean {
     if (!this.inBounds(map, x, y)) return false;
-    const submerged = this.depthAt(map, x, y, waterline) > 0;
-    return v.kind === "boat" ? submerged : !submerged;
+    const depth = this.depthAt(map, x, y, waterline);
+    if (v.kind === "boat") return depth > 0;
+    // Cars can splash through ankle/knee water but sink in anything deeper.
+    return depth <= DEPTH_ANKLE;
   }
 
   // --- resources & crafting -------------------------------------------------
@@ -1547,12 +1553,23 @@ export class GameRoom {
     region: Region,
     c: CreatureState,
   ): { x: number; y: number; building?: BuildingState; player?: PlayerState } | null {
+    const waterline = this.currentWaterline(Date.now());
+    // Sharks & orca only pursue players in water deep enough for them.
+    const deepPredator = c.kind === "dogfish" || c.kind === "sixgill" || c.kind === "orca";
+    const creatureDepth = this.depthAt(region.map, c.x, c.y, waterline);
     let best: { x: number; y: number; player?: PlayerState } | null = null;
     let bestD = Infinity;
     for (const p of this.players.values()) {
       if (p.dead || p.region !== region.id) continue;
+      if (deepPredator) {
+        // Don't chase players onto land or into ankle-deep water — too shallow.
+        const pd = this.depthAt(region.map, p.x, p.y, waterline);
+        if (pd <= DEPTH_ANKLE) continue;
+      }
       const d = Math.hypot(p.x - c.x, p.y - c.y);
       if (d < 6 && d < bestD) {
+        // Creature must itself be in enough water to attack.
+        if (deepPredator && creatureDepth <= DEPTH_ANKLE) continue;
         bestD = d;
         best = { x: p.x, y: p.y, player: p };
       }
@@ -1701,12 +1718,19 @@ export class GameRoom {
     waterline: number,
   ): { x: number; y: number } | null {
     const swims = swimmer(kind);
-    for (let i = 0; i < 30; i++) {
+    // Depth minimums keep big predators in deep water and crabs in the shallows.
+    const minDepth = (kind === "orca" || kind === "humpback" || kind === "greywhale") ? DEPTH_OCEAN * 0.5
+      : kind === "sixgill" ? DEPTH_DEEP * 0.6
+      : kind === "dogfish" ? DEPTH_SWIM
+      : 0; // crab & octopus anywhere
+    const maxDepth = (kind === "crab") ? DEPTH_DEEP : Infinity;
+    for (let i = 0; i < 60; i++) {
       const x = Math.floor(Math.random() * region.map.width);
       const y = Math.floor(Math.random() * region.map.height);
-      if (this.walkable(region.map, x + 0.5, y + 0.5, waterline, swims)) {
-        return { x: x + 0.5, y: y + 0.5 };
-      }
+      if (!this.walkable(region.map, x + 0.5, y + 0.5, waterline, swims)) continue;
+      const d = this.depthAt(region.map, x + 0.5, y + 0.5, waterline);
+      if (d < minDepth || d > maxDepth) continue;
+      return { x: x + 0.5, y: y + 0.5 };
     }
     return null;
   }
