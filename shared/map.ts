@@ -1,4 +1,4 @@
-import { BuildingState, InvasiveKind, ResourceKind, Tile, TravelNode, VehicleKind, WorldMap } from "./protocol";
+import { BuildingState, InvasiveKind, ResourceKind, ShopDef, Tile, TravelNode, VehicleKind, WorldMap } from "./protocol";
 import { IMPORTED_REGIONS } from "./regions";
 
 // Where a driveable vehicle starts life in a region.
@@ -318,7 +318,8 @@ function bamfieldBuildings(): BuildingState[] {
     { kind:"house",     x:148, y: 48, w:3, h:2, hp:100 },
     { kind:"boathouse", x:153, y: 48, w:4, h:3, hp:120 },
     // McKay Bay Lodge — west-side marina lodge, sells fuel
-    { kind:"shop",      x:145, y: 58, w:5, h:3, hp:180 },
+    { kind:"shop",      x:145, y: 58, w:5, h:3, hp:180, shop:{
+      name:"McKay Bay Lodge", buys:[{item:"fish",price:3}], sells:[{item:"rod",price:16}] } },
     { kind:"house",     x:148, y: 62, w:3, h:2, hp:100 },
     { kind:"house",     x:148, y: 70, w:3, h:2, hp:100 },
     { kind:"house",     x:152, y: 70, w:3, h:2, hp:100 },
@@ -330,7 +331,7 @@ function bamfieldBuildings(): BuildingState[] {
 
     // ---- BAMFIELD MARINE SCIENCES CENTRE (BMSC) ----
     // South shore of Grappler Inlet: main lab, accommodation, boat barn.
-    { kind:"shop",      x:218, y: 62, w:8, h:5, hp:250 }, // main research building
+    { kind:"shop",      x:218, y: 62, w:8, h:5, hp:250, shop:SHOP_BMSC }, // main research building
     { kind:"house",     x:230, y: 62, w:4, h:3, hp:140 }, // grad student housing
     { kind:"house",     x:236, y: 62, w:4, h:3, hp:140 },
     { kind:"house",     x:242, y: 62, w:4, h:3, hp:140 },
@@ -340,11 +341,11 @@ function bamfieldBuildings(): BuildingState[] {
     // Government wharf / ferry terminal:
     { kind:"dock",      x:195, y: 52, w:5, h:4, hp:180 },
     // Ostrom's Gas Bar + metal shop:
-    { kind:"shop",      x:188, y: 66, w:4, h:3, hp:200 },
+    { kind:"shop",      x:188, y: 66, w:4, h:3, hp:200, shop:SHOP_OSTROMS },
     // General store / market (bus stop in front):
-    { kind:"shop",      x:180, y: 72, w:5, h:4, hp:180 },
+    { kind:"shop",      x:180, y: 72, w:5, h:4, hp:180, shop:SHOP_MARKET },
     // Breaker's Marine (sells jerry cans, boat parts):
-    { kind:"shop",      x:180, y: 82, w:4, h:3, hp:160 },
+    { kind:"shop",      x:180, y: 82, w:4, h:3, hp:160, shop:SHOP_BREAKERS },
     // Houses along Bamfield Main:
     { kind:"house",     x:190, y: 18, w:3, h:2, hp:100 },
     { kind:"house",     x:196, y: 18, w:3, h:2, hp:100 },
@@ -469,11 +470,12 @@ function anaclaBuildings(): BuildingState[] {
     { kind:"house",     x:208, y: 42, w:3, h:2, hp:100 },
     { kind:"house",     x:218, y: 42, w:3, h:2, hp:100 },
     // Gas bar (sells fuel, east of road):
-    { kind:"shop",      x:222, y: 50, w:4, h:3, hp:180 },
+    { kind:"shop",      x:222, y: 50, w:4, h:3, hp:180, shop:SHOP_ANACLA_GAS },
     // House-based goods seller (west side, along road):
-    { kind:"house",     x:208, y: 52, w:3, h:2, hp:100 },
+    { kind:"house",     x:208, y: 52, w:3, h:2, hp:100, shop:SHOP_ANACLA_HOME },
     // Home ice seller (small house):
-    { kind:"house",     x:208, y: 58, w:3, h:2, hp:100 },
+    { kind:"house",     x:208, y: 58, w:3, h:2, hp:100, shop:{
+      name:"Ice & Sundries (from the house)", buys:[{item:"fish",price:3}], sells:[{item:"plank",price:5}] } },
     // Bus stop area / home goods seller (faces road):
     { kind:"house",     x:218, y: 58, w:3, h:2, hp:100 },
     // Boat seller on the river bank (west of road, near river dock):
@@ -490,13 +492,85 @@ function anaclaBuildings(): BuildingState[] {
 // ---------------------------------------------------------------------------
 function mkBuildings(
   prefix: string,
-  defs: Array<{ kind: BuildingState["kind"]; x: number; y: number; w: number; h: number; hp: number }>,
+  defs: Array<{ kind: BuildingState["kind"]; x: number; y: number; w: number; h: number; hp: number; shop?: ShopDef }>,
 ): BuildingState[] {
   return defs.map((d, i) => ({
     id: `${prefix}${i}`,
     kind: d.kind, x: d.x, y: d.y, w: d.w, h: d.h, hp: d.hp, maxHp: d.hp,
+    ...(d.shop ? { shop: d.shop } : {}),
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Shop definitions (the local economy)
+// ---------------------------------------------------------------------------
+const SHOP_MARKET: ShopDef = {
+  name: "Bamfield General Store",
+  buys: [
+    { item: "berry", price: 3 },
+    { item: "fish", price: 2 },
+    { item: "crabmeat", price: 2 },
+    { item: "cookedfish", price: 6 },
+    { item: "cookedcrab", price: 6 },
+  ],
+  sells: [
+    { item: "rod", price: 18 },
+    { item: "plank", price: 5 },
+  ],
+};
+const SHOP_BMSC: ShopDef = {
+  name: "Marine Sciences Centre",
+  // The BMSC pays a premium for fish brought in for study.
+  buys: [
+    { item: "fish", price: 5 },
+    { item: "crabmeat", price: 4 },
+  ],
+  sells: [
+    { item: "rod", price: 15 },
+  ],
+};
+const SHOP_BREAKERS: ShopDef = {
+  name: "Breaker's Marine",
+  buys: [
+    { item: "scrap", price: 4 },
+    { item: "iron", price: 3 },
+  ],
+  sells: [
+    { item: "plank", price: 5 },
+    { item: "rod", price: 16 },
+  ],
+};
+const SHOP_OSTROMS: ShopDef = {
+  name: "Ostrom's Gas Bar & Metal Shop",
+  buys: [
+    { item: "iron", price: 3 },
+    { item: "stone", price: 2 },
+    { item: "scrap", price: 4 },
+  ],
+  sells: [
+    { item: "plank", price: 5 },
+  ],
+};
+const SHOP_ANACLA_GAS: ShopDef = {
+  name: "Anacla Gas Bar",
+  buys: [
+    { item: "berry", price: 3 },
+    { item: "fish", price: 2 },
+  ],
+  sells: [
+    { item: "plank", price: 5 },
+  ],
+};
+const SHOP_ANACLA_HOME: ShopDef = {
+  name: "Home Goods (sold from the house)",
+  buys: [
+    { item: "berry", price: 4 }, // a good price for fresh-picked berries
+    { item: "crabmeat", price: 3 },
+  ],
+  sells: [
+    { item: "rod", price: 17 },
+  ],
+};
 
 // Shape produced by the OSM importer (tools/import-osm.mjs).
 export interface RegionData {

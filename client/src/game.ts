@@ -13,6 +13,7 @@ import {
   PlayerState,
   ResourceNode,
   ServerMessage,
+  ShopDef,
   SKILL_NAMES,
   Snapshot,
   TILE_SIZE,
@@ -60,6 +61,7 @@ export class Game {
   private craftOpen = false; // is the crafting panel visible?
   private craftSelected = 0; // highlighted recipe index
   private mapOpen = false;   // is the full-region map overlay open?
+  private shopId: string | null = null; // building id of the open shop, else null
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -146,6 +148,22 @@ export class Game {
         } else if (k === "escape") {
           this.mapOpen = false;
           this.craftOpen = false;
+          this.shopId = null;
+          e.preventDefault();
+        } else if (k === "b") {
+          // Toggle the shop panel for the nearest shop building.
+          if (this.shopId) {
+            this.shopId = null;
+          } else {
+            const shop = this.nearbyShop();
+            if (shop) { this.shopId = shop.id; this.craftOpen = false; }
+          }
+          e.preventDefault();
+        } else if (this.shopId && k >= "1" && k <= "9") {
+          this.tradeLine(parseInt(k) - 1);
+          e.preventDefault();
+        } else if (this.shopId && k === "escape") {
+          this.shopId = null;
           e.preventDefault();
         } else if (k === "c") {
           this.craftOpen = !this.craftOpen;
@@ -250,9 +268,11 @@ export class Game {
     this.drawHud(this.snap, me);
     this.drawTravelPrompt(me);
     this.drawBoardPrompt(me);
+    this.drawShopPrompt(me);
     this.drawHarvestPrompt(this.snap.resourceNodes, this.snap.plants, me);
     this.drawFishPrompt(me);
     if (this.craftOpen) this.drawCraftPanel(me);
+    if (this.shopId) this.drawShopPanel(me);
     if (this.mapOpen) this.drawMapOverlay(me);
   }
 
@@ -630,6 +650,119 @@ export class Game {
     ctx.fillText("■ You   ■ Buildings   ■ Bus stop   ■ Sea route   ■ Gate   — Press M or Esc to close", this.canvas.width / 2, legendY);
   }
 
+  // --- shops ----------------------------------------------------------------
+  private nearbyShop(): BuildingState | undefined {
+    if (!this.snap) return undefined;
+    const me = this.snap.players.find((p) => p.id === this.myId);
+    if (!me) return undefined;
+    let best: BuildingState | undefined;
+    let bestD = 3.0;
+    for (const b of this.snap.buildings) {
+      if (!b.shop) continue;
+      const d = Math.hypot(b.x + b.w / 2 - me.x, b.y + b.h / 2 - me.y);
+      if (d <= bestD) { bestD = d; best = b; }
+    }
+    return best;
+  }
+
+  private openShop(): BuildingState | undefined {
+    if (!this.shopId || !this.snap) return undefined;
+    return this.snap.buildings.find((b) => b.id === this.shopId);
+  }
+
+  // The numbered lines in the shop panel: SELL lines first, then BUY lines.
+  private shopLines(shop: ShopDef): Array<{ kind: "sell" | "buy"; item: ItemId; price: number }> {
+    return [
+      ...shop.buys.map((o) => ({ kind: "sell" as const, item: o.item, price: o.price })),
+      ...shop.sells.map((o) => ({ kind: "buy" as const, item: o.item, price: o.price })),
+    ];
+  }
+
+  private tradeLine(idx: number) {
+    const b = this.openShop();
+    if (!b || !b.shop) return;
+    const lines = this.shopLines(b.shop);
+    const line = lines[idx];
+    if (!line) return;
+    this.net.send({ t: "trade", buildingId: b.id, kind: line.kind, item: line.item, qty: 1 });
+  }
+
+  private drawShopPrompt(me?: PlayerState) {
+    if (!me || me.vehicleId || this.shopId) return;
+    const shop = this.nearbyShop();
+    if (!shop || !shop.shop) return;
+    const ctx = this.ctx;
+    const text = `Press B — trade at ${shop.shop.name}`;
+    ctx.font = "15px system-ui";
+    ctx.textAlign = "center";
+    const w = ctx.measureText(text).width + 28;
+    const x = this.canvas.width / 2;
+    const y = this.canvas.height - 146;
+    ctx.fillStyle = "rgba(7,19,28,0.85)";
+    ctx.fillRect(x - w / 2, y - 22, w, 32);
+    ctx.strokeStyle = "#ffb300";
+    ctx.strokeRect(x - w / 2, y - 22, w, 32);
+    ctx.fillStyle = "#ffe9b0";
+    ctx.fillText(text, x, y);
+  }
+
+  private drawShopPanel(me?: PlayerState) {
+    const b = this.openShop();
+    if (!b || !b.shop) { this.shopId = null; return; }
+    const ctx = this.ctx;
+    const lines = this.shopLines(b.shop);
+    const inv = me?.inventory ?? {};
+
+    const pw = 380;
+    const ph = 90 + lines.length * 26 + 30;
+    const px = this.canvas.width / 2 - pw / 2;
+    const py = this.canvas.height / 2 - ph / 2;
+
+    ctx.fillStyle = "rgba(7,19,28,0.94)";
+    ctx.fillRect(px, py, pw, ph);
+    ctx.strokeStyle = "#ffb300";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(px, py, pw, ph);
+
+    ctx.textAlign = "left";
+    ctx.font = "bold 17px system-ui";
+    ctx.fillStyle = "#ffe9b0";
+    ctx.fillText(b.shop.name, px + 18, py + 30);
+
+    ctx.font = "14px system-ui";
+    ctx.fillStyle = "#9fe6c0";
+    ctx.textAlign = "right";
+    ctx.fillText(`Your money: $${me?.money ?? 0}`, px + pw - 18, py + 30);
+    ctx.textAlign = "left";
+
+    let y = py + 60;
+    let lastKind = "";
+    lines.forEach((ln, i) => {
+      if (ln.kind !== lastKind) {
+        ctx.font = "bold 13px system-ui";
+        ctx.fillStyle = "#7fa8c8";
+        ctx.fillText(ln.kind === "sell" ? "SELL — they buy from you:" : "BUY — they sell to you:", px + 18, y);
+        y += 22;
+        lastKind = ln.kind;
+      }
+      ctx.font = "15px system-ui";
+      ctx.fillStyle = "#eaf2f8";
+      const label = ITEM_LABEL[ln.item];
+      const held = inv[ln.item] ?? 0;
+      const extra = ln.kind === "sell" ? `  (you have ${held})` : "";
+      ctx.fillText(`${i + 1}.  ${label}`, px + 28, y);
+      ctx.textAlign = "right";
+      ctx.fillStyle = ln.kind === "sell" ? "#9fe6c0" : "#ffd08a";
+      ctx.fillText(`$${ln.price} ea${extra}`, px + pw - 18, y);
+      ctx.textAlign = "left";
+      y += 26;
+    });
+
+    ctx.font = "13px system-ui";
+    ctx.fillStyle = "#7fa8c8";
+    ctx.fillText("Press a number to trade 1 • B or Esc to close", px + 18, py + ph - 16);
+  }
+
   private drawFishPrompt(me?: PlayerState) {
     if (!me || !this.snap) return;
     const nearWater = me.swimming || (() => {
@@ -910,7 +1043,7 @@ export class Game {
       `<b>Tide:</b> ${snap.phase} (${tidePct}%)${event}<br />` +
       `<b>HP:</b> ${hp}/${me?.maxHp ?? 100} &nbsp; <b>Stam:</b> ${stam}/${me?.maxStamina ?? 100}${sleepStr}<br />` +
       `<b>Hunger:</b> <span style="color:${hungerLow ? "#e57373" : "#cfe3ef"}">${hunger}/${me?.maxHunger ?? 100}${hungerLow ? " — EAT (Q)!" : ""}</span><br />` +
-      `<b>Banfielder:</b> ${me?.banfielderPts ?? 0} pts (${rankStr})${teamStr}<br />` +
+      `<b>Money:</b> <span style="color:#9fe6c0">$${me?.money ?? 0}</span> &nbsp; <b>Banfielder:</b> ${me?.banfielderPts ?? 0} pts (${rankStr})${teamStr}<br />` +
       (skillsHtml ? `<b>Skills:</b> <span style="font-size:11px">${skillsHtml}</span><br />` : "") +
       (invItems ? `<b>Inv:</b> <span style="font-size:11px">${invItems}</span><br />` : "") +
       `<b>Here:</b> ${snap.players.length}`;

@@ -31,6 +31,7 @@ import {
   WATERLINE_HIGH,
   KING_TIDE_SURGE,
   TSUNAMI_SURGE,
+  STARTING_MONEY,
   defaultSkills,
   skillLevel,
   submergedAt,
@@ -355,6 +356,7 @@ export class GameRoom {
           rank: 0,
           isMayor: false,
           inventory: {},
+          money: STARTING_MONEY,
           team: null,
           appearance: sanitizeAppearance(msg.appearance),
           swimming: false,
@@ -413,6 +415,9 @@ export class GameRoom {
         break;
       case "repair":
         this.doRepair(s.playerId);
+        break;
+      case "trade":
+        this.doTrade(s.playerId, msg.buildingId, msg.kind, msg.item, msg.qty);
         break;
       case "travel":
         this.doTravel(ws, s.playerId);
@@ -972,6 +977,49 @@ export class GameRoom {
     }
     this.tell(p, `Crafted: ${recipe.name}.`);
     void s;
+  }
+
+  // Buy or sell at a shop building you're standing next to.
+  private doTrade(
+    playerId: string,
+    buildingId: string,
+    kind: "buy" | "sell",
+    item: ItemId,
+    qty: number,
+  ) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead || p.vehicleId) return;
+    const region = this.regions.get(p.region);
+    if (!region) return;
+    const b = region.buildings.find((bb) => bb.id === buildingId);
+    if (!b || !b.shop) return;
+    // Must be within reach of the shop.
+    const d = Math.hypot(b.x + b.w / 2 - p.x, b.y + b.h / 2 - p.y);
+    if (d > Math.max(b.w, b.h) / 2 + 2.5) {
+      this.tell(p, "Step up to the counter to trade.");
+      return;
+    }
+    const n = Math.max(1, Math.min(999, Math.floor(qty)));
+
+    if (kind === "sell") {
+      const offer = b.shop.buys.find((o) => o.item === item);
+      if (!offer) { this.tell(p, `${b.shop.name} isn't buying that.`); return; }
+      const have = p.inventory[item] ?? 0;
+      const sellN = Math.min(n, have);
+      if (sellN <= 0) { this.tell(p, `You have no ${ITEM_LABEL[item]} to sell.`); return; }
+      p.inventory[item] = have - sellN;
+      const earned = sellN * offer.price;
+      p.money += earned;
+      this.tell(p, `Sold ${sellN}× ${ITEM_LABEL[item]} for $${earned}. (You have $${p.money})`);
+    } else {
+      const offer = b.shop.sells.find((o) => o.item === item);
+      if (!offer) { this.tell(p, `${b.shop.name} doesn't sell that.`); return; }
+      const affordable = Math.min(n, Math.floor(p.money / offer.price));
+      if (affordable <= 0) { this.tell(p, `Not enough money — ${ITEM_LABEL[item]} is $${offer.price}.`); return; }
+      p.money -= affordable * offer.price;
+      this.addItem(p.inventory, item, affordable);
+      this.tell(p, `Bought ${affordable}× ${ITEM_LABEL[item]} for $${affordable * offer.price}. (You have $${p.money})`);
+    }
   }
 
   // Cook all raw meat/fish on a nearby campfire.

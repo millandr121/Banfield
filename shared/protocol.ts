@@ -197,6 +197,7 @@ export interface PlayerState {
   rank: number; // 1 = top Banfielder (the unofficial mayor); 0 = unranked
   isMayor: boolean; // the current highest-ranked Banfielder
   inventory: Inventory;
+  money: number; // dollars, for buying & selling
   team: string | null; // team/crew name (null = none)
   appearance: Appearance;
   swimming: boolean;
@@ -244,6 +245,21 @@ export interface VehicleState {
   driverId: string | null; // player currently driving, else null
 }
 
+// --- Economy ----------------------------------------------------------------
+// A shop is attached to a building. `buys` lists what the shop will pay you for
+// (per unit), `sells` lists what you can buy (per unit). Prices are in dollars.
+export interface ShopOffer {
+  item: ItemId;
+  price: number;
+}
+export interface ShopDef {
+  name: string;
+  buys: ShopOffer[];
+  sells: ShopOffer[];
+}
+
+export const STARTING_MONEY = 20;
+
 export type BuildingKind = "house" | "shop" | "boathouse" | "dock" | "rubble";
 
 export interface BuildingState {
@@ -255,6 +271,7 @@ export interface BuildingState {
   h: number;
   hp: number;
   maxHp: number;
+  shop?: ShopDef; // present if you can trade here
 }
 
 // --- Travel between regions -------------------------------------------------
@@ -297,6 +314,7 @@ export type ClientMessage =
   | { t: "sleep" } // toggle resting by a fire to heal
   | { t: "chat"; msg: string } // text; / global, // team, ///name private
   | { t: "repair" }
+  | { t: "trade"; buildingId: string; kind: "buy" | "sell"; item: ItemId; qty: number }
   | { t: "travel" };
 
 // --- Messages: server -> client --------------------------------------------
