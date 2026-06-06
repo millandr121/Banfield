@@ -1,11 +1,15 @@
 import {
   Appearance,
   BuildingState,
+  CampfireState,
   CRAFT_RECIPES,
   CreatureState,
+  FOOD_VALUE,
+  INVASIVE_LABEL,
   ITEM_IDS,
   ITEM_LABEL,
   ItemId,
+  PlantState,
   PlayerState,
   ResourceNode,
   ServerMessage,
@@ -50,7 +54,7 @@ export class Game {
   private lastDir = { x: 0, y: 0 };
   private cam = { x: 0, y: 0 };
   private logLines: string[] = [];
-  private chatLines: Array<{ from: string; msg: string; channel: "global" | "team"; ts: number }> = [];
+  private chatLines: Array<{ from: string; msg: string; channel: "global" | "team" | "private"; ts: number }> = [];
   private chargeStart: number | null = null; // when Space went down (for charged swings)
   private chatOpen = false; // is the chat text box visible?
   private craftOpen = false; // is the crafting panel visible?
@@ -194,7 +198,7 @@ export class Game {
       if (this.logLines.length > 6) this.logLines.shift();
       this.renderLog();
     } else if (m.t === "chat") {
-      const prefix = m.channel === "team" ? "[TEAM] " : "";
+      const prefix = m.channel === "team" ? "[TEAM] " : m.channel === "private" ? "[PM] " : "";
       this.chatLines.push({ from: m.from, msg: m.msg, channel: m.channel, ts: Date.now() });
       if (this.chatLines.length > 30) this.chatLines.shift();
       this.logLines.push(`${prefix}${m.from}: ${m.msg}`);
@@ -225,7 +229,9 @@ export class Game {
 
     this.drawTiles();
     this.drawTravelNodes();
+    this.drawCampfires(this.snap.campfires);
     this.drawResourceNodes(this.snap.resourceNodes, me);
+    this.drawPlants(this.snap.plants);
     this.drawBuildings(this.snap.buildings);
     this.drawVehicles(this.snap.vehicles);
     this.drawCreatures(this.snap.creatures);
@@ -234,7 +240,7 @@ export class Game {
     this.drawHud(this.snap, me);
     this.drawTravelPrompt(me);
     this.drawBoardPrompt(me);
-    this.drawHarvestPrompt(this.snap.resourceNodes, me);
+    this.drawHarvestPrompt(this.snap.resourceNodes, this.snap.plants, me);
     this.drawFishPrompt(me);
     if (this.craftOpen) this.drawCraftPanel(me);
   }
@@ -446,6 +452,20 @@ export class Game {
     }
   }
 
+  private drawPlants(plants: PlantState[]) {
+    for (const pl of plants) {
+      const { sx, sy } = this.toScreen(pl.x + 0.5, pl.y + 0.5);
+      drawPlantSprite(this.ctx, pl, sx, sy);
+    }
+  }
+
+  private drawCampfires(fires: CampfireState[]) {
+    for (const f of fires) {
+      const { sx, sy } = this.toScreen(f.x + 0.5, f.y + 0.5);
+      drawCampfireSprite(this.ctx, sx, sy);
+    }
+  }
+
   private drawCraftPanel(me?: PlayerState) {
     const ctx = this.ctx;
     const PW = 310;
@@ -562,15 +582,39 @@ export class Game {
     ctx.fillText(text, x, y);
   }
 
-  private drawHarvestPrompt(nodes: ResourceNode[], me?: PlayerState) {
+  private drawHarvestPrompt(nodes: ResourceNode[], plants: PlantState[], me?: PlayerState) {
     if (!me) return;
-    const near = nodes.find(
-      (n) =>
-        !n.depleted &&
-        Math.hypot((n.x + 0.5 - me.x) * TILE_SIZE, (n.y + 0.5 - me.y) * TILE_SIZE) <= HARVEST_RANGE_PX,
-    );
-    if (!near) return;
-    const label = near.kind === "tree" ? "Chop tree (E)" : near.kind === "ironOre" ? "Mine iron (E)" : "Mine stone (E)";
+    const range = HARVEST_RANGE_PX;
+    let label: string | null = null;
+    let color = "#4caf50";
+
+    // Nearest resource node within reach.
+    let bestD = Infinity;
+    for (const n of nodes) {
+      if (n.depleted) continue;
+      const d = Math.hypot((n.x + 0.5 - me.x) * TILE_SIZE, (n.y + 0.5 - me.y) * TILE_SIZE);
+      if (d <= range && d < bestD) {
+        bestD = d;
+        if (n.kind === "tree") { label = "Chop tree (E)"; color = "#4caf50"; }
+        else if (n.kind === "ironOre") { label = "Mine iron (E)"; color = "#ff9800"; }
+        else if (n.kind === "stoneOre") { label = "Mine stone (E)"; color = "#ff9800"; }
+        else { label = `Pick ${n.variety ?? "berries"} (E)`; color = "#c2185b"; }
+      }
+    }
+    // Invasive plant takes priority if closer.
+    for (const pl of plants) {
+      const d = Math.hypot((pl.x + 0.5 - me.x) * TILE_SIZE, (pl.y + 0.5 - me.y) * TILE_SIZE);
+      if (d <= range && d < bestD) {
+        bestD = d;
+        const flowering = pl.stage === "flowering";
+        label = flowering
+          ? `Pull flowering ${INVASIVE_LABEL[pl.kind]} — KILL it! (E)`
+          : `Cut ${INVASIVE_LABEL[pl.kind]} (E) — wait for flower to kill`;
+        color = flowering ? "#ffd54f" : "#9c6f3a";
+      }
+    }
+    if (!label) return;
+
     const ctx = this.ctx;
     ctx.font = "15px system-ui";
     ctx.textAlign = "center";
@@ -579,7 +623,7 @@ export class Game {
     const y = this.canvas.height - 146;
     ctx.fillStyle = "rgba(7,19,28,0.85)";
     ctx.fillRect(x - w / 2, y - 22, w, 32);
-    ctx.strokeStyle = near.kind === "tree" ? "#4caf50" : "#ff9800";
+    ctx.strokeStyle = color;
     ctx.strokeRect(x - w / 2, y - 22, w, 32);
     ctx.fillStyle = "#eaf2f8";
     ctx.fillText(label, x, y);
@@ -728,26 +772,32 @@ export class Game {
     const event = snap.event === "tsunami" ? " ⚠ TSUNAMI" : snap.event === "king" ? " ⚠ King tide" : "";
     const hp = me ? Math.max(0, Math.round(me.hp)) : 0;
     const stam = me ? Math.max(0, Math.round(me.stamina)) : 0;
+    const hunger = me ? Math.max(0, Math.round(me.hunger)) : 0;
+    const hungerLow = me ? me.hunger < me.maxHunger * 0.25 : false;
     const skillsHtml = me
       ? SKILL_NAMES
           .filter((sk) => skillLevel(me.skills[sk]) > 0)
           .map((sk) => `${sk.slice(0, 3).toUpperCase()}:${skillLevel(me.skills[sk])}`)
           .join(" ") || "New settler — go earn some XP!"
       : "";
+    const isFood = (id: ItemId) => (FOOD_VALUE as Record<string, unknown>)[id] !== undefined;
     const invItems = me
       ? (ITEM_IDS as readonly ItemId[])
           .filter((id) => (me.inventory[id] ?? 0) > 0)
           .map((id) => {
             const qty = me.inventory[id] ?? 0;
             const label = ITEM_LABEL[id];
-            return id === "food" ? `<span style="color:#7ec8a0">${label}:${qty}</span>` : `${label}:${qty}`;
+            return isFood(id) ? `<span style="color:#7ec8a0">${label}:${qty}</span>` : `${label}:${qty}`;
           })
           .join(" ")
       : "";
+    const teamStr = me?.team ? ` &nbsp; <b>Team:</b> ${me.team}` : "";
     hud.innerHTML =
       `<b>${this.regionName}</b><br />` +
       `<b>Tide:</b> ${snap.phase} (${tidePct}%)${event}<br />` +
       `<b>HP:</b> ${hp}/${me?.maxHp ?? 100} &nbsp; <b>Stam:</b> ${stam}/${me?.maxStamina ?? 100}<br />` +
+      `<b>Hunger:</b> <span style="color:${hungerLow ? "#e57373" : "#cfe3ef"}">${hunger}/${me?.maxHunger ?? 100}${hungerLow ? " — EAT (Q)!" : ""}</span><br />` +
+      `<b>Banfielder pts:</b> ${me?.banfielderPts ?? 0}${teamStr}<br />` +
       (skillsHtml ? `<b>Skills:</b> <span style="font-size:11px">${skillsHtml}</span><br />` : "") +
       (invItems ? `<b>Inv:</b> <span style="font-size:11px">${invItems}</span><br />` : "") +
       `<b>Here:</b> ${snap.players.length}`;
@@ -815,6 +865,30 @@ function drawResourceSprite(ctx: CanvasRenderingContext2D, n: ResourceNode, x: n
       ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
       ctx.fill();
     }
+  } else if (n.kind === "berryBush") {
+    // Low leafy bush dotted with berries; colour hints at the variety.
+    const v = n.variety ?? "";
+    const berryCol = v.includes("salmon") ? "#e8714f"
+      : v.includes("thimble") ? "#d6453f"
+      : v.includes("salal") ? "#2b3a55"
+      : v.includes("blackberry") ? "#26121f"
+      : "#3a59c0"; // huckleberry blue default
+    ctx.fillStyle = "#2f6b34";
+    for (const [ox, oy, r] of [
+      [0, R * 0.1, R * 0.85],
+      [-R * 0.4, 0, R * 0.55],
+      [R * 0.4, 0.02, R * 0.55],
+    ] as const) {
+      ctx.beginPath();
+      ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = berryCol;
+    for (const [ox, oy] of [[-4, 0], [3, -2], [0, 4], [6, 3], [-6, 4]] as const) {
+      ctx.beginPath();
+      ctx.arc(x + ox, y + oy, 2.1, 0, Math.PI * 2);
+      ctx.fill();
+    }
   } else {
     // Ore vein: rough rock cluster
     const col = n.kind === "ironOre" ? "#8a6040" : "#8a8a8a";
@@ -851,6 +925,124 @@ function drawResourceSprite(ctx: CanvasRenderingContext2D, n: ResourceNode, x: n
     ctx.arc(x, y, R + 4, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2);
     ctx.stroke();
   }
+}
+
+// --- invasive plant sprites -------------------------------------------------
+function drawPlantSprite(ctx: CanvasRenderingContext2D, pl: PlantState, x: number, y: number) {
+  const R = TILE_SIZE * 0.42;
+  const flowering = pl.stage === "flowering";
+  const seeding = pl.stage === "seeding";
+
+  if (pl.kind === "scotchBroom") {
+    // Spindly broom: green whips, yellow pea-flowers when flowering.
+    ctx.strokeStyle = "#3f6b2e";
+    ctx.lineWidth = 2;
+    for (const a of [-0.5, -0.18, 0.15, 0.5]) {
+      ctx.beginPath();
+      ctx.moveTo(x, y + R * 0.6);
+      ctx.lineTo(x + Math.sin(a) * R * 1.1, y - R);
+      ctx.stroke();
+    }
+    if (flowering) {
+      ctx.fillStyle = "#ffd21f";
+      for (const [ox, oy] of [[-6, -8], [0, -12], [6, -7], [-3, -2], [4, -1]] as const) {
+        ctx.beginPath();
+        ctx.arc(x + ox, y + oy, 2.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else if (pl.kind === "himalayanBlackberry") {
+    // Dense arching bramble; dark berries when seeding.
+    ctx.strokeStyle = "#4a6b3a";
+    ctx.lineWidth = 3;
+    for (const a of [-0.8, -0.3, 0.3, 0.8]) {
+      ctx.beginPath();
+      ctx.arc(x, y + R * 0.4, R, Math.PI + a, Math.PI * 2 - a);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "#355a2a";
+    ctx.beginPath();
+    ctx.arc(x, y, R * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    if (flowering) {
+      ctx.fillStyle = "#f3e1ec";
+      for (const [ox, oy] of [[-5, -5], [5, -4], [0, -7]] as const) {
+        ctx.beginPath();
+        ctx.arc(x + ox, y + oy, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (seeding) {
+      ctx.fillStyle = "#1c0d18";
+      for (const [ox, oy] of [[-5, -3], [4, -4], [0, 2]] as const) {
+        ctx.beginPath();
+        ctx.arc(x + ox, y + oy, 2.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else {
+    // Foxglove: a tall spire of purple bells when flowering — pretty but invasive.
+    ctx.strokeStyle = "#2f6b34";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x, y + R * 0.7);
+    ctx.lineTo(x, y - R * 1.1);
+    ctx.stroke();
+    // basal leaves
+    ctx.fillStyle = "#357a3a";
+    ctx.beginPath();
+    ctx.ellipse(x, y + R * 0.6, R * 0.7, R * 0.3, 0, 0, Math.PI * 2);
+    ctx.fill();
+    if (flowering) {
+      ctx.fillStyle = "#b061c9";
+      for (let i = 0; i < 5; i++) {
+        const by = y - R * 1.0 + i * R * 0.4;
+        ctx.beginPath();
+        ctx.ellipse(x + (i % 2 ? 4 : -4), by, 3.4, 4.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  // Flowering = your window to KILL it for good: pulsing golden halo.
+  if (flowering) {
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 220);
+    ctx.strokeStyle = `rgba(255,213,79,${(0.35 + 0.45 * pulse).toFixed(2)})`;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.arc(x, y, R + 6, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function drawCampfireSprite(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const t = performance.now() / 140;
+  // Log ring
+  ctx.strokeStyle = "#5b3a1e";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(x, y + 3, TILE_SIZE * 0.34, 0, Math.PI * 2);
+  ctx.stroke();
+  // Flames
+  for (const [ox, h, col] of [
+    [0, 16, "#ff6a00"],
+    [-4, 11, "#ffb028"],
+    [4, 12, "#ffce4a"],
+  ] as const) {
+    const flick = Math.sin(t + ox) * 2;
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(x + ox - 4, y + 4);
+    ctx.quadraticCurveTo(x + ox + flick, y - h, x + ox + 4, y + 4);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Glow
+  ctx.fillStyle = "rgba(255,150,40,0.12)";
+  ctx.beginPath();
+  ctx.arc(x, y, TILE_SIZE * 0.7, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 // --- vehicle sprites (top-down) ---------------------------------------------

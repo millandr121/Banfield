@@ -1,4 +1,4 @@
-import { BuildingState, ResourceKind, Tile, TravelNode, VehicleKind, WorldMap } from "./protocol";
+import { BuildingState, InvasiveKind, ResourceKind, Tile, TravelNode, VehicleKind, WorldMap } from "./protocol";
 
 // Where a driveable vehicle starts life in a region.
 export interface VehicleSpawn {
@@ -12,6 +12,15 @@ export interface VehicleSpawn {
 export interface ResourceNodeDef {
   id: string;
   kind: ResourceKind;
+  x: number;
+  y: number;
+  variety?: string; // berry kind, for berryBush nodes
+}
+
+// Static placement of a starting invasive plant.
+export interface PlantDef {
+  id: string;
+  kind: InvasiveKind;
   x: number;
   y: number;
 }
@@ -93,6 +102,7 @@ export interface RegionDef {
   travelNodes: TravelNode[];
   vehicles: VehicleSpawn[];
   resourceNodes: ResourceNodeDef[];
+  plants: PlantDef[];
 }
 
 const idx = (x: number, y: number) => y * MAP_WIDTH + x;
@@ -293,6 +303,7 @@ export interface RegionData {
   travelNodes: TravelNode[];
   vehicles?: VehicleSpawn[]; // optional; defaults to none
   resourceNodes?: ResourceNodeDef[]; // optional; defaults to none
+  plants?: PlantDef[]; // optional; defaults to none
 }
 
 export function regionFromData(data: RegionData): RegionDef {
@@ -311,6 +322,7 @@ export function regionFromData(data: RegionData): RegionDef {
     travelNodes: data.travelNodes,
     vehicles: data.vehicles ?? [],
     resourceNodes: data.resourceNodes ?? [],
+    plants: data.plants ?? [],
   };
 }
 
@@ -364,6 +376,18 @@ export function buildRegions(): RegionDef[] {
       { id: "bf-i2", kind: "ironOre",  x: 5,  y: 18 },
       { id: "bf-s1", kind: "stoneOre", x: 54, y: 7  },
       { id: "bf-s2", kind: "stoneOre", x: 54, y: 19 },
+      // Native berry bushes along the forest edges (free food, no fire needed).
+      { id: "bf-b1", kind: "berryBush", x: 12, y: 8,  variety: "huckleberry" },
+      { id: "bf-b2", kind: "berryBush", x: 11, y: 24, variety: "salmonberry" },
+      { id: "bf-b3", kind: "berryBush", x: 47, y: 11, variety: "salal" },
+      { id: "bf-b4", kind: "berryBush", x: 47, y: 27, variety: "thimbleberry" },
+      { id: "bf-b5", kind: "berryBush", x: 13, y: 16, variety: "trailing blackberry" },
+    ],
+    // A couple of established invasives to deal with from day one.
+    plants: [
+      { id: "bf-inv1", kind: "scotchBroom",        x: 44, y: 9 },
+      { id: "bf-inv2", kind: "himalayanBlackberry", x: 15, y: 30 },
+      { id: "bf-inv3", kind: "foxglove",            x: 45, y: 18 },
     ],
   };
 
@@ -411,6 +435,13 @@ export function buildRegions(): RegionDef[] {
       { id: "an-i1", kind: "ironOre",  x: 4,  y: 9  },
       { id: "an-s1", kind: "stoneOre", x: 4,  y: 3  },
       { id: "an-s2", kind: "stoneOre", x: 55, y: 10 },
+      { id: "an-b1", kind: "berryBush", x: 10, y: 8,  variety: "salmonberry" },
+      { id: "an-b2", kind: "berryBush", x: 49, y: 9,  variety: "huckleberry" },
+      { id: "an-b3", kind: "berryBush", x: 12, y: 22, variety: "thimbleberry" },
+    ],
+    plants: [
+      { id: "an-inv1", kind: "scotchBroom", x: 46, y: 14 },
+      { id: "an-inv2", kind: "foxglove",    x: 9,  y: 16 },
     ],
   };
 

@@ -1,13 +1,21 @@
 import {
   Appearance,
   BuildingState,
+  CampfireState,
+  COOK_MAP,
   CRAFT_RECIPES,
   ClientMessage,
   CraftRecipeId,
   CreatureKind,
   CreatureState,
+  FOOD_VALUE,
+  INVASIVE_LABEL,
+  ITEM_LABEL,
   Inventory,
+  InvasiveKind,
   ItemId,
+  PlantStage,
+  PlantState,
   PlayerState,
   RegionId,
   ResourceNode,
@@ -28,7 +36,7 @@ import {
   submergedAt,
   phaseForTide,
 } from "../shared/protocol";
-import { DEFAULT_REGION, RegionDef, ResourceNodeDef, buildRegions } from "../shared/map";
+import { DEFAULT_REGION, PlantDef, RegionDef, ResourceNodeDef, buildRegions } from "../shared/map";
 
 interface Env {
   GAME_ROOM: DurableObjectNamespace;
@@ -105,9 +113,34 @@ const HARVEST_RANGE = 1.8; // tiles from resource node centre
 const HARVEST_COOLDOWN_MS = 700; // min time between harvest presses
 const TREE_MAX_HP = 5; // hits to fell a tree (each gives wood)
 const ORE_MAX_HP = 4; // hits to exhaust an ore vein
+const BERRY_MAX_HP = 3; // pickings per berry bush before it's bare
 const TREE_RESPAWN_MS = 3 * 60 * 1000; // 3 minutes
 const ORE_RESPAWN_MS = 8 * 60 * 1000; // 8 minutes
+const BERRY_RESPAWN_MS = 2 * 60 * 1000; // 2 minutes — berries come back fast
 const MINING_LEVEL_REQ_IRON = 5; // need Mining 5 to extract iron
+const COOK_RANGE = 2.0; // tiles from a campfire to cook
+const CAMPFIRE_BURN_MS = 4 * 60 * 1000; // a campfire lasts 4 minutes
+
+// Hunger ---------------------------------------------------------------------
+const MAX_HUNGER = 100;
+const HUNGER_DECAY = 100 / (9 * 60); // empties in ~9 min of normal play
+const HUNGER_WORK_EXTRA = 0.5; // extra drain/sec while actively moving
+const STARVE_DPS = 2.5; // hp/sec lost at 0 hunger
+
+// Invasive plants ------------------------------------------------------------
+const PLANT_CAP_PER_REGION = 14; // stop runaway spread
+const PLANT_YOUNG_MS = 50 * 1000; // young -> flowering
+const PLANT_FLOWER_MS = 35 * 1000; // flowering -> seeding
+const PLANT_SEED_MS = 12 * 1000; // seeding -> back to young (and spreads)
+const PLANT_REGROW_MS = 60 * 1000; // root regrows if cleared while not flowering
+const CLEARCUT_INVASIVE_CHANCE = 0.45; // chance an invasive sprouts where a tree fell
+
+// Banfielder localism points + gardening XP for plant control.
+const PTS_KILL_FLOWERING = 10; // permanent kill while flowering — the good outcome
+const PTS_CLEAR_OTHER = 1; // cutting it young/seeding only sets it back
+const XP_GARDEN_KILL = 60;
+const XP_GARDEN_CLEAR = 12;
+const XP_FORAGE = 12; // per berry picked (gardening)
 
 // XP awards ------------------------------------------------------------------
 const XP_CHOP = 15; // per hit on a tree
@@ -119,41 +152,35 @@ const XP_DRIVE_PER_SEC = 0.5;
 const XP_FISH = 30; // per successful catch
 const DEATH_XP_LOSS = 0.25; // fraction of raw XP lost on death
 
-const ITEM_LABEL_MAP: Record<ItemId, string> = {
-  wood: "Wood", iron: "Iron", stone: "Stone", plank: "Plank",
-  scrap: "Scrap", food: "Food", rod: "Rod",
-};
-
 // Fishing --------------------------------------------------------------------
 const FISHING_TIME_MS = 5000; // base wait time; reduced by fishing level
 const FISHING_ROD_REQUIRED = true;
-const EAT_HP_RESTORE = 35;
 
 // Loot table -----------------------------------------------------------------
-// Returns { item, qty }[] rolled for the given creature kind.
+// Crabs give crab meat; fish-eaters give raw fish; everything gives scrap.
 function rollLoot(kind: CreatureKind): Array<{ item: ItemId; qty: number }> {
   const drops: Array<{ item: ItemId; qty: number }> = [];
   const r = Math.random;
   switch (kind) {
     case "crab":
-      if (r() < 0.8) drops.push({ item: "scrap", qty: 1 });
-      if (r() < 0.5) drops.push({ item: "food", qty: 1 });
+      if (r() < 0.85) drops.push({ item: "crabmeat", qty: 1 });
+      if (r() < 0.4) drops.push({ item: "scrap", qty: 1 });
       break;
     case "octopus":
-      if (r() < 0.6) drops.push({ item: "scrap", qty: 1 });
-      if (r() < 0.4) drops.push({ item: "food", qty: 1 });
+      if (r() < 0.6) drops.push({ item: "fish", qty: 1 });
+      if (r() < 0.5) drops.push({ item: "scrap", qty: 1 });
       break;
     case "dogfish":
-      if (r() < 0.9) drops.push({ item: "scrap", qty: 1 });
-      if (r() < 0.6) drops.push({ item: "food", qty: 2 });
+      if (r() < 0.9) drops.push({ item: "fish", qty: 2 });
+      if (r() < 0.7) drops.push({ item: "scrap", qty: 1 });
       break;
     case "sixgill":
+      drops.push({ item: "fish", qty: 2 });
       if (r() < 1.0) drops.push({ item: "scrap", qty: 2 });
-      if (r() < 0.7) drops.push({ item: "food", qty: 2 });
       break;
     case "orca":
+      drops.push({ item: "fish", qty: 3 });
       drops.push({ item: "scrap", qty: 2 + Math.floor(r() * 2) });
-      if (r() < 0.8) drops.push({ item: "food", qty: 3 });
       break;
     default: // neutrals (humpback, greywhale) — not killable but here for completeness
       break;
@@ -169,6 +196,8 @@ export class GameRoom {
   private creatures = new Map<string, CreatureState>();
   private vehicles = new Map<string, VehicleRecord>();
   private resourceNodes = new Map<string, ResourceNode>();
+  private plants = new Map<string, PlantState>();
+  private campfires = new Map<string, CampfireState>();
   // playerId → timestamp when they cast their line (null = not fishing)
   private fishingStates = new Map<string, number>();
   // Transient knockback impulses by entity id (players + creatures).
@@ -199,14 +228,27 @@ export class GameRoom {
       for (const n of def.resourceNodes) {
         this.resourceNodes.set(n.id, this.mkNode(n, def.id));
       }
+      for (const pl of def.plants) {
+        this.plants.set(pl.id, this.mkPlant(pl, def.id, now));
+      }
     }
   }
 
   private mkNode(def: ResourceNodeDef, regionId: string): ResourceNode {
-    const maxHp = def.kind === "tree" ? TREE_MAX_HP : ORE_MAX_HP;
+    const maxHp =
+      def.kind === "tree" ? TREE_MAX_HP : def.kind === "berryBush" ? BERRY_MAX_HP : ORE_MAX_HP;
     return {
       id: def.id, kind: def.kind, region: regionId,
       x: def.x, y: def.y, hp: maxHp, maxHp, depleted: false, respawnAt: null,
+      variety: def.variety,
+    };
+  }
+
+  private mkPlant(def: PlantDef, regionId: string, now: number): PlantState {
+    return {
+      id: def.id, kind: def.kind, region: regionId,
+      x: def.x, y: def.y, stage: "young",
+      stageUntil: now + PLANT_YOUNG_MS, dormantUntil: null,
     };
   }
 
@@ -287,8 +329,12 @@ export class GameRoom {
           maxHp: PLAYER_MAX_HP,
           stamina: MAX_STAMINA,
           maxStamina: MAX_STAMINA,
+          hunger: MAX_HUNGER,
+          maxHunger: MAX_HUNGER,
           skills: defaultSkills(),
+          banfielderPts: 0,
           inventory: {},
+          team: null,
           appearance: sanitizeAppearance(msg.appearance),
           swimming: false,
           dodging: false,
@@ -384,6 +430,9 @@ export class GameRoom {
     this.updateResourceRespawn(now);
     this.updateVehicleRust(dt, waterline, now);
     this.updateFishing(now);
+    this.updateHunger(dt);
+    this.updatePlants(now);
+    this.updateCampfires(now);
     this.maybeSpawn(now, waterline);
 
     // Each player only sees their own region; cache one snapshot per region.
@@ -586,30 +635,47 @@ export class GameRoom {
     if (!s) return;
     const now = Date.now();
     if (now - s.lastHarvest < HARVEST_COOLDOWN_MS) return;
-    s.lastHarvest = now;
 
-    // Find nearest un-depleted node in this region within reach.
-    let best: ResourceNode | null = null;
+    // Consider both resource nodes and invasive plants — act on the nearest.
+    let bestNode: ResourceNode | null = null;
+    let bestPlant: PlantState | null = null;
     let bestD = HARVEST_RANGE;
     for (const n of this.resourceNodes.values()) {
       if (n.region !== p.region || n.depleted) continue;
       const d = Math.hypot(n.x + 0.5 - p.x, n.y + 0.5 - p.y);
-      if (d <= bestD) { bestD = d; best = n; }
+      if (d <= bestD) { bestD = d; bestNode = n; bestPlant = null; }
     }
-    if (!best) return;
+    for (const pl of this.plants.values()) {
+      if (pl.region !== p.region || pl.dormantUntil !== null) continue;
+      const d = Math.hypot(pl.x + 0.5 - p.x, pl.y + 0.5 - p.y);
+      if (d <= bestD) { bestD = d; bestPlant = pl; bestNode = null; }
+    }
+
+    if (bestPlant) {
+      s.lastHarvest = now;
+      this.clearPlant(p, bestPlant, now);
+      return;
+    }
+    if (!bestNode) return;
+    s.lastHarvest = now;
 
     // Skill-level gate for iron ore.
-    if (best.kind === "ironOre" && skillLevel(p.skills.mining) < MINING_LEVEL_REQ_IRON) {
-      const ws = this.sessionFor(p.id);
-      if (ws) this.send(ws.ws, { t: "log", msg: `Need Mining level ${MINING_LEVEL_REQ_IRON} to extract iron.` });
+    if (bestNode.kind === "ironOre" && skillLevel(p.skills.mining) < MINING_LEVEL_REQ_IRON) {
+      this.tell(p, `Need Mining level ${MINING_LEVEL_REQ_IRON} to extract iron.`);
       return;
     }
 
-    best.hp -= 1;
-    if (best.kind === "tree") {
+    bestNode.hp -= 1;
+    let respawnMs = ORE_RESPAWN_MS;
+    if (bestNode.kind === "tree") {
       this.addItem(p.inventory, "wood", 1);
       this.giveXP(p, "woodcutting", XP_CHOP);
-    } else if (best.kind === "ironOre") {
+      respawnMs = TREE_RESPAWN_MS;
+    } else if (bestNode.kind === "berryBush") {
+      this.addItem(p.inventory, "berry", 1);
+      this.giveXP(p, "gardening", XP_FORAGE);
+      respawnMs = BERRY_RESPAWN_MS;
+    } else if (bestNode.kind === "ironOre") {
       this.addItem(p.inventory, "iron", 1);
       this.giveXP(p, "mining", XP_MINE);
     } else {
@@ -617,10 +683,103 @@ export class GameRoom {
       this.giveXP(p, "mining", XP_MINE);
     }
 
-    if (best.hp <= 0) {
-      best.depleted = true;
-      best.hp = 0;
-      best.respawnAt = now + (best.kind === "tree" ? TREE_RESPAWN_MS : ORE_RESPAWN_MS);
+    if (bestNode.hp <= 0) {
+      bestNode.depleted = true;
+      bestNode.hp = 0;
+      bestNode.respawnAt = now + respawnMs;
+      // Felling a tree opens a clearcut — invasives love disturbed ground.
+      if (bestNode.kind === "tree" && Math.random() < CLEARCUT_INVASIVE_CHANCE) {
+        this.spawnInvasiveNear(bestNode.region, bestNode.x, bestNode.y, now);
+      }
+    }
+  }
+
+  // Tackle an invasive plant. The science-true twist: it only dies for GOOD if
+  // it's FLOWERING (all its energy is up top). Clear it young or seeding and the
+  // root survives to regrow later.
+  private clearPlant(p: PlayerState, plant: PlantState, now: number) {
+    if (plant.stage === "flowering") {
+      this.plants.delete(plant.id);
+      p.banfielderPts += PTS_KILL_FLOWERING;
+      this.giveXP(p, "gardening", XP_GARDEN_KILL);
+      this.tell(p, `Pulled the flowering ${INVASIVE_LABEL[plant.kind]} — killed for good! +${PTS_KILL_FLOWERING} Banfielder pts`);
+    } else {
+      // Cut back, but the root lives. It lies dormant, then regrows young.
+      plant.dormantUntil = now + PLANT_REGROW_MS;
+      plant.stage = "young";
+      plant.stageUntil = now + PLANT_REGROW_MS + PLANT_YOUNG_MS;
+      p.banfielderPts += PTS_CLEAR_OTHER;
+      this.giveXP(p, "gardening", XP_GARDEN_CLEAR);
+      this.tell(p, `Cut back the ${INVASIVE_LABEL[plant.kind]} — but the root survives. Get it while it FLOWERS to kill it.`);
+    }
+  }
+
+  private spawnInvasiveNear(regionId: RegionId, x: number, y: number, now: number) {
+    const count = [...this.plants.values()].filter((pl) => pl.region === regionId).length;
+    if (count >= PLANT_CAP_PER_REGION) return;
+    const region = this.regions.get(regionId);
+    if (!region) return;
+    const ox = x + Math.round((Math.random() - 0.5) * 4);
+    const oy = y + Math.round((Math.random() - 0.5) * 4);
+    if (!this.inBounds(region.map, ox + 0.5, oy + 0.5)) return;
+    // Don't sprout in the sea.
+    if (this.tileAt(region.map, ox + 0.5, oy + 0.5) === Tile.Water) return;
+    const kinds: InvasiveKind[] = ["scotchBroom", "himalayanBlackberry", "foxglove"];
+    const kind = kinds[Math.floor(Math.random() * kinds.length)];
+    const id = `inv${this.idCounter++}`;
+    this.plants.set(id, {
+      id, kind, region: regionId, x: ox, y: oy,
+      stage: "young", stageUntil: now + PLANT_YOUNG_MS, dormantUntil: null,
+    });
+  }
+
+  private updatePlants(now: number) {
+    for (const pl of this.plants.values()) {
+      // Dormant (recently cut-back) plants wait, then re-emerge.
+      if (pl.dormantUntil !== null) {
+        if (now >= pl.dormantUntil) {
+          pl.dormantUntil = null;
+          pl.stage = "young";
+          pl.stageUntil = now + PLANT_YOUNG_MS;
+        }
+        continue;
+      }
+      if (now < pl.stageUntil) continue;
+      const next = nextStage(pl.stage);
+      pl.stage = next;
+      if (next === "young") {
+        pl.stageUntil = now + PLANT_YOUNG_MS;
+      } else if (next === "flowering") {
+        pl.stageUntil = now + PLANT_FLOWER_MS;
+      } else {
+        // Seeding: spread to new ground, then reset to young next cycle.
+        pl.stageUntil = now + PLANT_SEED_MS;
+        // Scotch broom is the aggressive spreader.
+        const spreadChance = pl.kind === "scotchBroom" ? 0.9 : 0.5;
+        if (Math.random() < spreadChance) {
+          this.spawnInvasiveNear(pl.region, pl.x, pl.y, now);
+        }
+      }
+    }
+  }
+
+  private updateCampfires(now: number) {
+    for (const [id, f] of this.campfires) {
+      if (now >= f.expiresAt) this.campfires.delete(id);
+    }
+  }
+
+  private updateHunger(dt: number) {
+    for (const p of this.players.values()) {
+      if (p.dead) continue;
+      const s = this.sessionFor(p.id);
+      const working = s ? s.dx !== 0 || s.dy !== 0 : false;
+      const decay = HUNGER_DECAY + (working ? HUNGER_WORK_EXTRA : 0);
+      p.hunger = Math.max(0, p.hunger - decay * dt);
+      if (p.hunger <= 0) {
+        p.hp -= STARVE_DPS * dt;
+        if (p.hp <= 0 && !p.dead) this.killPlayer(p);
+      }
     }
   }
 
@@ -631,15 +790,33 @@ export class GameRoom {
     if (!recipe) return;
     const s = this.sessionFor(p.id);
 
+    // Cooking is special: it needs a nearby fire and consumes whatever raw
+    // food you have, rather than fixed ingredients. Handle before the cost check.
+    if (recipeId === "cook") {
+      this.doCook(p);
+      return;
+    }
+
     // Check and consume ingredients.
     for (const [item, qty] of Object.entries(recipe.needs) as [ItemId, number][]) {
       if ((p.inventory[item] ?? 0) < qty) {
-        if (s) this.send(s.ws, { t: "log", msg: `Need ${qty} ${ITEM_LABEL_MAP[item]} to craft.` });
+        this.tell(p, `Need ${qty} ${ITEM_LABEL[item]} to craft.`);
         return;
       }
     }
     for (const [item, qty] of Object.entries(recipe.needs) as [ItemId, number][]) {
       p.inventory[item] = (p.inventory[item] ?? 0) - qty;
+    }
+
+    if (recipeId === "campfire") {
+      const id = `fire${this.idCounter++}`;
+      this.campfires.set(id, {
+        id, region: p.region,
+        x: Math.round(p.x), y: Math.round(p.y),
+        expiresAt: Date.now() + CAMPFIRE_BURN_MS,
+      });
+      this.broadcastLog(`${p.name} lit a campfire.`);
+      return;
     }
 
     // Special-case recipes that do world actions rather than produce items.
@@ -654,9 +831,9 @@ export class GameRoom {
       if (best) {
         best.hp = Math.min(best.maxHp, best.hp + 50);
         best.lastDriven = Date.now();
-        if (s) this.send(s.ws, { t: "log", msg: `Repaired the ${best.kind} (+50 HP).` });
+        this.tell(p, `Repaired the ${best.kind} (+50 HP).`);
       } else {
-        if (s) this.send(s.ws, { t: "log", msg: "No vehicle nearby to repair." });
+        this.tell(p, "No vehicle nearby to repair.");
         // Refund if no target found.
         for (const [item, qty] of Object.entries(recipe.needs) as [ItemId, number][]) {
           this.addItem(p.inventory, item, qty);
@@ -673,9 +850,9 @@ export class GameRoom {
         if (b.kind === "rubble" && b.hp > b.maxHp * 0.5) {
           b.kind = (b as any).originalKind ?? "house";
         }
-        if (s) this.send(s.ws, { t: "log", msg: `Repaired building (+80 HP).` });
+        this.tell(p, `Repaired building (+80 HP).`);
       } else {
-        if (s) this.send(s.ws, { t: "log", msg: "No building nearby to repair." });
+        this.tell(p, "No building nearby to repair.");
         for (const [item, qty] of Object.entries(recipe.needs) as [ItemId, number][]) {
           this.addItem(p.inventory, item, qty);
         }
@@ -683,31 +860,58 @@ export class GameRoom {
       return;
     }
 
-    if (recipeId === "campfire") {
-      this.broadcastLog(`${p.name} lit a campfire.`);
-      return;
-    }
-
     // Regular item output.
     for (const [item, qty] of Object.entries(recipe.gives) as [ItemId, number][]) {
       this.addItem(p.inventory, item, qty);
     }
-    if (s) this.send(s.ws, { t: "log", msg: `Crafted: ${recipe.name}.` });
+    this.tell(p, `Crafted: ${recipe.name}.`);
+    void s;
   }
 
+  // Cook all raw meat/fish on a nearby campfire.
+  private doCook(p: PlayerState) {
+    const fire = [...this.campfires.values()].find(
+      (f) => f.region === p.region && Math.hypot(f.x + 0.5 - p.x, f.y + 0.5 - p.y) <= COOK_RANGE,
+    );
+    if (!fire) {
+      this.tell(p, "Stand by a campfire to cook (craft one with 4 wood).");
+      return;
+    }
+    let cooked = 0;
+    for (const [raw, done] of Object.entries(COOK_MAP) as [ItemId, ItemId][]) {
+      const n = p.inventory[raw] ?? 0;
+      if (n > 0) {
+        p.inventory[raw] = 0;
+        this.addItem(p.inventory, done, n);
+        cooked += n;
+      }
+    }
+    this.tell(p, cooked > 0 ? `Cooked ${cooked} item(s) over the fire.` : "Nothing raw to cook.");
+  }
+
+  // Eat the most-filling food you carry; restores hunger (and a little HP).
   private doEat(playerId: string) {
     const p = this.players.get(playerId);
     if (!p || p.dead) return;
-    if ((p.inventory.food ?? 0) < 1) {
-      const s = this.sessionFor(p.id);
-      if (s) this.send(s.ws, { t: "log", msg: "No food to eat." });
+    // Pick the food item that restores the most hunger and that we actually have.
+    let chosen: ItemId | null = null;
+    let bestHunger = -1;
+    for (const [item, val] of Object.entries(FOOD_VALUE) as [ItemId, { hunger: number; hp: number }][]) {
+      if ((p.inventory[item] ?? 0) > 0 && val.hunger > bestHunger) {
+        bestHunger = val.hunger;
+        chosen = item;
+      }
+    }
+    if (!chosen) {
+      this.tell(p, "No food to eat. Hunt crabs, fish, or pick berries.");
       return;
     }
-    p.inventory.food = (p.inventory.food ?? 0) - 1;
-    const gained = Math.min(EAT_HP_RESTORE, p.maxHp - p.hp);
-    p.hp += gained;
-    const s = this.sessionFor(p.id);
-    if (s) this.send(s.ws, { t: "log", msg: `Ate food (+${Math.round(gained)} HP).` });
+    p.inventory[chosen] = (p.inventory[chosen] ?? 0) - 1;
+    const val = FOOD_VALUE[chosen]!;
+    p.hunger = Math.min(p.maxHunger, p.hunger + val.hunger);
+    const gainedHp = Math.min(val.hp, p.maxHp - p.hp);
+    p.hp += gainedHp;
+    this.tell(p, `Ate ${ITEM_LABEL[chosen]} (+${val.hunger} food${gainedHp > 0 ? `, +${Math.round(gainedHp)} HP` : ""}).`);
   }
 
   private doFishToggle(playerId: string) {
@@ -753,13 +957,11 @@ export class GameRoom {
       const fishingLevel = skillLevel(p.skills.fishing);
       const catchChance = 0.55 + fishingLevel * 0.01; // 55% + 1% per level
       if (Math.random() < catchChance) {
-        this.addItem(p.inventory, "food", 1 + (fishingLevel >= 20 ? 1 : 0));
+        this.addItem(p.inventory, "fish", 1 + (fishingLevel >= 20 ? 1 : 0));
         this.giveXP(p, "fishing", XP_FISH);
-        const s = this.sessionFor(playerId);
-        if (s) this.send(s.ws, { t: "log", msg: "You caught a fish!" });
+        this.tell(p, "You caught a fish! (cook it on a fire to eat well)");
       } else {
-        const s = this.sessionFor(playerId);
-        if (s) this.send(s.ws, { t: "log", msg: "The fish got away…" });
+        this.tell(p, "The fish got away…");
       }
     }
   }
@@ -767,22 +969,60 @@ export class GameRoom {
   private doChat(playerId: string, rawMsg: string) {
     const p = this.players.get(playerId);
     if (!p || p.dead) return;
-    const msg = rawMsg.slice(0, 120).trim();
+    const msg = rawMsg.slice(0, 160).trim();
     if (!msg) return;
-    let channel: "global" | "team" = "global";
-    let text = msg;
-    if (msg.startsWith("//")) {
-      channel = "team";
-      text = msg.slice(2).trim();
-    } else if (msg.startsWith("/")) {
-      text = msg.slice(1).trim();
+
+    // Commands first (so "/team ..." isn't read as global chat).
+    if (msg.startsWith("/team")) {
+      const name = msg.slice(5).trim().slice(0, 20);
+      if (!name) {
+        if (p.team) this.tell(p, `You left team "${p.team}".`);
+        p.team = null;
+      } else {
+        p.team = name;
+        this.tell(p, `You joined team "${name}". Use // to talk to your team.`);
+      }
+      return;
     }
+    if (msg.startsWith("/who")) {
+      const here = [...this.players.values()].filter((q) => !q.dead).map((q) => q.name + (q.team ? `(${q.team})` : "")).join(", ");
+      this.tell(p, `Online: ${here}`);
+      return;
+    }
+
+    // Channels: /// private (to a named player), // team, / or plain = global.
+    if (msg.startsWith("///")) {
+      const rest = msg.slice(3).trim();
+      const sp = rest.indexOf(" ");
+      if (sp < 1) { this.tell(p, "Usage: ///Name your message"); return; }
+      const targetName = rest.slice(0, sp);
+      const text = rest.slice(sp + 1).trim();
+      if (!text) return;
+      const target = [...this.players.values()].find(
+        (q) => q.name.toLowerCase() === targetName.toLowerCase(),
+      );
+      if (!target) { this.tell(p, `No player named "${targetName}" online.`); return; }
+      const ts = this.sessionFor(target.id);
+      if (ts) this.send(ts.ws, { t: "chat", from: p.name, msg: text, channel: "private" });
+      this.tell(p, `→ ${target.name} (private): ${text}`);
+      return;
+    }
+    if (msg.startsWith("//")) {
+      const text = msg.slice(2).trim();
+      if (!text) return;
+      if (!p.team) { this.tell(p, "Join a team first: /team <name>"); return; }
+      for (const s of this.sessions.values()) {
+        const sp = this.players.get(s.playerId);
+        if (!sp || sp.team !== p.team) continue;
+        this.send(s.ws, { t: "chat", from: p.name, msg: text, channel: "team" });
+      }
+      return;
+    }
+    // Global — everyone, both regions.
+    const text = msg.startsWith("/") ? msg.slice(1).trim() : msg;
     if (!text) return;
-    // Team chat stub: broadcast to same region for now (team system coming).
     for (const s of this.sessions.values()) {
-      const sp = this.players.get(s.playerId);
-      if (!sp || sp.region !== p.region) continue;
-      this.send(s.ws, { t: "chat", from: p.name, msg: text, channel });
+      this.send(s.ws, { t: "chat", from: p.name, msg: text, channel: "global" });
     }
   }
 
@@ -1102,6 +1342,7 @@ export class GameRoom {
       p.dead = false;
       p.hp = p.maxHp;
       p.stamina = p.maxStamina;
+      p.hunger = p.maxHunger;
       if (region) {
         const sp = this.landSpawn(region, region.spawn.x, region.spawn.y);
         p.x = sp.x;
@@ -1249,7 +1490,15 @@ export class GameRoom {
       buildings: region.buildings,
       vehicles: [...this.vehicles.values()].filter((v) => v.region === regionId),
       resourceNodes: [...this.resourceNodes.values()].filter((n) => n.region === regionId),
+      plants: [...this.plants.values()].filter((pl) => pl.region === regionId && pl.dormantUntil === null),
+      campfires: [...this.campfires.values()].filter((f) => f.region === regionId),
     };
+  }
+
+  // Send a one-off log line to a single player.
+  private tell(p: PlayerState, msg: string) {
+    const s = this.sessionFor(p.id);
+    if (s) this.send(s.ws, { t: "log", msg });
   }
 
   private send(ws: WebSocket, msg: ServerMessage) {
@@ -1343,6 +1592,12 @@ function creatureDamage(kind: CreatureKind): number {
     default:
       return 0;
   }
+}
+
+function nextStage(stage: PlantStage): PlantStage {
+  if (stage === "young") return "flowering";
+  if (stage === "flowering") return "seeding";
+  return "young"; // seeding cycles back
 }
 
 function isNeutral(kind: CreatureKind): boolean {
