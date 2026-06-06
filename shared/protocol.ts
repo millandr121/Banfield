@@ -42,6 +42,13 @@ export const TSUNAMI_SURGE = 30; // extra waterline during a (rare) tsunami
 
 export type TidePhase = "low" | "mid" | "high";
 
+// --- Water depth tiers -------------------------------------------------------
+// depth = waterline - tile_elevation (positive = underwater)
+export const DEPTH_ANKLE  =  4; // ankle/knee — cars wade, crabs, octopus
+export const DEPTH_SWIM   = 10; // waist/swim — player swimming, small boats
+export const DEPTH_DEEP   = 30; // deep water — sharks, big boats
+export const DEPTH_OCEAN  = 60; // open ocean — orca, whales, prawn zone
+
 // --- World map --------------------------------------------------------------
 export interface WorldMap {
   width: number;
@@ -78,29 +85,53 @@ export function defaultSkills(): Skills {
 // --- Inventory --------------------------------------------------------------
 export const ITEM_IDS = [
   "wood", "iron", "stone", "plank", "scrap", "rod",
-  "crabmeat", "fish", "berry", "cookedcrab", "cookedfish",
+  "crabmeat", "fish", "liveFish", "salmon", "lingcod", "halibut", "tuna",
+  "venison", "poultry",
+  "berry", "cookedcrab", "cookedfish", "cookedsalmon", "cookedlingcod",
+  "cookedvenison", "cookedpoultry",
+  "ironBar", "shinyLure", "jerryCan",
 ] as const;
 export type ItemId = (typeof ITEM_IDS)[number];
 export type Inventory = Partial<Record<ItemId, number>>;
 export const ITEM_LABEL: Record<ItemId, string> = {
-  wood: "Wood", iron: "Iron", stone: "Stone", plank: "Plank", scrap: "Scrap", rod: "Rod",
-  crabmeat: "Crab meat", fish: "Raw fish", berry: "Berries",
+  wood: "Wood", iron: "Iron ore", stone: "Stone", plank: "Plank", scrap: "Scrap", rod: "Rod",
+  crabmeat: "Crab meat",
+  fish: "Raw fish", liveFish: "Live fish",
+  salmon: "Salmon", lingcod: "Lingcod", halibut: "Halibut", tuna: "Tuna",
+  venison: "Venison", poultry: "Game bird",
+  berry: "Berries",
   cookedcrab: "Cooked crab", cookedfish: "Cooked fish",
+  cookedsalmon: "Cooked salmon", cookedlingcod: "Cooked lingcod",
+  cookedvenison: "Roast venison", cookedpoultry: "Roast game bird",
+  ironBar: "Iron Bar", shinyLure: "Shiny Lure", jerryCan: "Jerry can",
 };
 
-// What eating an item restores. Raw food is weak; cooking over a fire roughly
-// triples it. Berries are decent straight off the bush (no fire needed).
+// What eating an item restores.
 export const FOOD_VALUE: Partial<Record<ItemId, { hunger: number; hp: number }>> = {
-  crabmeat: { hunger: 9, hp: 3 },
-  fish: { hunger: 9, hp: 3 },
-  berry: { hunger: 15, hp: 6 },
-  cookedcrab: { hunger: 36, hp: 20 },
-  cookedfish: { hunger: 42, hp: 24 },
+  crabmeat:      { hunger: 9,  hp: 3  },
+  fish:          { hunger: 9,  hp: 3  },
+  liveFish:      { hunger: 9,  hp: 3  },
+  salmon:        { hunger: 14, hp: 5  },
+  lingcod:       { hunger: 18, hp: 7  },
+  halibut:       { hunger: 22, hp: 10 },
+  tuna:          { hunger: 28, hp: 14 },
+  venison:       { hunger: 16, hp: 6  },
+  poultry:       { hunger: 10, hp: 4  },
+  berry:         { hunger: 15, hp: 6  },
+  cookedcrab:    { hunger: 36, hp: 20 },
+  cookedfish:    { hunger: 42, hp: 24 },
+  cookedsalmon:  { hunger: 50, hp: 30 },
+  cookedlingcod: { hunger: 58, hp: 36 },
+  cookedvenison: { hunger: 55, hp: 32 },
+  cookedpoultry: { hunger: 38, hp: 22 },
 };
-// Raw -> cooked conversions at a campfire.
 export const COOK_MAP: Partial<Record<ItemId, ItemId>> = {
   crabmeat: "cookedcrab",
-  fish: "cookedfish",
+  fish:     "cookedfish",
+  salmon:   "cookedsalmon",
+  lingcod:  "cookedlingcod",
+  venison:  "cookedvenison",
+  poultry:  "cookedpoultry",
 };
 
 // --- Resource nodes ---------------------------------------------------------
@@ -157,9 +188,20 @@ export interface CampfireState {
   expiresAt: number; // burns out at this time
 }
 
+// --- Furnaces ---------------------------------------------------------------
+// Permanent stone forge — smelt iron ore into bars here.
+export interface FurnaceState {
+  id: string;
+  region: RegionId;
+  x: number;
+  y: number;
+}
+
 // --- Crafting ---------------------------------------------------------------
 export type CraftRecipeId =
-  | "plank" | "rod" | "campfire" | "cook" | "repairVehicle" | "repairBuilding";
+  | "plank" | "rod" | "campfire" | "cook"
+  | "smelt" | "furnace" | "shinyLure"
+  | "repairVehicle" | "repairBuilding";
 
 // Shared recipe data — used by server for logic AND by client for the craft panel.
 export interface RecipeInfo {
@@ -171,12 +213,15 @@ export interface RecipeInfo {
 }
 
 export const CRAFT_RECIPES: RecipeInfo[] = [
-  { id: "plank",         name: "Plank",           needs: { wood: 3 },                gives: { plank: 1 }, note: "3 timber → 1 plank" },
-  { id: "rod",           name: "Fishing Rod",      needs: { wood: 3, iron: 2 },       gives: { rod: 1 },   note: "3 wood + 2 iron → fishing rod" },
-  { id: "campfire",      name: "Campfire",          needs: { wood: 4 },                gives: {},           note: "4 wood — light a fire to cook on" },
-  { id: "cook",          name: "Cook (at a fire)",  needs: {},                         gives: {},           note: "Cook raw meat/fish on a nearby fire" },
-  { id: "repairVehicle", name: "Repair Vehicle",    needs: { plank: 2, scrap: 2 },     gives: {},           note: "2 plank + 2 scrap → +50 HP nearest vehicle" },
-  { id: "repairBuilding",name: "Repair Building",   needs: { wood: 5, stone: 3 },      gives: {},           note: "5 wood + 3 stone → +80 HP nearest building" },
+  { id: "plank",         name: "Plank",              needs: { wood: 3 },                gives: { plank: 1 },     note: "3 timber → 1 plank" },
+  { id: "rod",           name: "Fishing Rod",         needs: { wood: 3, iron: 2 },       gives: { rod: 1 },       note: "3 wood + 2 iron ore → fishing rod" },
+  { id: "campfire",      name: "Campfire",             needs: { wood: 4 },                gives: {},               note: "4 wood — light a fire to cook on" },
+  { id: "cook",          name: "Cook (at a fire)",     needs: {},                         gives: {},               note: "Cook raw meat/fish on a nearby fire" },
+  { id: "furnace",       name: "Build Furnace",        needs: { stone: 6, iron: 2 },      gives: {},               note: "6 stone + 2 iron ore → permanent forge" },
+  { id: "smelt",         name: "Smelt Iron (furnace)", needs: { iron: 2 },                gives: { ironBar: 1 },   note: "2 iron ore → 1 iron bar (stand at a furnace)" },
+  { id: "shinyLure",     name: "Shiny Lure",           needs: { ironBar: 1 },             gives: { shinyLure: 1 }, note: "1 iron bar → 1 shiny lure (better fishing)" },
+  { id: "repairVehicle", name: "Repair Vehicle",       needs: { plank: 2, scrap: 2 },     gives: {},               note: "2 plank + 2 scrap → +50 HP nearest vehicle" },
+  { id: "repairBuilding",name: "Repair Building",      needs: { wood: 5, stone: 3 },      gives: {},               note: "5 wood + 3 stone → +80 HP nearest building" },
 ];
 
 export interface PlayerState {
@@ -209,13 +254,24 @@ export interface PlayerState {
 }
 
 export type CreatureKind =
-  | "crab" // low tide, land, swarms structures
-  | "octopus" // either tide
-  | "dogfish" // high tide shark
-  | "sixgill" // high tide bigger shark
-  | "orca" // high tide apex
-  | "humpback" // neutral
-  | "greywhale"; // neutral
+  // --- marine ---
+  | "crab"       // low tide, land, swarms structures
+  | "octopus"    // either tide
+  | "dogfish"    // high tide shark
+  | "sixgill"    // high tide bigger shark
+  | "orca"       // high tide apex — very rare, sometimes in pods
+  | "humpback"   // neutral whale
+  | "greywhale"  // neutral whale
+  | "seal"       // common, friendly, follows slow swimmers
+  | "sealLion"   // common, playful, hauls out on rocks
+  | "seaOtter"   // rare, curious, hides when approached
+  // --- land ---
+  | "deer"       // prey, flees from players
+  | "elk"        // prey, large, flees
+  | "grouse"     // prey bird, spooks at close range
+  | "bear"       // dangerous, attacks if provoked or surprised
+  | "cougar"     // stealth predator, dangerous
+  | "wolf";      // pack hunter, bold
 
 export interface CreatureState {
   id: string;
@@ -242,6 +298,8 @@ export interface VehicleState {
   dir: number; // heading in radians
   hp: number;
   maxHp: number;
+  fuel: number;
+  maxFuel: number;
   driverId: string | null; // player currently driving, else null
 }
 
@@ -274,6 +332,17 @@ export interface BuildingState {
   shop?: ShopDef; // present if you can trade here
 }
 
+// --- NPCs -------------------------------------------------------------------
+export type NpcKind = "naturalist" | "pirate" | "scientist" | "westsider" | "eastsider" | "huuayaht" | "mayor" | "historian" | "boatdealer" | "icevendor";
+
+export interface NpcState {
+  id: string;
+  kind: NpcKind;
+  region: RegionId;
+  x: number;
+  y: number;
+}
+
 // --- Travel between regions -------------------------------------------------
 // A travel node is a pad you stand on and activate to move *yourself* (on foot)
 // to another region — vehicles stay behind. Catch the scheduled bus at the
@@ -303,7 +372,7 @@ export interface RegionInfo {
 // --- Messages: client -> server --------------------------------------------
 export type ClientMessage =
   | { t: "join"; name: string; appearance: Appearance }
-  | { t: "input"; dx: number; dy: number } // intended direction, each -1..1
+  | { t: "input"; dx: number; dy: number; sprint?: boolean } // intended direction, each -1..1
   | { t: "attack"; charge?: number } // charge 0..1 from how long Space was held
   | { t: "dodge" } // quick lunge + i-frames in the current heading
   | { t: "board" } // get in / out of the nearest vehicle
@@ -315,7 +384,8 @@ export type ClientMessage =
   | { t: "chat"; msg: string } // text; / global, // team, ///name private
   | { t: "repair" }
   | { t: "trade"; buildingId: string; kind: "buy" | "sell"; item: ItemId; qty: number }
-  | { t: "travel" };
+  | { t: "travel" }
+  | { t: "refuel" };
 
 // --- Messages: server -> client --------------------------------------------
 export interface Snapshot {
@@ -330,6 +400,8 @@ export interface Snapshot {
   resourceNodes: ResourceNode[];
   plants: PlantState[];
   campfires: CampfireState[];
+  furnaces: FurnaceState[];
+  npcs: NpcState[];
 }
 
 export type ServerMessage =

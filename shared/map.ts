@@ -244,7 +244,11 @@ function generateBamfieldMap(): WorldMap {
   }
 
   // --- BARKLEY SOUND / TREVOR CHANNEL (open water, south) ---
-  rect(tiles, 35, 155, W - 20, H - 1, Tile.Water);
+  // Start at y=138 — well south of the last building (y≈123). The inlet
+  // has already widened to ~50 tiles at this point, so the channel
+  // transitions naturally into open sound. Depth in the centre reaches
+  // the DEPTH_OCEAN (abyss-tier) zone, giving prawn and whale territory.
+  rect(tiles, 0, 138, W - 1, H - 1, Tile.Water);
 
   // --- BRADY'S BEACH (Pacific-facing beach, far west) ---
   // Large open-coast bay: x=20-70, y=90-155, connects south to Barkley Sound.
@@ -267,6 +271,16 @@ function generateBamfieldMap(): WorldMap {
     for (let x = 178; x <= 214; x++)
       if (tiles[y * W + x] === Tile.Forest || tiles[y * W + x] === Tile.Hill)
         tiles[y * W + x] = Tile.Grass;
+
+  // Bushy back-country trail linking West & East Bamfield around the north end
+  // of the inlet. There is NO road between the two sides — you cross by boat, or
+  // hoof this rough single-track through the forest (a faint grassy line).
+  for (let x = 150; x <= 188; x++) {
+    const ty = 10 + Math.round(2 * Math.sin(x * 0.35));
+    for (let yy = ty; yy <= ty + 1; yy++)
+      if (tiles[yy * W + x] === Tile.Forest || tiles[yy * W + x] === Tile.Hill)
+        tiles[yy * W + x] = Tile.Grass;
+  }
 
   // --- ROADS ---
   // Bamfield Main: arrives from the NE (ferry road end), runs S to road-end.
@@ -384,106 +398,112 @@ function generateAnaclaMap(): WorldMap {
   const W = MAP_WIDTH, H = MAP_HEIGHT;
   const tiles: Tile[] = fill(Tile.Grass);
 
-  // --- PACHENA BAY (wide crescent bay facing SW) ---
-  // North shore defined by a sine curve so the bay is deepest at the centre
-  // and closes at both the NE (Anacla side) and NW (Keeha/headland side).
-  //   bay_north(x) = 148 - 68 * sin(π * (x - 22) / 256)   x ∈ [22, 278]
-  // At x=22:  148 (eastern tip)
-  // At x=150: 148 - 68 = 80 (deepest north extent, ~centre of map)
-  // At x=278: 148 (western tip / headland)
+  // --- PACHENA BAY (deep bay opening SOUTH; long beach at its head) ---
+  // The bay is a basin between two headlands (E & W). Its north shore is a
+  // gentle arc — that arc is the long Pachena Beach at the head of the bay.
+  // South of y=152 it opens into the true Pacific (deep ocean tiers).
+  const BAY_W0 = 48, BAY_W1 = 252;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
-      if (y >= 160) { tiles[y * W + x] = Tile.Water; continue; } // open ocean
-      if (x >= 22 && x <= 278) {
-        const t = 148 - 68 * Math.sin(Math.PI * (x - 22) / 256);
-        if (y > t) tiles[y * W + x] = Tile.Water;
+      if (y >= 152) { tiles[y * W + x] = Tile.Water; continue; } // open Pacific
+      if (x >= BAY_W0 && x <= BAY_W1) {
+        // north shore dips deepest (furthest north) at the bay centre
+        const shore = 100 - 28 * Math.sin(Math.PI * (x - BAY_W0) / (BAY_W1 - BAY_W0));
+        if (y > shore) tiles[y * W + x] = Tile.Water;
       }
     }
   }
 
-  // --- KEEHA BEACH / OPEN PACIFIC (far west, x ≤ 22) ---
-  // West-facing exposure: sea from y=85 to map bottom.
-  rect(tiles, 0, 85, 22, H - 1, Tile.Water);
-
-  // --- PACHENA RIVER (meanders from north into the bay, at x≈195) ---
-  // Village is on the EAST bank; river is west of the road.
-  for (let y = 0; y < 90; y++) {
-    const rx = 195 + Math.round(8 * Math.sin(y * 0.10));
-    for (let x = rx - 3; x <= rx + 3; x++) {
-      if (x >= 0 && x < W) tiles[y * W + x] = Tile.Water;
-    }
+  // --- PACHENA RIVER (enters from the north into the NE corner of the bay) ---
+  // Lower Anacla sits on the EAST bank of this river.
+  for (let y = 0; y < 92; y++) {
+    const rx = 162 + Math.round(7 * Math.sin(y * 0.08));
+    for (let x = rx - 2; x <= rx + 2; x++) if (x >= 0 && x < W) tiles[y * W + x] = Tile.Water;
   }
 
   // --- NATURAL LANDCOVER ---
   applyLandcover(tiles, W, H);
 
-  // Anacla village is a settled Huu-ay-aht community — clear the forest
-  // for the village strip east of the river so houses aren't in trees.
-  for (let y = 15; y <= 72; y++)
-    for (let x = 200; x <= 250; x++)
+  // Lower Anacla village flat — clear the bench east of the river, by the bay.
+  for (let y = 38; y <= 92; y++)
+    for (let x = 172; x <= 224; x++)
       if (tiles[y * W + x] === Tile.Forest || tiles[y * W + x] === Tile.Hill)
         tiles[y * W + x] = Tile.Grass;
 
-  // --- WIDE SANDY FLAT (Pachena Beach tidal zone) ---
-  // The beach is enormous; paint a wide sand band all around the bay shore.
+  // --- UPPER ANACLA (a hill bench ESE of the village, up a steep bank) ---
+  // No road or trail climbs it — it reads as a plateau ringed by steep rock.
+  rect(tiles, 234, 22, 288, 74, Tile.Hill);
+  for (let x = 232; x <= 290; x++) {
+    setTile(tiles, x, 20, Tile.Rock); setTile(tiles, x, 21, Tile.Rock);
+    setTile(tiles, x, 75, Tile.Rock); setTile(tiles, x, 76, Tile.Rock);
+  }
+  for (let y = 20; y <= 76; y++) {
+    setTile(tiles, 232, y, Tile.Rock); setTile(tiles, 233, y, Tile.Rock);
+  }
+  // Grass streets across the plateau top.
+  for (let y = 26; y <= 70; y++)
+    for (let x = 240; x <= 284; x++)
+      tiles[y * W + x] = Tile.Grass;
+
+  // --- LONG SANDY BEACH (Pachena Beach, all along the bay head) ---
   const dwBay = distanceToWater(tiles, W, H);
-  for (let y = 65; y < H; y++) {
+  for (let y = 58; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
       const t = tiles[i];
-      if ((t === Tile.Grass || t === Tile.Forest) && dwBay[i] > 0 && dwBay[i] <= 18) {
+      if ((t === Tile.Grass || t === Tile.Forest) && dwBay[i] > 0 && dwBay[i] <= 16) {
         tiles[i] = Tile.Sand;
       }
     }
   }
 
-  // --- ROAD (Bamfield Main, arriving from north at x=215) ---
-  // Road is east of the Pachena River (which is at x≈195).
-  const ROAD_X = 215;
-  vLine(tiles, ROAD_X, 0, 65, Tile.Road);
-  // Curves west toward the bay then south to the campground:
-  for (let x = ROAD_X; x >= 165; x--) setTile(tiles, x, 65, Tile.Road);
-  vLine(tiles, 165, 65, 78, Tile.Road); // stop at y=78 (bay waterline ~y=81 at x=165)
-
+  // --- THE ONE ROAD INTO LOWER ANACLA (arrives from the north) ---
+  // This is the road players spawn on and walk/drive in along.
+  const ROAD_X = 195;
+  vLine(tiles, ROAD_X, 0, 72, Tile.Road);
+  hLine(tiles, 176, 214, 60, Tile.Road); // short village street off the road
   clearRoadMargins(tiles, 2, W, H);
 
-  // --- RIVER DOCK (boat landing on the Pachena River, east bank) ---
-  hLine(tiles, 202, 210, 48, Tile.Dock);
-  hLine(tiles, 202, 210, 49, Tile.Dock);
+  // --- RIVER DOCK (boat landing on the river's east bank by the village) ---
+  hLine(tiles, 158, 166, 66, Tile.Dock);
+  hLine(tiles, 158, 166, 67, Tile.Dock);
 
   return worldMap(beachify(tiles));
 }
 
 function anaclaBuildings(): BuildingState[] {
   return mkBuildings("an", [
-    // ---- ANACLA VILLAGE (east bank of Pachena River, along Bamfield Main) ----
-    // Houses on both sides of the road:
-    { kind:"house",     x:208, y: 18, w:3, h:2, hp:100 },
-    { kind:"house",     x:218, y: 18, w:3, h:2, hp:100 },
-    { kind:"house",     x:226, y: 18, w:3, h:2, hp:100 },
-    { kind:"house",     x:208, y: 26, w:3, h:2, hp:100 },
-    { kind:"house",     x:218, y: 26, w:3, h:2, hp:100 },
-    { kind:"house",     x:226, y: 26, w:3, h:2, hp:100 },
-    { kind:"house",     x:208, y: 34, w:3, h:2, hp:100 },
-    { kind:"house",     x:218, y: 34, w:3, h:2, hp:100 },
-    { kind:"house",     x:226, y: 34, w:3, h:2, hp:100 },
-    { kind:"house",     x:208, y: 42, w:3, h:2, hp:100 },
-    { kind:"house",     x:218, y: 42, w:3, h:2, hp:100 },
-    // Gas bar (sells fuel, east of road):
-    { kind:"shop",      x:222, y: 50, w:4, h:3, hp:180, shop:SHOP_ANACLA_GAS },
-    // House-based goods seller (west side, along road):
-    { kind:"house",     x:208, y: 52, w:3, h:2, hp:100, shop:SHOP_ANACLA_HOME },
-    // Home ice seller (small house):
-    { kind:"house",     x:208, y: 58, w:3, h:2, hp:100, shop:{
-      name:"Ice & Sundries (from the house)", buys:[{item:"fish",price:3}], sells:[{item:"plank",price:5}] } },
-    // Bus stop area / home goods seller (faces road):
-    { kind:"house",     x:218, y: 58, w:3, h:2, hp:100 },
-    // Boat seller on the river bank (west of road, near river dock):
-    { kind:"boathouse", x:204, y: 43, w:5, h:4, hp:160 },
-    // ---- PACHENA BAY CAMPGROUND (above the high-tide line, y≈74-78) ----
-    { kind:"house",     x:155, y: 74, w:3, h:2, hp: 80 }, // shelter
-    { kind:"house",     x:162, y: 74, w:3, h:2, hp: 80 },
-    { kind:"boathouse", x:148, y: 76, w:4, h:3, hp:120 }, // boat launch
+    // ==== LOWER ANACLA (the flat by the river & bay, off the one road) ====
+    // The reopened gas bar — right beside a house, just as it used to be.
+    { kind:"shop",      x:200, y: 46, w:4, h:3, hp:180, shop:SHOP_ANACLA_GAS },
+    { kind:"house",     x:205, y: 46, w:3, h:2, hp:100 }, // the house beside the gas bar
+    // A couple of streets of houses.
+    { kind:"house",     x:178, y: 44, w:3, h:2, hp:100 },
+    { kind:"house",     x:184, y: 44, w:3, h:2, hp:100 },
+    { kind:"house",     x:178, y: 52, w:3, h:2, hp:100 },
+    { kind:"house",     x:184, y: 52, w:3, h:2, hp:100 },
+    // The fellow who sells food out of his house.
+    { kind:"house",     x:178, y: 64, w:3, h:2, hp:100, shop:SHOP_ANACLA_HOME },
+    { kind:"house",     x:184, y: 64, w:3, h:2, hp:100 },
+    { kind:"house",     x:206, y: 64, w:3, h:2, hp:100 },
+    { kind:"house",     x:212, y: 64, w:3, h:2, hp:100 },
+    // Boat seller on the river's east bank, by the dock.
+    { kind:"boathouse", x:168, y: 60, w:5, h:4, hp:160 },
+    // ---- PACHENA BAY CAMPGROUND (above the high-tide line, west of village) ----
+    { kind:"house",     x:120, y: 78, w:3, h:2, hp: 80 }, // shelter
+    { kind:"house",     x:128, y: 78, w:3, h:2, hp: 80 },
+    { kind:"boathouse", x:110, y: 80, w:4, h:3, hp:120 }, // boat launch
+
+    // ==== UPPER ANACLA (the hill bench — government, gym, a few homes) ====
+    // Huu-ay-aht government office.
+    { kind:"shop",      x:246, y: 32, w:5, h:3, hp:220, shop:SHOP_ANACLA_GOV },
+    // House of Huu-ay-aht — the big community hall / gym for sport & culture.
+    { kind:"boathouse", x:256, y: 44, w:8, h:5, hp:300 },
+    // A few houses down the street.
+    { kind:"house",     x:270, y: 32, w:3, h:2, hp:100 },
+    { kind:"house",     x:276, y: 32, w:3, h:2, hp:100 },
+    { kind:"house",     x:246, y: 60, w:3, h:2, hp:100 },
+    { kind:"house",     x:252, y: 60, w:3, h:2, hp:100 },
   ]);
 }
 
@@ -508,9 +528,9 @@ const SHOP_MARKET: ShopDef = {
   name: "Bamfield General Store",
   buys: [
     { item: "berry", price: 3 },
-    { item: "fish", price: 2 },
+    { item: "fish", price: 2 }, { item: "salmon", price: 5 },
     { item: "crabmeat", price: 2 },
-    { item: "cookedfish", price: 6 },
+    { item: "cookedfish", price: 6 }, { item: "cookedsalmon", price: 12 },
     { item: "cookedcrab", price: 6 },
   ],
   sells: [
@@ -520,10 +540,15 @@ const SHOP_MARKET: ShopDef = {
 };
 const SHOP_BMSC: ShopDef = {
   name: "Marine Sciences Centre",
-  // The BMSC pays a premium for fish brought in for study.
+  // BMSC pays a research premium — especially for rare and deep-water specimens.
   buys: [
-    { item: "fish", price: 5 },
-    { item: "crabmeat", price: 4 },
+    { item: "fish",     price: 5  },
+    { item: "liveFish", price: 8  },
+    { item: "salmon",   price: 10 },
+    { item: "lingcod",  price: 16 },
+    { item: "halibut",  price: 28 },
+    { item: "tuna",     price: 50 },
+    { item: "crabmeat", price: 4  },
   ],
   sells: [
     { item: "rod", price: 15 },
@@ -538,6 +563,7 @@ const SHOP_BREAKERS: ShopDef = {
   sells: [
     { item: "plank", price: 5 },
     { item: "rod", price: 16 },
+    { item: "jerryCan", price: 15 },
   ],
 };
 const SHOP_OSTROMS: ShopDef = {
@@ -549,6 +575,7 @@ const SHOP_OSTROMS: ShopDef = {
   ],
   sells: [
     { item: "plank", price: 5 },
+    { item: "jerryCan", price: 12 },
   ],
 };
 const SHOP_ANACLA_GAS: ShopDef = {
@@ -559,16 +586,31 @@ const SHOP_ANACLA_GAS: ShopDef = {
   ],
   sells: [
     { item: "plank", price: 5 },
+    { item: "jerryCan", price: 12 },
   ],
 };
 const SHOP_ANACLA_HOME: ShopDef = {
-  name: "Home Goods (sold from the house)",
+  name: "Fresh Food (sold from the house)",
   buys: [
     { item: "berry", price: 4 }, // a good price for fresh-picked berries
     { item: "crabmeat", price: 3 },
+    { item: "fish", price: 3 },
   ],
   sells: [
-    { item: "rod", price: 17 },
+    { item: "cookedfish", price: 8 },
+    { item: "cookedcrab", price: 8 },
+    { item: "berry", price: 4 },
+  ],
+};
+const SHOP_ANACLA_GOV: ShopDef = {
+  name: "Huu-ay-aht Government Office",
+  buys: [
+    { item: "scrap", price: 5 },   // bounty on beach junk hauled up
+    { item: "iron", price: 4 },
+  ],
+  sells: [
+    { item: "plank", price: 4 },
+    { item: "rod", price: 15 },
   ],
 };
 
@@ -705,19 +747,19 @@ export function buildRegions(): RegionDef[] {
         id: "bf-bus", kind: "bus",
         x: 181, y: 72, w: 4, h: 2,
         label: "Catch the bus at the market to Anacla",
-        toRegion: "anacla", toSpawn: { x: 210, y: 58 },
+        toRegion: "anacla", toSpawn: { x: 195, y: 12 },
       },
       {
         id: "bf-gate", kind: "gate",
         x: 185, y: 4, w: 2, h: 1,
         label: "Drive the road out to Anacla",
-        toRegion: "anacla", toSpawn: { x: 220, y: 6 },
+        toRegion: "anacla", toSpawn: { x: 195, y: 6 },
       },
       {
         id: "bf-sea", kind: "sea",
         x: 40, y: 168, w: 200, h: 10,
-        label: "Sail south out of the inlet to Pachena Bay",
-        toRegion: "anacla", toSpawn: { x: 10, y: 150 },
+        label: "Sail south out of the inlet round to Pachena Bay",
+        toRegion: "anacla", toSpawn: { x: 145, y: 145 }, // inside Pachena Bay, not in the sea zone
       },
     ],
     vehicles: [
@@ -754,6 +796,13 @@ export function buildRegions(): RegionDef[] {
       { id:"bf-b4",  kind:"berryBush", x:235, y: 18, variety:"thimbleberry" },
       { id:"bf-b5",  kind:"berryBush", x:232, y: 85, variety:"trailing blackberry" },
       { id:"bf-b6",  kind:"berryBush", x: 38, y:135, variety:"huckleberry" },
+      // Arbutus trees — rocky coastal west side
+      { id:"bf-arbutus-1", kind:"tree", x:158, y:22, variety:"arbutus" },
+      { id:"bf-arbutus-2", kind:"tree", x:161, y:30, variety:"arbutus" },
+      { id:"bf-arbutus-3", kind:"tree", x:155, y:38, variety:"arbutus" },
+      { id:"bf-arbutus-4", kind:"tree", x:163, y:45, variety:"arbutus" },
+      { id:"bf-arbutus-5", kind:"tree", x:157, y:50, variety:"arbutus" },
+      { id:"bf-arbutus-6", kind:"tree", x:164, y:24, variety:"arbutus" },
     ],
     plants: [
       { id:"bf-inv1", kind:"scotchBroom",         x:230, y: 14 },
@@ -768,55 +817,59 @@ export function buildRegions(): RegionDef[] {
     name: "Anacla / Pachena Bay",
     map: generateAnaclaMap(),
     buildings: anaclaBuildings(),
-    spawn: { x: 217, y: 6 }, // north road arrival from Bamfield
+    spawn: { x: 195, y: 6 }, // top of the one road into Lower Anacla
     travelNodes: [
       {
         id: "an-bus", kind: "bus",
-        x: 214, y: 60, w: 4, h: 2,
+        x: 193, y: 58, w: 4, h: 2,
         label: "Catch the bus back to Bamfield",
         toRegion: "bamfield", toSpawn: { x: 183, y: 72 },
       },
       {
         id: "an-gate", kind: "gate",
-        x: 215, y: 0, w: 2, h: 1,
+        x: 194, y: 0, w: 3, h: 1,
         label: "Drive the road back to Bamfield",
         toRegion: "bamfield", toSpawn: { x: 185, y: 8 },
       },
       {
-        // Sea crossing at Keeha Beach (far west) — sail north to Bamfield Inlet.
+        // Sea crossing: head out the bay mouth and round the coast to Bamfield.
         id: "an-sea", kind: "sea",
-        x: 0, y: 130, w: 18, h: 45,
-        label: "Sail north from Keeha out to Bamfield Inlet",
-        toRegion: "bamfield", toSpawn: { x: 45, y: 165 },
+        x: 0, y: 158, w: 150, h: 22,
+        label: "Sail out the bay and round the coast to Bamfield",
+        toRegion: "bamfield", toSpawn: { x: 90, y: 155 }, // Barkley Sound, south of inlet
       },
     ],
     vehicles: [
-      { id:"an-car-1",  kind:"car",  x:215, y: 25 }, // on Bamfield Main
-      { id:"an-car-2",  kind:"car",  x:215, y: 50 }, // near the gas bar
-      { id:"an-boat-1", kind:"boat", x: 80, y:145 }, // Pachena Bay
-      { id:"an-boat-2", kind:"boat", x:130, y:148 }, // bay, mid-water
-      { id:"an-boat-3", kind:"boat", x:  8, y:145 }, // Keeha / open Pacific
+      { id:"an-car-1",  kind:"car",  x:195, y: 20 }, // on the road in
+      { id:"an-car-2",  kind:"car",  x:198, y: 50 }, // by the gas bar
+      { id:"an-boat-1", kind:"boat", x:120, y:130 }, // Pachena Bay
+      { id:"an-boat-2", kind:"boat", x:160, y:140 }, // bay, mid-water
+      { id:"an-boat-3", kind:"boat", x: 60, y:160 }, // out toward the open coast
     ],
     resourceNodes: [
-      { id:"an-t1",  kind:"tree",      x: 40, y: 20 },
-      { id:"an-t2",  kind:"tree",      x: 35, y: 45 },
-      { id:"an-t3",  kind:"tree",      x: 38, y: 70 },
-      { id:"an-t4",  kind:"tree",      x:260, y: 12 },
-      { id:"an-t5",  kind:"tree",      x:265, y: 35 },
-      { id:"an-t6",  kind:"tree",      x:258, y: 58 },
-      { id:"an-i1",  kind:"ironOre",   x: 10, y: 30 },
-      { id:"an-s1",  kind:"stoneOre",  x: 12, y: 55 },
-      { id:"an-s2",  kind:"stoneOre",  x:282, y: 22 },
-      { id:"an-b1",  kind:"berryBush", x: 55, y: 22, variety:"salmonberry" },
-      { id:"an-b2",  kind:"berryBush", x:252, y: 22, variety:"huckleberry" },
-      { id:"an-b3",  kind:"berryBush", x: 48, y: 55, variety:"thimbleberry" },
-      { id:"an-b4",  kind:"berryBush", x:248, y: 50, variety:"salal" },
-      { id:"an-b5",  kind:"berryBush", x:158, y: 78, variety:"trailing blackberry" },
+      { id:"an-t1",  kind:"tree",      x: 30, y: 30 },
+      { id:"an-t2",  kind:"tree",      x: 28, y: 60 },
+      { id:"an-t3",  kind:"tree",      x: 34, y: 95 },
+      { id:"an-t4",  kind:"tree",      x:262, y: 90 },
+      { id:"an-t5",  kind:"tree",      x:268, y:110 },
+      { id:"an-t6",  kind:"tree",      x:150, y: 30 },
+      { id:"an-i1",  kind:"ironOre",   x: 10, y: 40 },
+      { id:"an-s1",  kind:"stoneOre",  x: 12, y: 70 },
+      { id:"an-s2",  kind:"stoneOre",  x:288, y: 30 }, // upper bench rock
+      { id:"an-b1",  kind:"berryBush", x: 45, y: 35, variety:"salmonberry" },
+      { id:"an-b2",  kind:"berryBush", x:255, y: 95, variety:"huckleberry" },
+      { id:"an-b3",  kind:"berryBush", x: 50, y: 75, variety:"thimbleberry" },
+      { id:"an-b4",  kind:"berryBush", x:170, y: 95, variety:"salal" },
+      { id:"an-b5",  kind:"berryBush", x:225, y: 90, variety:"trailing blackberry" },
+      // Arbutus trees — rocky coastal spots & the upper bench
+      { id:"an-arbutus-1", kind:"tree", x:240, y:28, variety:"arbutus" },
+      { id:"an-arbutus-2", kind:"tree", x:284, y:50, variety:"arbutus" },
+      { id:"an-arbutus-3", kind:"tree", x:243, y:66, variety:"arbutus" },
     ],
     plants: [
-      { id:"an-inv1", kind:"scotchBroom",         x:230, y: 20 },
-      { id:"an-inv2", kind:"foxglove",             x: 50, y: 42 },
-      { id:"an-inv3", kind:"himalayanBlackberry",  x:185, y: 72 },
+      { id:"an-inv1", kind:"scotchBroom",         x:210, y: 50 },
+      { id:"an-inv2", kind:"foxglove",             x:180, y: 70 },
+      { id:"an-inv3", kind:"himalayanBlackberry",  x:215, y: 70 },
     ],
   };
 

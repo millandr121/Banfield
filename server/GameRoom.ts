@@ -2,6 +2,7 @@ import {
   Appearance,
   BuildingState,
   CampfireState,
+  FurnaceState,
   COOK_MAP,
   CRAFT_RECIPES,
   ClientMessage,
@@ -14,6 +15,7 @@ import {
   Inventory,
   InvasiveKind,
   ItemId,
+  NpcState,
   PlantStage,
   PlantState,
   PlayerState,
@@ -32,6 +34,10 @@ import {
   KING_TIDE_SURGE,
   TSUNAMI_SURGE,
   STARTING_MONEY,
+  DEPTH_ANKLE,
+  DEPTH_SWIM,
+  DEPTH_DEEP,
+  DEPTH_OCEAN,
   defaultSkills,
   skillLevel,
   submergedAt,
@@ -53,6 +59,8 @@ interface Session {
   lastDodge: number; // timestamp of last dodge (for cooldown)
   lastHarvest: number; // debounce resource harvesting
   iframeUntil: number; // dodge i-frames: no damage taken until this time
+  travelCdUntil: number; // brief cooldown after a region change (stops ping-pong)
+  sprint: boolean; // shift held — run faster but drain stamina / burn more fuel
 }
 
 // Server-side vehicle adds rust tracking (not sent to clients).
@@ -73,6 +81,10 @@ interface Region {
 const TICK_MS = 100; // server simulation step (10 Hz)
 const PLAYER_SPEED = 4.5; // tiles per second on land
 const SWIM_SPEED = 2.4; // tiles per second in water
+const SPRINT_MULT = 1.85; // sprint speed multiplier (Shift key)
+const SPRINT_STAMINA_DRAIN = 18; // stamina/sec drained while sprinting
+const THROTTLE_MULT = 1.6; // boat/car throttle multiplier (Shift while driving)
+const THROTTLE_FUEL_MULT = 2.2; // extra fuel burn when throttling
 const PLAYER_MAX_HP = 100;
 
 // Combat is stamina-gated so it rewards timing over button-mashing.
@@ -92,9 +104,9 @@ const DODGE_COOLDOWN_MS = 650;
 const DODGE_IMPULSE = 14; // lunge speed (tiles/sec) at the start of a dodge
 const DODGE_IFRAMES_MS = 360; // invulnerability window during a dodge
 const REPAIR_RATE = 25; // hp per second
-const CREATURE_CAP_PER_REGION = 22; // scaled for the large (200×120) maps
-const SPAWN_INTERVAL_MS = 5000; // how often a region tops up its creatures
-const SPAWN_BATCH = 4; // creatures added per region per interval (up to the cap)
+const CREATURE_CAP_PER_REGION = 10; // sparse — wildlife is rare, sightings are special
+const SPAWN_INTERVAL_MS = 8000; // slower fill so the world feels alive but not crowded
+const SPAWN_BATCH = 1; // one creature per pass — keeps density low
 const SINK_DEPTH = 7; // how far under the waterline counts as "deep"
 const SINK_DPS = 12; // hp/sec lost while standing still in deep water
 
@@ -104,6 +116,8 @@ const CAR_OFFROAD_SPEED = 3.0; // sluggish on grass/sand
 const BOAT_SPEED = 5.5; // tiles/sec on water
 const VEHICLE_BOARD_RANGE = 1.6; // how close you must be to board
 const VEHICLE_MAX_HP = 200;
+const VEHICLE_FUEL_MAX = 100; // a full tank
+const FUEL_DRAIN = 100 / (20 * 60); // empties in ~20 min of steady driving
 const RUST_START_MS = 20 * 60 * 1000; // idle this long before rusting
 const RUST_DPS = 200 / (40 * 60); // destroys a full-HP vehicle in ~40 min
 const COLLISION_RANGE = 0.85; // tiles; how close before a moving vehicle hits
@@ -116,6 +130,7 @@ const TREE_MAX_HP = 5; // hits to fell a tree (each gives wood)
 const ORE_MAX_HP = 4; // hits to exhaust an ore vein
 const BERRY_MAX_HP = 3; // pickings per berry bush before it's bare
 const TREE_RESPAWN_MS = 3 * 60 * 1000; // 3 minutes
+const ARBUTUS_RESPAWN_MS = 15 * 60 * 1000; // arbutus is slow-growing & rare
 const ORE_RESPAWN_MS = 8 * 60 * 1000; // 8 minutes
 const BERRY_RESPAWN_MS = 2 * 60 * 1000; // 2 minutes — berries come back fast
 const MINING_LEVEL_REQ_IRON = 5; // need Mining 5 to extract iron
@@ -175,33 +190,49 @@ const FISHING_TIME_MS = 5000; // base wait time; reduced by fishing level
 const FISHING_ROD_REQUIRED = true;
 
 // Loot table -----------------------------------------------------------------
-// Crabs give crab meat; fish-eaters give raw fish; everything gives scrap.
 function rollLoot(kind: CreatureKind): Array<{ item: ItemId; qty: number }> {
   const drops: Array<{ item: ItemId; qty: number }> = [];
   const r = Math.random;
   switch (kind) {
     case "crab":
       if (r() < 0.85) drops.push({ item: "crabmeat", qty: 1 });
-      if (r() < 0.4) drops.push({ item: "scrap", qty: 1 });
+      if (r() < 0.35) drops.push({ item: "scrap", qty: 1 });
       break;
     case "octopus":
       if (r() < 0.6) drops.push({ item: "fish", qty: 1 });
-      if (r() < 0.5) drops.push({ item: "scrap", qty: 1 });
+      if (r() < 0.45) drops.push({ item: "scrap", qty: 1 });
       break;
     case "dogfish":
-      if (r() < 0.9) drops.push({ item: "fish", qty: 2 });
-      if (r() < 0.7) drops.push({ item: "scrap", qty: 1 });
+      drops.push({ item: "fish", qty: 1 + (r() < 0.6 ? 1 : 0) });
+      if (r() < 0.6) drops.push({ item: "scrap", qty: 1 });
       break;
     case "sixgill":
-      drops.push({ item: "fish", qty: 2 });
-      if (r() < 1.0) drops.push({ item: "scrap", qty: 2 });
+      drops.push({ item: "lingcod", qty: 1 });
+      drops.push({ item: "scrap", qty: 2 });
       break;
     case "orca":
-      drops.push({ item: "fish", qty: 3 });
+      drops.push({ item: "fish", qty: 2 });
       drops.push({ item: "scrap", qty: 2 + Math.floor(r() * 2) });
       break;
-    default: // neutrals (humpback, greywhale) — not killable but here for completeness
+    // Land prey
+    case "deer":
+      drops.push({ item: "venison", qty: 1 + (r() < 0.5 ? 1 : 0) });
       break;
+    case "elk":
+      drops.push({ item: "venison", qty: 2 + (r() < 0.6 ? 1 : 0) });
+      break;
+    case "grouse":
+      drops.push({ item: "poultry", qty: 1 });
+      break;
+    case "bear":
+      drops.push({ item: "venison", qty: 2 });
+      if (r() < 0.4) drops.push({ item: "scrap", qty: 1 });
+      break;
+    case "cougar": case "wolf":
+      if (r() < 0.5) drops.push({ item: "venison", qty: 1 });
+      if (r() < 0.35) drops.push({ item: "scrap", qty: 1 });
+      break;
+    default: break; // neutrals (whales, seals, otters) — discourage killing
   }
   return drops;
 }
@@ -216,8 +247,14 @@ export class GameRoom {
   private resourceNodes = new Map<string, ResourceNode>();
   private plants = new Map<string, PlantState>();
   private campfires = new Map<string, CampfireState>();
+  private furnaces  = new Map<string, FurnaceState>();
+  private npcs: NpcState[] = [];
   // playerId → timestamp when they cast their line (null = not fishing)
   private fishingStates = new Map<string, number>();
+  // playerId → epoch ms a live fish was caught (dies → raw fish after 60s)
+  private liveFishTimer = new Map<string, number>();
+  // vehicleId → last time we warned the driver it's out of fuel (rate-limit)
+  private lastFuelWarn = new Map<string, number>();
   // Transient knockback impulses by entity id (players + creatures).
   private kb = new Map<string, { x: number; y: number }>();
 
@@ -242,6 +279,7 @@ export class GameRoom {
           id: v.id, kind: v.kind, region: def.id,
           x: v.x + 0.5, y: v.y + 0.5, dir: 0,
           hp: VEHICLE_MAX_HP, maxHp: VEHICLE_MAX_HP,
+          fuel: VEHICLE_FUEL_MAX, maxFuel: VEHICLE_FUEL_MAX,
           driverId: null, lastDriven: now,
         });
       }
@@ -252,6 +290,27 @@ export class GameRoom {
         this.plants.set(pl.id, this.mkPlant(pl, def.id, now));
       }
     }
+    // Pre-place the forge at Ostrom's Gas Bar in Bamfield.
+    this.furnaces.set("forge-ostroms", { id: "forge-ostroms", region: "bamfield", x: 191, y: 70 });
+    // Pre-place a forge at the Anacla gas bar too.
+    this.furnaces.set("forge-anacla",  { id: "forge-anacla",  region: "anacla",   x: 223, y: 52 });
+
+    // Static townsfolk — flavour, lore, and local hints. They don't move.
+    this.npcs = [
+      // Bamfield
+      { id: "npc-naturalist", kind: "naturalist", region: "bamfield", x: 168, y: 50 },
+      { id: "npc-pirate",     kind: "pirate",     region: "bamfield", x: 175, y: 72 },
+      { id: "npc-scientist",  kind: "scientist",  region: "bamfield", x: 183, y: 65 },
+      { id: "npc-historian",  kind: "historian",  region: "bamfield", x: 190, y: 68 },
+      { id: "npc-eastsider",  kind: "eastsider",  region: "bamfield", x: 195, y: 55 },
+      { id: "npc-westsider",  kind: "westsider",  region: "bamfield", x: 152, y: 60 },
+      // Anacla — lower village
+      { id: "npc-boatdealer", kind: "boatdealer", region: "anacla",   x: 172, y: 58 },
+      { id: "npc-icevendor",  kind: "icevendor",  region: "anacla",   x: 180, y: 64 },
+      // Anacla — upper bench (House of Huu-ay-aht & government office)
+      { id: "npc-huuayaht",   kind: "huuayaht",   region: "anacla",   x: 260, y: 48 },
+      { id: "npc-mayor",      kind: "mayor",      region: "anacla",   x: 248, y: 34 },
+    ];
   }
 
   private mkNode(def: ResourceNodeDef, regionId: string): ResourceNode {
@@ -298,7 +357,7 @@ export class GameRoom {
   // --- connection lifecycle -------------------------------------------------
   private onConnect(ws: WebSocket) {
     const playerId = `p${this.idCounter++}`;
-    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0, lastDodge: 0, lastHarvest: 0, iframeUntil: 0 });
+    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0, lastDodge: 0, lastHarvest: 0, iframeUntil: 0, travelCdUntil: 0, sprint: false });
     ws.addEventListener("message", (ev) => {
       try {
         this.onMessage(ws, JSON.parse(ev.data as string) as ClientMessage);
@@ -323,6 +382,7 @@ export class GameRoom {
       this.players.delete(s.playerId);
       this.kb.delete(s.playerId);
       this.fishingStates.delete(s.playerId);
+      this.liveFishTimer.delete(s.playerId);
     }
     this.sessions.delete(ws);
     if (this.sessions.size === 0 && this.loop) {
@@ -375,6 +435,7 @@ export class GameRoom {
         const len = Math.hypot(msg.dx, msg.dy);
         s.dx = len > 1 ? msg.dx / len : msg.dx;
         s.dy = len > 1 ? msg.dy / len : msg.dy;
+        s.sprint = msg.sprint ?? false;
         const p = this.players.get(s.playerId);
         if (p && (msg.dx !== 0 || msg.dy !== 0)) {
           p.dir = Math.atan2(msg.dy, msg.dx);
@@ -419,6 +480,9 @@ export class GameRoom {
       case "trade":
         this.doTrade(s.playerId, msg.buildingId, msg.kind, msg.item, msg.qty);
         break;
+      case "refuel":
+        this.doHarvest(s.playerId); // harvest doubles as the refuel action
+        break;
       case "travel":
         this.doTravel(ws, s.playerId);
         break;
@@ -460,9 +524,10 @@ export class GameRoom {
     this.updateResourceRespawn(now);
     this.updateVehicleRust(dt, waterline, now);
     this.updateFishing(now);
+    this.updateLiveFish(now);
     this.updateHunger(dt);
     this.updateSleep(dt);
-    this.updatePlants(now);
+    this.updatePlants(now, waterline);
     this.updateCampfires(now);
     this.recomputeRanks(now);
     this.maybeSpawn(now, waterline);
@@ -542,7 +607,12 @@ export class GameRoom {
         this.giveXP(p, "swimming", XP_SWIM_PER_SEC * dt);
       }
       const swimBonus = 1 + skillLevel(p.skills.swimming) * 0.003;
-      const speed = p.swimming ? SWIM_SPEED * swimBonus : PLAYER_SPEED;
+      const sprinting = s.sprint && !p.swimming && p.stamina > 0 && (s.dx !== 0 || s.dy !== 0);
+      if (sprinting) {
+        p.stamina = Math.max(0, p.stamina - SPRINT_STAMINA_DRAIN * dt);
+      }
+      const speed = p.swimming ? SWIM_SPEED * swimBonus
+                               : sprinting ? PLAYER_SPEED * SPRINT_MULT : PLAYER_SPEED;
       const imp = this.kb.get(p.id);
       const nx = p.x + (s.dx * speed + (imp?.x ?? 0)) * dt;
       const ny = p.y + (s.dy * speed + (imp?.y ?? 0)) * dt;
@@ -564,6 +634,9 @@ export class GameRoom {
         p.hp -= SINK_DPS * dt;
         if (p.hp <= 0 && !p.dead) this.killPlayer(p);
       }
+
+      // Walk onto a road gate at the map edge and you cross to the next region.
+      if (moved) this.autoTravelOnFoot(p);
     }
     this.decayKnockback(dt);
   }
@@ -581,25 +654,37 @@ export class GameRoom {
       if (driver && !driver.dead) {
         const s = this.sessionFor(driver.id);
         if (s && (s.dx !== 0 || s.dy !== 0)) {
-          const onRoad = this.tileAt(region.map, v.x, v.y) === Tile.Road;
-          const skillBonus =
-            v.kind === "car"
-              ? 1 + skillLevel(driver.skills.driving) * 0.003
-              : 1 + skillLevel(driver.skills.boating) * 0.002;
-          const base =
-            v.kind === "car"
-              ? (onRoad ? CAR_SPEED : CAR_OFFROAD_SPEED) * skillBonus
-              : BOAT_SPEED * skillBonus;
-          activeSpeed = base;
-          const nx = v.x + s.dx * base * dt;
-          const ny = v.y + s.dy * base * dt;
-          if (this.vehicleCanGo(v, region.map, nx, v.y, waterline)) { v.x = nx; movedThisTick = true; }
-          if (this.vehicleCanGo(v, region.map, v.x, ny, waterline)) { v.y = ny; movedThisTick = true; }
-          v.dir = Math.atan2(s.dy, s.dx);
-          v.lastDriven = now;
-          // Skill XP for the driver.
-          if (v.kind === "car") this.giveXP(driver, "driving", XP_DRIVE_PER_SEC * dt);
-          else this.giveXP(driver, "boating", XP_BOAT_PER_SEC * dt);
+          if (v.fuel <= 0) {
+            // Dry tank — won't budge. Nudge them to refuel (E with a jerry can).
+            if (now - (this.lastFuelWarn.get(v.id) ?? 0) > 3000) {
+              this.lastFuelWarn.set(v.id, now);
+              this.tell(driver, `The ${v.kind} is out of fuel! Refuel with a jerry can (E key beside it).`);
+            }
+          } else {
+            const onRoad = this.tileAt(region.map, v.x, v.y) === Tile.Road;
+            const skillBonus =
+              v.kind === "car"
+                ? 1 + skillLevel(driver.skills.driving) * 0.003
+                : 1 + skillLevel(driver.skills.boating) * 0.002;
+            const base =
+              v.kind === "car"
+                ? (onRoad ? CAR_SPEED : CAR_OFFROAD_SPEED) * skillBonus
+                : BOAT_SPEED * skillBonus;
+            // Throttle (Shift): more speed, more fuel burn.
+            const throttle = s.sprint && v.fuel > 0;
+            activeSpeed = throttle ? base * THROTTLE_MULT : base;
+            const nx = v.x + s.dx * activeSpeed * dt;
+            const ny = v.y + s.dy * activeSpeed * dt;
+            if (this.vehicleCanGo(v, region.map, nx, v.y, waterline)) { v.x = nx; movedThisTick = true; }
+            if (this.vehicleCanGo(v, region.map, v.x, ny, waterline)) { v.y = ny; movedThisTick = true; }
+            v.dir = Math.atan2(s.dy, s.dx);
+            v.lastDriven = now;
+            const fuelRate = throttle ? FUEL_DRAIN * THROTTLE_FUEL_MULT : FUEL_DRAIN;
+            v.fuel = Math.max(0, v.fuel - fuelRate * dt);
+            // Skill XP for the driver.
+            if (v.kind === "car") this.giveXP(driver, "driving", XP_DRIVE_PER_SEC * dt);
+            else this.giveXP(driver, "boating", XP_BOAT_PER_SEC * dt);
+          }
         }
         // The driver rides along.
         driver.x = v.x;
@@ -608,12 +693,22 @@ export class GameRoom {
 
         // Sail a boat into an open-water "sea" border and it carries you (and
         // the boat) across to the neighbouring region.
-        if (v.kind === "boat") {
+        const s2 = this.sessionFor(driver.id);
+        const offCd = !s2 || now >= s2.travelCdUntil;
+        if (v.kind === "boat" && offCd) {
           const sea = region.travelNodes.find(
             (n) => n.kind === "sea" &&
               v.x >= n.x && v.x <= n.x + n.w && v.y >= n.y && v.y <= n.y + n.h,
           );
-          if (sea) { this.transferBoat(v, driver, sea.toRegion, sea.toSpawn); continue; }
+          if (sea) { this.transferVehicle(v, driver, sea.toRegion, sea.toSpawn); continue; }
+        }
+        // Drive a car onto a road gate and it carries you across by road.
+        if (v.kind === "car" && offCd) {
+          const gate = region.travelNodes.find(
+            (n) => n.kind === "gate" &&
+              v.x >= n.x - 0.5 && v.x <= n.x + n.w + 0.5 && v.y >= n.y - 0.5 && v.y <= n.y + n.h + 0.5,
+          );
+          if (gate) { this.transferVehicle(v, driver, gate.toRegion, gate.toSpawn); continue; }
         }
       } else {
         // Driverless boats stay put — they're moored, not adrift.
@@ -642,25 +737,47 @@ export class GameRoom {
 
   private updateVehicleRust(dt: number, waterline: number, now: number) {
     for (const [id, v] of this.vehicles) {
+      const region = this.regions.get(v.region);
+      const depth = region ? this.depthAt(region.map, v.x, v.y, waterline) : 0;
+
+      // Car in deeper-than-ankle water: warn the driver, then sink after 4s.
+      if (v.kind === "car" && depth > DEPTH_ANKLE) {
+        const driver = v.driverId ? this.players.get(v.driverId) : null;
+        if (driver) {
+          // Warn the driver and eject them.
+          const s = this.sessionFor(driver.id);
+          if (s) this.send(s.ws, { t: "log", msg: "Your car is flooding! Bailing out…" });
+          driver.vehicleId = null;
+          v.driverId = null;
+          if (region) {
+            const shore = this.landSpawn(region, Math.round(v.x), Math.round(v.y));
+            driver.x = shore.x; driver.y = shore.y;
+          }
+        }
+        // Sink immediately (tide took the car).
+        this.broadcastLog(`A car was swallowed by the tide.`);
+        this.vehicles.delete(id);
+        continue;
+      }
+
       if (v.driverId) continue; // driven vehicles don't rust
       if (now - v.lastDriven < RUST_START_MS) continue;
-      // Vehicles in deep water rust faster (salt damage + submersion).
-      const depth = this.depthAt(this.regions.get(v.region)?.map ?? { width: 0, height: 0, tiles: [], elevation: [] } as WorldMap, v.x, v.y, waterline);
       const rate = RUST_DPS * (depth > 2 ? 3 : 1);
       v.hp -= rate * dt;
       if (v.hp <= 0) {
-        // Gone for good — log once then delete.
         this.broadcastLog(`A ${v.kind} has rusted away.`);
         this.vehicles.delete(id);
       }
     }
   }
 
-  // Cars ride land (and roads); boats ride water. Neither leaves the map.
+  // Cars ride land and ankle-deep water; boats need real water depth.
   private vehicleCanGo(v: VehicleState, map: WorldMap, x: number, y: number, waterline: number): boolean {
     if (!this.inBounds(map, x, y)) return false;
-    const submerged = this.depthAt(map, x, y, waterline) > 0;
-    return v.kind === "boat" ? submerged : !submerged;
+    const depth = this.depthAt(map, x, y, waterline);
+    if (v.kind === "boat") return depth > 0;
+    // Cars can splash through ankle/knee water but sink in anything deeper.
+    return depth <= DEPTH_ANKLE;
   }
 
   // --- resources & crafting -------------------------------------------------
@@ -671,6 +788,22 @@ export class GameRoom {
     if (!s) return;
     const now = Date.now();
     if (now - s.lastHarvest < HARVEST_COOLDOWN_MS) return;
+
+    // Refuel check first: if you carry a jerry can and there's a thirsty vehicle
+    // within reach, top it up instead of harvesting.
+    for (const v of this.vehicles.values()) {
+      if (v.region !== p.region) continue;
+      if (Math.hypot(v.x - p.x, v.y - p.y) > VEHICLE_BOARD_RANGE) continue;
+      if (v.fuel >= v.maxFuel) continue;
+      const cans = p.inventory["jerryCan"] ?? 0;
+      if (cans <= 0) continue;
+      p.inventory["jerryCan"] = cans - 1;
+      v.fuel = Math.min(v.maxFuel, v.fuel + 50);
+      v.lastDriven = now;
+      s.lastHarvest = now;
+      this.tell(p, `Refuelled the ${v.kind} (+50 fuel, now ${v.fuel.toFixed(0)}/${v.maxFuel}).`);
+      return;
+    }
 
     // Consider both resource nodes and invasive plants — act on the nearest.
     let bestNode: ResourceNode | null = null;
@@ -706,7 +839,7 @@ export class GameRoom {
     if (bestNode.kind === "tree") {
       this.addItem(p.inventory, "wood", 1);
       this.giveXP(p, "woodcutting", XP_CHOP);
-      respawnMs = TREE_RESPAWN_MS;
+      respawnMs = bestNode.variety === "arbutus" ? ARBUTUS_RESPAWN_MS : TREE_RESPAWN_MS;
     } else if (bestNode.kind === "berryBush") {
       this.addItem(p.inventory, "berry", 1);
       this.giveXP(p, "gardening", XP_FORAGE);
@@ -769,8 +902,14 @@ export class GameRoom {
     });
   }
 
-  private updatePlants(now: number) {
+  private updatePlants(now: number, waterline: number) {
     for (const pl of this.plants.values()) {
+      // Plants can't survive submerged — high tide kills them.
+      const plRegion = this.regions.get(pl.region);
+      if (plRegion && this.depthAt(plRegion.map, pl.x, pl.y, waterline) > 0) {
+        this.plants.delete(pl.id);
+        continue;
+      }
       // Dormant (recently cut-back) plants wait, then re-emerge.
       if (pl.dormantUntil !== null) {
         if (now >= pl.dormantUntil) {
@@ -930,6 +1069,30 @@ export class GameRoom {
       return;
     }
 
+    if (recipeId === "furnace") {
+      const id = `forge${this.idCounter++}`;
+      this.furnaces.set(id, { id, region: p.region, x: Math.round(p.x), y: Math.round(p.y) });
+      this.broadcastLog(`${p.name} built a furnace.`);
+      return;
+    }
+
+    if (recipeId === "smelt") {
+      const furnace = [...this.furnaces.values()].find(
+        (f) => f.region === p.region && Math.hypot(f.x + 0.5 - p.x, f.y + 0.5 - p.y) <= 2.5,
+      );
+      if (!furnace) {
+        this.tell(p, "Stand next to a furnace to smelt (build one: 6 stone + 2 iron ore).");
+        // Refund consumed ingredients.
+        for (const [item, qty] of Object.entries(recipe.needs) as [ItemId, number][]) {
+          this.addItem(p.inventory, item, qty);
+        }
+        return;
+      }
+      this.addItem(p.inventory, "ironBar", 1);
+      this.tell(p, "Smelted 2 iron ore → 1 iron bar. (Craft shiny lures from iron bars!)");
+      return;
+    }
+
     // Special-case recipes that do world actions rather than produce items.
     if (recipeId === "repairVehicle") {
       let best: VehicleRecord | null = null;
@@ -1083,18 +1246,27 @@ export class GameRoom {
       if (s) this.send(s.ws, { t: "log", msg: "Need a fishing rod. Craft one: 3 wood + 2 iron." });
       return;
     }
-    // Must be near water (swimming or adjacent to a water tile).
+    // Must be within 1 tile of water — standing on the shore, not swimming out.
     const region = this.regions.get(p.region);
     if (!region) return;
     const waterline = this.currentWaterline(Date.now());
-    const nearWater = this.depthAt(region.map, p.x, p.y, waterline) > -1;
+    const { width: mw, height: mh, tiles, elevation } = region.map;
+    const px = Math.floor(p.x), py = Math.floor(p.y);
+    const nearWater = [[0,0],[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy]) => {
+      const nx = px + dx, ny = py + dy;
+      if (nx < 0 || ny < 0 || nx >= mw || ny >= mh) return false;
+      const i = ny * mw + nx;
+      return tiles[i] === Tile.Water || waterline > elevation[i];
+    });
     if (!nearWater) {
       const s = this.sessionFor(p.id);
-      if (s) this.send(s.ws, { t: "log", msg: "Need to be near the water to fish." });
+      if (s) this.send(s.ws, { t: "log", msg: "Cast from the shore — stand next to the water to fish." });
       return;
     }
     const fishingLevel = skillLevel(p.skills.fishing);
-    const waitMs = Math.max(2000, FISHING_TIME_MS - fishingLevel * 50); // faster at higher level
+    const hasLure = (p.inventory.shinyLure ?? 0) > 0;
+    const lureBonus = hasLure ? 0.75 : 1.0; // lure cuts wait time by 25%
+    const waitMs = Math.max(1500, Math.round((FISHING_TIME_MS - fishingLevel * 50) * lureBonus));
     this.fishingStates.set(playerId, Date.now() + waitMs);
     p.fishing = true;
     const s = this.sessionFor(p.id);
@@ -1109,14 +1281,39 @@ export class GameRoom {
       if (!p || p.dead) continue;
       p.fishing = false;
       const fishingLevel = skillLevel(p.skills.fishing);
-      const catchChance = 0.55 + fishingLevel * 0.01; // 55% + 1% per level
+      const hasLure = (p.inventory.shinyLure ?? 0) > 0;
+      const catchChance = Math.min(0.95, (0.55 + fishingLevel * 0.01) + (hasLure ? 0.20 : 0));
       if (Math.random() < catchChance) {
-        this.addItem(p.inventory, "fish", 1 + (fishingLevel >= 20 ? 1 : 0));
+        const region = this.regions.get(p.region)!;
+        const waterline = this.currentWaterline(now);
+        const depth = this.depthAt(region.map, p.x, p.y, waterline);
+        const caught = pickFish(depth, hasLure, fishingLevel);
+        const bonus = (fishingLevel >= 20 || hasLure) && Math.random() < 0.3 ? 1 : 0;
+        this.addItem(p.inventory, caught, 1 + bonus);
+        // Small "live fish" freshness mechanic only for basic fish.
+        if (caught === "fish") this.liveFishTimer.set(p.id, now);
         this.giveXP(p, "fishing", XP_FISH);
-        this.tell(p, "You caught a fish! (cook it on a fire to eat well)");
+        const lureMsg = hasLure ? " (shiny lure!)" : "";
+        const depthHint = depth >= DEPTH_OCEAN ? " (deep-sea catch!)" : depth >= DEPTH_DEEP ? " (deep water!)" : "";
+        this.tell(p, `Caught ${1 + bonus}× ${ITEM_LABEL[caught]}!${lureMsg}${depthHint}`);
       } else {
         this.tell(p, "The fish got away…");
       }
+    }
+  }
+
+  // Live fish suffocate after a minute out of water, turning into raw fish.
+  private updateLiveFish(now: number) {
+    for (const [pid, caughtAt] of this.liveFishTimer) {
+      if (now - caughtAt < 60_000) continue;
+      const p = this.players.get(pid);
+      this.liveFishTimer.delete(pid);
+      if (!p) continue;
+      const count = p.inventory["liveFish"] ?? 0;
+      if (count <= 0) continue;
+      p.inventory["liveFish"] = 0;
+      this.addItem(p.inventory, "fish", count);
+      this.tell(p, "Your live fish died — now just raw fish. Get to the BMSC quicker next time!");
     }
   }
 
@@ -1324,6 +1521,7 @@ export class GameRoom {
     }
   }
 
+  // Pressing T: catch the bus from anywhere standing on a bus/gate pad.
   private doTravel(ws: WebSocket, playerId: string) {
     const p = this.players.get(playerId);
     if (!p || p.dead || p.vehicleId) return; // vehicles stay behind — travel on foot
@@ -1334,14 +1532,35 @@ export class GameRoom {
         p.x >= n.x - 0.6 && p.x <= n.x + n.w + 0.6 && p.y >= n.y - 0.6 && p.y <= n.y + n.h + 0.6,
     );
     if (!node) return;
+    this.footTravel(ws, p, node);
+  }
+
+  // Shared foot-travel: move the player to the destination region & resync map.
+  private footTravel(ws: WebSocket, p: PlayerState, node: TravelNode) {
     const dest = this.regions.get(node.toRegion);
     if (!dest) return;
     const arrive = this.landSpawn(dest, node.toSpawn.x, node.toSpawn.y);
     p.region = dest.id;
     p.x = arrive.x;
     p.y = arrive.y;
+    const s = this.sessionFor(p.id);
+    if (s) s.travelCdUntil = Date.now() + 1500; // grace so you don't bounce back
     this.sendInit(ws, p);
     this.broadcastLog(`${p.name} arrived in ${dest.name}.`);
+  }
+
+  // Auto-travel on foot: just WALK onto a road gate and you cross over — no key.
+  // (Bus pads stay manual: catching a scheduled bus is a deliberate T press.)
+  private autoTravelOnFoot(p: PlayerState) {
+    const s = this.sessionFor(p.id);
+    if (!s || Date.now() < s.travelCdUntil) return;
+    const region = this.regions.get(p.region);
+    if (!region) return;
+    const node = region.travelNodes.find(
+      (n) => n.kind === "gate" &&
+        p.x >= n.x - 0.2 && p.x <= n.x + n.w + 0.2 && p.y >= n.y - 0.2 && p.y <= n.y + n.h + 0.2,
+    );
+    if (node) this.footTravel(s.ws, p, node);
   }
 
   // --- creatures ------------------------------------------------------------
@@ -1357,7 +1576,6 @@ export class GameRoom {
     for (const regionId of active) {
       const region = this.regions.get(regionId)!;
       let count = [...this.creatures.values()].filter((c) => c.region === regionId).length;
-      // Spawn a small batch each tick so the large maps fill in reasonably fast.
       for (let n = 0; n < SPAWN_BATCH && count < CREATURE_CAP_PER_REGION; n++) {
         const kind = pickKind(phase, this.event);
         if (!kind) break;
@@ -1366,6 +1584,18 @@ export class GameRoom {
         const id = `c${this.idCounter++}`;
         this.creatures.set(id, { id, kind, region: regionId, x: spot.x, y: spot.y, hp: creatureHp(kind) });
         count++;
+
+        // Orca spawn in pods (2-5 individuals spread close together).
+        if (kind === "orca" && Math.random() < 0.65) {
+          const podSize = 1 + Math.floor(Math.random() * 3); // 1-3 more
+          for (let p = 0; p < podSize && count < CREATURE_CAP_PER_REGION; p++) {
+            const ox = spot.x + (Math.random() - 0.5) * 8;
+            const oy = spot.y + (Math.random() - 0.5) * 8;
+            const pid = `c${this.idCounter++}`;
+            this.creatures.set(pid, { id: pid, kind, region: regionId, x: ox, y: oy, hp: creatureHp(kind) });
+            count++;
+          }
+        }
       }
     }
   }
@@ -1381,8 +1611,138 @@ export class GameRoom {
         continue;
       }
       if (isNeutral(c.kind)) {
-        c.x += Math.sin(c.y + c.x) * 0.2 * dt;
-        c.y += 0.4 * dt;
+        // Sea otter: shy. Dive and vanish if a player gets too close.
+        if (c.kind === "seaOtter") {
+          let fled = false;
+          for (const p of this.players.values()) {
+            if (p.dead || p.region !== region.id) continue;
+            const d = Math.hypot(p.x - c.x, p.y - c.y);
+            if (d < 4) {
+              const dx = c.x - p.x, dy = c.y - p.y, l = Math.hypot(dx, dy) || 1;
+              c.x += (dx / l) * 3 * dt;
+              c.y += (dy / l) * 3 * dt;
+              if (this.depthAt(region.map, c.x, c.y, waterline) > DEPTH_SWIM) {
+                this.creatures.delete(c.id); fled = true; // dove under
+              }
+              break;
+            }
+          }
+          if (fled) continue;
+          // Gentle float when undisturbed (bobbing in kelp zone).
+          c.x += Math.sin(c.y * 0.9 + now * 0.0009) * 0.6 * dt;
+          c.y += Math.cos(c.x * 0.7 + now * 0.0007) * 0.6 * dt;
+          continue;
+        }
+
+        // Seals/sea lions: follow slow swimmers, wander otherwise.
+        if (c.kind === "seal" || c.kind === "sealLion") {
+          let target: PlayerState | null = null;
+          let tDist = Infinity;
+          for (const p of this.players.values()) {
+            if (p.dead || p.region !== region.id) continue;
+            const d = Math.hypot(p.x - c.x, p.y - c.y);
+            if (d < 8 && d < tDist) { target = p; tDist = d; }
+          }
+          if (target) {
+            const s = this.sessionFor(target.id);
+            const playerMovingFast = s && s.sprint && (Math.abs(s.dx) > 0.3 || Math.abs(s.dy) > 0.3);
+            if (!playerMovingFast && tDist > 1.8) {
+              // Drift toward the curious player.
+              const dx = target.x - c.x, dy = target.y - c.y, l = Math.hypot(dx, dy) || 1;
+              c.x += (dx / l) * 1.4 * dt;
+              c.y += (dy / l) * 1.4 * dt;
+            } else {
+              // Player is moving fast — give them space.
+              c.x += Math.sin(c.x + now * 0.001) * 0.6 * dt;
+              c.y += Math.cos(c.y + now * 0.001) * 0.6 * dt;
+            }
+          } else {
+            // Wander slowly near shore or water surface.
+            c.x += Math.sin(c.y + now * 0.0008) * 0.9 * dt;
+            c.y += Math.cos(c.x + now * 0.0006) * 0.9 * dt;
+          }
+          if (c.y > region.map.height) this.creatures.delete(c.id);
+          continue;
+        }
+
+        // Prey (deer, elk, grouse): flee from any player within range.
+        if (isPrey(c.kind)) {
+          const fleeRange = c.kind === "grouse" ? 5 : 9;
+          let threat: PlayerState | null = null;
+          let threatDist = Infinity;
+          for (const p of this.players.values()) {
+            if (p.dead || p.region !== region.id) continue;
+            const d = Math.hypot(p.x - c.x, p.y - c.y);
+            if (d < fleeRange && d < threatDist) { threat = p; threatDist = d; }
+          }
+          if (threat) {
+            const dx = c.x - threat.x, dy = c.y - threat.y, l = Math.hypot(dx, dy) || 1;
+            const nx = c.x + (dx / l) * creatureSpeed(c.kind) * dt;
+            const ny = c.y + (dy / l) * creatureSpeed(c.kind) * dt;
+            if (this.walkable(region.map, nx, c.y, waterline, false)) c.x = nx;
+            if (this.walkable(region.map, c.x, ny, waterline, false)) c.y = ny;
+          } else {
+            // Wander slowly when safe
+            const wx = c.x + Math.sin(c.y * 0.7 + now * 0.0004) * 0.8 * dt;
+            const wy = c.y + Math.cos(c.x * 0.5 + now * 0.0003) * 0.8 * dt;
+            if (this.walkable(region.map, wx, c.y, waterline, false)) c.x = wx;
+            if (this.walkable(region.map, c.x, wy, waterline, false)) c.y = wy;
+          }
+          continue;
+        }
+
+        // Orca: curious, stay in deep water, rare capsize.
+        if (c.kind === "orca") {
+          const depth = this.depthAt(region.map, c.x, c.y, waterline);
+          if (depth < DEPTH_DEEP) {
+            // Too shallow — steer back toward deeper water (south/center).
+            c.y += 0.8 * dt;
+            c.x += (region.map.width * 0.5 - c.x) * 0.05 * dt;
+          } else {
+            // Look for the nearest boat within curious range.
+            let nearBoat: import("../shared/protocol").VehicleState | null = null;
+            let nearDist = Infinity;
+            for (const v of this.vehicles.values()) {
+              if (v.kind !== "boat" || v.region !== c.region) continue;
+              const d = Math.hypot(v.x - c.x, v.y - c.y);
+              if (d < 22 && d < nearDist) { nearBoat = v; nearDist = d; }
+            }
+            if (nearBoat && nearDist > 5) {
+              // Drift toward the boat slowly — curious approach.
+              const dx = nearBoat.x - c.x, dy = nearBoat.y - c.y, l = Math.hypot(dx, dy) || 1;
+              c.x += (dx / l) * 1.0 * dt;
+              c.y += (dy / l) * 1.0 * dt;
+            } else if (nearBoat && nearDist <= 5) {
+              // Very close — very rare capsize chance (~0.3% per second).
+              if (Math.random() < 0.003 * dt) {
+                const driver = nearBoat.driverId ? this.players.get(nearBoat.driverId) : null;
+                const s2 = driver ? this.sessionFor(driver.id) : null;
+                if (s2) this.send(s2.ws, { t: "log", msg: "An orca surfaced under your boat and capsized it!" });
+                if (driver) {
+                  driver.vehicleId = null;
+                  driver.x = nearBoat.x + (Math.random() - 0.5) * 5;
+                  driver.y = nearBoat.y + (Math.random() - 0.5) * 5;
+                }
+                nearBoat.driverId = null;
+                nearBoat.hp = Math.max(0, nearBoat.hp - 120);
+                this.broadcastLog(`An orca capsized a boat in the ${region.name}!`);
+              }
+              // Wander nearby.
+              c.x += Math.sin(c.y * 0.6 + now * 0.0006) * 1.2 * dt;
+              c.y += Math.cos(c.x * 0.5 + now * 0.0005) * 1.2 * dt;
+            } else {
+              // No boats in range — gentle patrol.
+              c.x += Math.sin(c.y * 0.5 + now * 0.0004) * 1.5 * dt;
+              c.y += Math.cos(c.x * 0.4 + now * 0.0003) * 1.2 * dt;
+            }
+          }
+          if (c.y > region.map.height || c.y < 0) this.creatures.delete(c.id);
+          continue;
+        }
+
+        // Whales: drift slowly, exit off the south edge.
+        c.x += Math.sin(c.y + c.x) * 0.15 * dt;
+        c.y += 0.35 * dt;
         if (c.y > region.map.height) this.creatures.delete(c.id);
         continue;
       }
@@ -1433,17 +1793,33 @@ export class GameRoom {
     region: Region,
     c: CreatureState,
   ): { x: number; y: number; building?: BuildingState; player?: PlayerState } | null {
+    // Neutral creatures (whales, seals, otters) never attack.
+    if (isNeutral(c.kind)) return null;
+    const waterline = this.currentWaterline(Date.now());
+    // Sharks only pursue players in water deep enough for them.
+    const deepPredator = c.kind === "dogfish" || c.kind === "sixgill";
+    const landPred = isLandPredator(c.kind);
+    const creatureDepth = this.depthAt(region.map, c.x, c.y, waterline);
+    // Cougars are stealthy — longer detection range but only charge at very close range.
+    const detectionRange = c.kind === "cougar" ? 10 : c.kind === "wolf" ? 8 : 6;
     let best: { x: number; y: number; player?: PlayerState } | null = null;
     let bestD = Infinity;
     for (const p of this.players.values()) {
       if (p.dead || p.region !== region.id) continue;
+      const pd = this.depthAt(region.map, p.x, p.y, waterline);
+      if (deepPredator && pd <= DEPTH_ANKLE) continue;
+      if (landPred && pd > 0) continue; // land predators stay on dry land
       const d = Math.hypot(p.x - c.x, p.y - c.y);
-      if (d < 6 && d < bestD) {
+      const range = landPred ? detectionRange : 6;
+      if (d < range && d < bestD) {
+        if (deepPredator && creatureDepth <= DEPTH_ANKLE) continue;
         bestD = d;
         best = { x: p.x, y: p.y, player: p };
       }
     }
     if (best) return best;
+    // Land predators don't attack buildings; only marine/crab do.
+    if (landPred) return null;
     const b = region.buildings
       .filter((b) => b.kind !== "rubble")
       .map((b) => ({ b, d: Math.hypot(b.x + b.w / 2 - c.x, b.y + b.h / 2 - c.y) }))
@@ -1587,12 +1963,29 @@ export class GameRoom {
     waterline: number,
   ): { x: number; y: number } | null {
     const swims = swimmer(kind);
-    for (let i = 0; i < 30; i++) {
+    // Depth constraints keep each creature in its ecological niche.
+    const minDepth =
+      (kind === "orca" || kind === "humpback" || kind === "greywhale") ? DEPTH_OCEAN * 0.5
+      : kind === "sixgill"  ? DEPTH_DEEP * 0.6
+      : kind === "dogfish"  ? DEPTH_SWIM
+      : kind === "seal"     ? 0
+      : kind === "seaOtter" ? DEPTH_ANKLE
+      : kind === "sealLion" ? 0
+      : 0; // land creatures: depth=0 (on dry land)
+    const maxDepth =
+        kind === "crab"      ? DEPTH_DEEP
+      : kind === "seaOtter"  ? DEPTH_SWIM
+      : kind === "sealLion"  ? DEPTH_SWIM
+      // Land creatures spawn on dry land — maxDepth keeps them off the water
+      : (isPrey(kind) || isLandPredator(kind)) ? 0
+      : Infinity;
+    for (let i = 0; i < 60; i++) {
       const x = Math.floor(Math.random() * region.map.width);
       const y = Math.floor(Math.random() * region.map.height);
-      if (this.walkable(region.map, x + 0.5, y + 0.5, waterline, swims)) {
-        return { x: x + 0.5, y: y + 0.5 };
-      }
+      if (!this.walkable(region.map, x + 0.5, y + 0.5, waterline, swims)) continue;
+      const d = this.depthAt(region.map, x + 0.5, y + 0.5, waterline);
+      if (d < minDepth || d > maxDepth) continue;
+      return { x: x + 0.5, y: y + 0.5 };
     }
     return null;
   }
@@ -1638,11 +2031,14 @@ export class GameRoom {
     return { x: sx, y: sy };
   }
 
-  // Move a driven boat (and its skipper) to another region's water.
-  private transferBoat(v: VehicleRecord, driver: PlayerState, toRegion: RegionId, toSpawn: { x: number; y: number }) {
+  // Move a driven vehicle (and its driver) to another region. Boats land in
+  // water on the far side; cars land on the road/dry ground.
+  private transferVehicle(v: VehicleRecord, driver: PlayerState, toRegion: RegionId, toSpawn: { x: number; y: number }) {
     const dest = this.regions.get(toRegion);
     if (!dest) return;
-    const arrive = this.seaSpawn(dest, toSpawn.x, toSpawn.y);
+    const arrive = v.kind === "boat"
+      ? this.seaSpawn(dest, toSpawn.x, toSpawn.y)
+      : this.landSpawn(dest, toSpawn.x, toSpawn.y);
     v.region = toRegion;
     v.x = arrive.x;
     v.y = arrive.y;
@@ -1650,8 +2046,14 @@ export class GameRoom {
     driver.x = arrive.x;
     driver.y = arrive.y;
     const s = this.sessionFor(driver.id);
-    if (s) this.sendInit(s.ws, driver); // swap their map to the new region
-    this.broadcastLog(`${driver.name} sailed into ${dest.name}.`);
+    if (s) {
+      s.travelCdUntil = Date.now() + 1500; // grace so you don't bounce back
+      this.sendInit(s.ws, driver); // swap their map to the new region
+    }
+    this.broadcastLog(
+      v.kind === "boat" ? `${driver.name} sailed into ${dest.name}.`
+                        : `${driver.name} drove into ${dest.name}.`,
+    );
   }
 
   private nearestBuilding(region: Region, x: number, y: number, range: number): BuildingState | null {
@@ -1688,6 +2090,8 @@ export class GameRoom {
       resourceNodes: [...this.resourceNodes.values()].filter((n) => n.region === regionId),
       plants: [...this.plants.values()].filter((pl) => pl.region === regionId && pl.dormantUntil === null),
       campfires: [...this.campfires.values()].filter((f) => f.region === regionId),
+      furnaces:  [...this.furnaces.values()].filter((f) => f.region === regionId),
+      npcs: this.npcs.filter((n) => n.region === regionId),
     };
   }
 
@@ -1726,68 +2130,135 @@ function pickKind(
   phase: ReturnType<typeof phaseForTide>,
   event: "none" | "king" | "tsunami",
 ): CreatureKind | null {
-  if (event === "tsunami") return Math.random() < 0.5 ? "orca" : "sixgill";
-  if (phase === "low") return Math.random() < 0.8 ? "crab" : "octopus";
-  if (phase === "high") {
-    const r = Math.random();
-    if (r < 0.4) return "dogfish";
-    if (r < 0.6) return "sixgill";
-    if (r < 0.72) return "orca";
-    if (r < 0.85) return "octopus";
-    return Math.random() < 0.5 ? "humpback" : "greywhale";
+  const r = Math.random();
+  if (event === "tsunami") {
+    return r < 0.5 ? "sixgill" : r < 0.75 ? "dogfish" : "orca";
   }
-  return Math.random() < 0.5 ? "crab" : "octopus";
+  // 30% of spawns are always land creatures (tide-independent).
+  if (r < 0.30) {
+    const lr = Math.random();
+    if (lr < 0.28) return "deer";
+    if (lr < 0.50) return "grouse";
+    if (lr < 0.66) return "elk";
+    if (lr < 0.78) return "wolf";
+    if (lr < 0.92) return "bear";
+    return "cougar"; // rarest land predator
+  }
+  const w = Math.random(); // water creature pick
+  if (phase === "low") {
+    if (w < 0.48) return "crab";
+    if (w < 0.66) return "octopus";
+    if (w < 0.80) return "seal";
+    if (w < 0.90) return "sealLion";
+    if (w < 0.97) return "seaOtter";
+    return null;
+  }
+  if (phase === "high") {
+    if (w < 0.26) return "seal";
+    if (w < 0.42) return "dogfish";
+    if (w < 0.53) return "octopus";
+    if (w < 0.61) return "sealLion";
+    if (w < 0.68) return "seaOtter";
+    if (w < 0.74) return "sixgill";
+    if (w < 0.82) return "humpback";
+    if (w < 0.89) return "greywhale";
+    if (w < 0.97) return null;
+    return "orca"; // ~3% — a real event
+  }
+  if (w < 0.38) return "crab";
+  if (w < 0.56) return "seal";
+  if (w < 0.70) return "octopus";
+  if (w < 0.82) return "sealLion";
+  if (w < 0.92) return "seaOtter";
+  return null;
+}
+
+function pickFish(depth: number, hasLure: boolean, level: number): ItemId {
+  const bonus = (hasLure ? 0.15 : 0) + (level >= 15 ? 0.10 : 0);
+  const r = Math.random() + bonus * 0.5;
+  if (depth >= DEPTH_OCEAN * 1.5) {
+    // Abyss: tuna territory
+    return r < 0.40 ? "tuna" : r < 0.72 ? "halibut" : "lingcod";
+  }
+  if (depth >= DEPTH_OCEAN) {
+    // Open ocean: halibut, lingcod, rare tuna
+    return r < 0.30 ? "halibut" : r < 0.62 ? "lingcod" : r < 0.88 ? "salmon" : "tuna";
+  }
+  if (depth >= DEPTH_DEEP) {
+    // Deep: lingcod, salmon, halibut
+    return r < 0.38 ? "lingcod" : r < 0.72 ? "salmon" : r < 0.92 ? "halibut" : "fish";
+  }
+  if (depth >= DEPTH_SWIM) {
+    // Waist-deep: salmon, small fish
+    return r < 0.52 ? "salmon" : r < 0.88 ? "fish" : "lingcod";
+  }
+  return "fish"; // shore — small fry
 }
 
 function creatureHp(kind: CreatureKind): number {
   switch (kind) {
-    case "crab":
-      return 20;
-    case "octopus":
-      return 45;
-    case "dogfish":
-      return 60;
-    case "sixgill":
-      return 110;
-    case "orca":
-      return 160;
-    default:
-      return 200;
+    case "crab":      return 20;
+    case "octopus":   return 45;
+    case "dogfish":   return 60;
+    case "sixgill":   return 110;
+    case "orca":      return 200;
+    case "seal":      return 50;
+    case "sealLion":  return 70;
+    case "seaOtter":  return 30;
+    // Land prey
+    case "deer":      return 40;
+    case "elk":       return 80;
+    case "grouse":    return 12;
+    // Land predators
+    case "bear":      return 150;
+    case "cougar":    return 90;
+    case "wolf":      return 60;
+    default:          return 250; // whales
   }
 }
 
 function creatureSpeed(kind: CreatureKind): number {
   switch (kind) {
-    case "crab":
-      return 1.6;
-    case "octopus":
-      return 2.0;
-    case "dogfish":
-      return 3.2;
-    case "sixgill":
-      return 2.6;
-    case "orca":
-      return 3.6;
-    default:
-      return 1.0;
+    case "crab":      return 1.6;
+    case "octopus":   return 2.0;
+    case "dogfish":   return 3.2;
+    case "sixgill":   return 2.6;
+    case "orca":      return 3.8;
+    case "seal":      return 2.8;
+    case "sealLion":  return 2.2;
+    case "seaOtter":  return 2.0;
+    // Land prey flee speed
+    case "grouse":    return 5.5;
+    case "deer":      return 4.8;
+    case "elk":       return 4.2;
+    // Land predator chase speed
+    case "cougar":    return 4.5;
+    case "wolf":      return 3.8;
+    case "bear":      return 3.0;
+    default:          return 1.0;
   }
 }
 
 function creatureDamage(kind: CreatureKind): number {
   switch (kind) {
-    case "crab":
-      return 6;
-    case "octopus":
-      return 14;
-    case "dogfish":
-      return 20;
-    case "sixgill":
-      return 30;
-    case "orca":
-      return 45;
-    default:
-      return 0;
+    case "crab":     return 1.5;
+    case "octopus":  return 14;
+    case "dogfish":  return 20;
+    case "sixgill":  return 32;
+    case "orca":     return 48;
+    case "bear":     return 36;
+    case "cougar":   return 28;
+    case "wolf":     return 18;
+    default:         return 0;
   }
+}
+
+function isPrey(kind: CreatureKind): boolean {
+  return kind === "deer" || kind === "elk" || kind === "grouse";
+}
+
+function isLandPredator(kind: CreatureKind): boolean {
+  return kind === "bear" || kind === "cougar" || kind === "wolf";
 }
 
 function nextStage(stage: PlantStage): PlantStage {
@@ -1797,11 +2268,16 @@ function nextStage(stage: PlantStage): PlantStage {
 }
 
 function isNeutral(kind: CreatureKind): boolean {
-  return kind === "humpback" || kind === "greywhale";
+  return kind === "humpback" || kind === "greywhale" || kind === "orca"
+      || kind === "seal" || kind === "sealLion" || kind === "seaOtter"
+      || kind === "deer" || kind === "elk" || kind === "grouse";
 }
 
 function swimmer(kind: CreatureKind): boolean {
-  return kind !== "crab";
+  // Land creatures and sea lions don't swim
+  return kind !== "crab" && kind !== "sealLion"
+      && kind !== "deer" && kind !== "elk" && kind !== "grouse"
+      && kind !== "bear" && kind !== "cougar" && kind !== "wolf";
 }
 
 function sanitizeAppearance(a: Appearance | undefined): Appearance {
