@@ -27,8 +27,6 @@ export interface PlantDef {
 }
 
 // Build a sloped heightmap from the tile grid so the tide sweeps gradually.
-// Land rises ~SLOPE per tile away from the shore; the seabed drops the same
-// going offshore. Hills/rock/forest get a bump so they stay dry at high tide.
 const SHORE_ELEV = 8;
 const BEACH_SLOPE = 2;
 export function computeElevation(tiles: Tile[], w: number, h: number): number[] {
@@ -61,9 +59,7 @@ export function computeElevation(tiles: Tile[], w: number, h: number): number[] 
     } else {
       const ld = fromWater[i] < 0 ? 20 : fromWater[i];
       const t = tiles[i];
-      // Sand beaches rise very gently, so a wide flat (e.g. Pachena Beach) stays
-      // inside the intertidal band for many tiles and the tide sweeps far across
-      // it. Other terrain climbs faster and stays dry.
+      // Sand beaches rise very gently so the tide sweeps far across the flat.
       const slope = t === Tile.Sand ? 0.75 : BEACH_SLOPE;
       let e = SHORE_ELEV + ld * slope;
       if (t === Tile.Hill) e += 34;
@@ -77,10 +73,10 @@ export function computeElevation(tiles: Tile[], w: number, h: number): number[] 
 }
 
 // ---------------------------------------------------------------------------
-// Map dimensions — much larger for realistic scale
+// Map dimensions — 300 × 180 for realistic scale
 // ---------------------------------------------------------------------------
-export const MAP_WIDTH  = 200;
-export const MAP_HEIGHT = 120;
+export const MAP_WIDTH  = 300;
+export const MAP_HEIGHT = 180;
 
 export interface RegionDef {
   id: string;
@@ -156,10 +152,8 @@ function distanceToWater(tiles: Tile[], w = MAP_WIDTH, h = MAP_HEIGHT): Int32Arr
   return d;
 }
 
-// Natural coastal landcover: a grassy inhabited band hugs the shore, dense
-// rainforest fills the interior, and steep hills ring the map edges. This
-// replaces hand-tuned checkerboard fills with something that reads as real
-// terrain. Only paints over Grass — water/roads/docks are left untouched.
+// Natural coastal landcover: grassy shore band, dense rainforest interior,
+// steep hill rim. Reads as real coastal rainforest; only paints over Grass.
 function applyLandcover(tiles: Tile[], w = MAP_WIDTH, h = MAP_HEIGHT) {
   const dw = distanceToWater(tiles, w, h);
   for (let y = 0; y < h; y++) {
@@ -169,21 +163,19 @@ function applyLandcover(tiles: Tile[], w = MAP_WIDTH, h = MAP_HEIGHT) {
       const edge = Math.min(x, w - 1 - x, y, h - 1 - y);
       const d = dw[i] < 0 ? 9999 : dw[i];
       if (edge < 3) {
-        tiles[i] = Tile.Hill;            // steep rim at the very edge
-      } else if (edge < 8 && d > 10) {
-        tiles[i] = Tile.Forest;          // forested slope behind the rim
-      } else if (d <= 11) {
-        tiles[i] = Tile.Grass;           // inhabited shore band (town)
+        tiles[i] = Tile.Hill;
+      } else if (edge < 8 && d > 12) {
+        tiles[i] = Tile.Forest;
+      } else if (d <= 13) {
+        tiles[i] = Tile.Grass;
       } else {
-        // Interior: forest, with the occasional rocky knoll deep inland.
-        tiles[i] = d > 26 && edge > 16 ? Tile.Hill : Tile.Forest;
+        tiles[i] = d > 30 && edge > 18 ? Tile.Hill : Tile.Forest;
       }
     }
   }
 }
 
-// Carve a cleared (grassy) margin around every road so it reads as a road
-// through the trees rather than a line buried in forest.
+// Carve a grassy margin around every road so it reads as a road through trees.
 function clearRoadMargins(tiles: Tile[], radius = 2, w = MAP_WIDTH, h = MAP_HEIGHT) {
   const roads: number[] = [];
   for (let i = 0; i < w * h; i++) if (tiles[i] === Tile.Road) roads.push(i);
@@ -201,222 +193,272 @@ function clearRoadMargins(tiles: Tile[], radius = 2, w = MAP_WIDTH, h = MAP_HEIG
 }
 
 // ---------------------------------------------------------------------------
-// BAMFIELD  (200 × 120 tiles)
+// BAMFIELD  (300 × 180 tiles)
 //
-// Real geography key facts:
-//   • Bamfield Inlet runs N→S, ~8 tiles wide at the narrows, widening south.
-//   • West Bamfield on the WEST bank (boardwalk, no road), ~x 80-90.
-//   • East Bamfield on the EAST bank (Bamfield Main road), ~x 100-115.
-//   • Grappler Inlet branches EAST from the main inlet at roughly y=30-40,
-//     and is where the Bamfield Marine Sciences Centre (BMSC) sits on the
-//     west side / south shore of Grappler Inlet.
-//   • Government wharf (car ferry) is in the main inlet, east side, y≈45.
-//   • Brady's Beach: open Pacific-facing beach, far west side of the map.
-//   • Barkley Sound / Trevor Channel opens to the south of the inlet mouth.
-//   • Dense rainforest covers the hills on both sides.
+// Real geography:
+//   • Bamfield Inlet: N→S channel, centre-line at x≈170. Narrows at top,
+//     widens south into Trevor Channel / Barkley Sound (y ≥ 155).
+//   • West Bamfield (x≈140-165): boardwalk community on the west bank.
+//     No road — all access by water taxi or on foot along the boardwalk.
+//     Houses crowd right to the inlet edge. McKay Bay Lodge in the middle.
+//   • Brady's Beach (x≈20-70, y≈90-155): long open-Pacific sandy beach
+//     on the far west side. Trail from West Bamfield runs through the forest.
+//   • Grappler Inlet: branches EAST from the main inlet at y≈45-58.
+//     Runs from x≈168 east to x≈268. BMSC sits on its south shore.
+//   • Port Desire: small sheltered inlet on the EAST side, y≈90-110.
+//   • East Bamfield (x≈178-210): road-side community. Bamfield Main runs N→S
+//     at x≈185. Ostrom's Gas Bar is partway down the road. Market near y=72.
+//   • Government Wharf (car ferry) at x≈188, y≈54 on the east bank.
+//   • Dense rainforest on all hillsides; rocky knolls on ridge-tops.
 // ---------------------------------------------------------------------------
 function generateBamfieldMap(): WorldMap {
   const W = MAP_WIDTH, H = MAP_HEIGHT;
   const tiles: Tile[] = fill(Tile.Grass);
 
-  // --- BAMFIELD INLET (main N-S channel) ---
-  // Center of inlet at x≈92. Width narrows from 10 at the north mouth to 14 at
-  // the south as it opens into Trevor Channel.
-  const INLET_CX = 92;
+  // --- BAMFIELD INLET (main N→S channel, centre-line at x=170) ---
+  const INLET_CX = 170;
   for (let y = 0; y < H; y++) {
-    // Inlet tapers: narrower at top (narrows), wider toward Barkley Sound.
-    const halfW = y < 20  ? 5 :
-                  y < 50  ? 6 + Math.round((y-20)*0.1) :
-                  y < 80  ? 9 + Math.round((y-50)*0.15) :
-                             14 + Math.round((y-80)*0.3);
-    const wig = Math.round(Math.sin(y * 0.18) * 2); // gentle meander
+    const halfW = y < 25  ? 6 :
+                  y < 60  ? 7 + Math.round((y - 25) * 0.06) :
+                  y < 110 ? 9 + Math.round((y - 60) * 0.10) :
+                             14 + Math.round((y - 110) * 0.40);
+    const wig = Math.round(Math.sin(y * 0.15) * 2);
     const cx = INLET_CX + wig;
     rect(tiles, cx - halfW, y, cx + halfW, y, Tile.Water);
   }
 
-  // --- GRAPPLER INLET (branches east from main inlet at y≈30-45) ---
-  // Runs from the main inlet eastward, about 4-5 tiles wide, to ~x=140.
-  // The BMSC sits on its south shore.
-  for (let x = INLET_CX - 5; x <= 145; x++) {
-    const w2 = x < 110 ? 4 : 3; // slightly narrower toward the end
-    const cy = 37 + Math.round(Math.sin((x - INLET_CX) * 0.08) * 2);
+  // --- GRAPPLER INLET (branches east from main inlet at y≈45-58) ---
+  // BMSC sits on the south shore; inlet runs ~100 tiles east.
+  for (let x = INLET_CX - 6; x <= 268; x++) {
+    const w2 = x < 210 ? 5 : 4;
+    const cy = 50 + Math.round(Math.sin((x - INLET_CX) * 0.06) * 3);
     rect(tiles, x, cy - w2, x, cy + w2, Tile.Water);
   }
 
-  // --- BARKLEY SOUND / TREVOR CHANNEL (open ocean, south) ---
-  // Starts below y=95, full width open water for boating and fishing.
-  rect(tiles, 10, 95, W - 10, H - 1, Tile.Water);
+  // --- PORT DESIRE (small inlet east side, south of Grappler) ---
+  // Sheltered bay on the east bank, roughly y=88-112, x=176-198.
+  for (let y = 88; y <= 112; y++) {
+    const half = 8 + Math.round(4 * Math.sin(Math.PI * (y - 88) / 24));
+    const cx = 190;
+    rect(tiles, cx - half, y, cx + half, y, Tile.Water);
+  }
 
-  // --- BRADY'S BEACH (Pacific-facing beach, west side) ---
-  // A pocket of water on the far west edge, y=55-90.
-  rect(tiles, 0, 55, 8, 90, Tile.Water);
-  rect(tiles, 0, 90, 20, 95, Tile.Water); // connects to Trevor Channel
+  // --- BARKLEY SOUND / TREVOR CHANNEL (open water, south) ---
+  rect(tiles, 35, 155, W - 20, H - 1, Tile.Water);
 
-  // --- NATURAL LANDCOVER: grassy shore band, rainforest interior, hill rim ---
+  // --- BRADY'S BEACH (Pacific-facing beach, far west) ---
+  // Large open-coast bay: x=20-70, y=90-155, connects south to Barkley Sound.
+  rect(tiles, 0, 88, 68, 155, Tile.Water);
+  // Wide sandy flat backing Brady's Beach (above the water line)
+  rect(tiles, 68, 90, 90, 152, Tile.Sand);
+
+  // --- NATURAL LANDCOVER ---
   applyLandcover(tiles, W, H);
 
   // --- ROADS ---
-  // Bamfield Main (East Bamfield): runs south from the junction at y=5 down
-  // to the road-end at y=88. Roughly at x=110.
-  const ROAD_X = 110;
-  // Incoming from the NE across the hill (ferry/bus terminal area):
-  for (let x = ROAD_X; x <= W - 15; x++) setTile(tiles, x, 5, Tile.Road);
-  // South along the east bank:
-  vLine(tiles, ROAD_X, 5, 88, Tile.Road);
-  // Short side-streets to the government wharf:
-  hLine(tiles, ROAD_X, ROAD_X + 8, 46, Tile.Road);
-  // Side road to the campground area:
-  hLine(tiles, ROAD_X, ROAD_X - 10, 72, Tile.Road);
+  // Bamfield Main: arrives from the NE (ferry road end), runs S to road-end.
+  const ROAD_X = 185;
+  // Incoming highway from east (top of map):
+  for (let x = ROAD_X; x <= W - 12; x++) setTile(tiles, x, 6, Tile.Road);
+  // Main road south:
+  vLine(tiles, ROAD_X, 6, 125, Tile.Road);
+  // Side road east to Government Wharf:
+  hLine(tiles, ROAD_X, ROAD_X + 12, 54, Tile.Road);
+  // Side road south-east to Port Desire dock:
+  hLine(tiles, ROAD_X, ROAD_X + 8, 96, Tile.Road);
+  // Short spur: Ostrom's Gas Bar access:
+  hLine(tiles, ROAD_X, ROAD_X + 6, 68, Tile.Road);
 
-  // Clear a grassy margin so the road runs through the trees, not under them.
   clearRoadMargins(tiles, 2, W, H);
 
-  // --- DOCKS & PIERS ---
-  // West Bamfield boardwalk docks (fingerpiers into the inlet, west bank):
-  for (const [px, py] of [[83,20],[83,28],[83,36],[82,48],[82,56],[82,66]] as [number,number][]) {
-    hLine(tiles, px, px+5, py, Tile.Dock);
+  // --- WEST BAMFIELD BOARDWALK (docks along west bank of inlet) ---
+  // Fingerpier docks jut east from the west bank into the inlet.
+  for (const [px, py] of [
+    [162, 28], [162, 36], [162, 44], [161, 52],
+    [161, 60], [161, 70], [161, 80], [160, 90],
+    [160, 98], [160, 108],
+  ] as [number, number][]) {
+    hLine(tiles, px, px + 7, py, Tile.Dock);
   }
-  // Government wharf (east bank, car ferry terminal):
-  hLine(tiles, ROAD_X + 2, ROAD_X + 10, 46, Tile.Dock);
-  hLine(tiles, ROAD_X + 2, ROAD_X + 10, 47, Tile.Dock);
-  // BMSC dock (Grappler Inlet, south shore):
-  hLine(tiles, 115, 125, 44, Tile.Dock);
-  hLine(tiles, 115, 125, 45, Tile.Dock);
-  // Small float plane dock (south of BMSC):
-  hLine(tiles, 118, 124, 48, Tile.Dock);
 
-  // --- BEACH STRIP (shore-side sand where Brady's Beach meets the land) ---
-  // Already handled by beachify(), but add a wider sandy flat at Brady's Beach.
-  rect(tiles, 9, 56, 18, 88, Tile.Sand);
+  // --- GOVERNMENT WHARF (east bank, car ferry terminal) ---
+  rect(tiles, ROAD_X + 4, 54, ROAD_X + 14, 57, Tile.Dock);
+
+  // --- BMSC DOCK (south shore of Grappler Inlet) ---
+  rect(tiles, 218, 58, 248, 60, Tile.Dock);
+  hLine(tiles, 228, 242, 62, Tile.Dock); // float plane dock
+
+  // --- PORT DESIRE DOCK ---
+  hLine(tiles, ROAD_X + 4, ROAD_X + 10, 96, Tile.Dock);
+  hLine(tiles, ROAD_X + 4, ROAD_X + 10, 97, Tile.Dock);
 
   return worldMap(beachify(tiles));
 }
 
 function bamfieldBuildings(): BuildingState[] {
   return mkBuildings("bf", [
-    // ---- WEST BAMFIELD (boardwalk) ----
-    // Houses along the inlet bank, accessed by boardwalk only.
-    { kind:"house",     x:80, y:18, w:3, h:2, hp:100 },
-    { kind:"house",     x:80, y:24, w:3, h:2, hp:100 },
-    { kind:"house",     x:79, y:30, w:3, h:2, hp:100 },
-    { kind:"house",     x:80, y:38, w:2, h:2, hp:100 },
-    { kind:"boathouse", x:81, y:44, w:3, h:3, hp:120 },
-    { kind:"house",     x:80, y:52, w:3, h:2, hp:100 },
-    { kind:"house",     x:80, y:60, w:3, h:2, hp:100 },
-    { kind:"house",     x:79, y:68, w:3, h:2, hp:100 },
+    // ---- WEST BAMFIELD (boardwalk community) ----
+    // Rows of houses right along the west bank, facing the inlet.
+    { kind:"house",     x:148, y: 22, w:3, h:2, hp:100 },
+    { kind:"house",     x:152, y: 22, w:3, h:2, hp:100 },
+    { kind:"house",     x:148, y: 30, w:3, h:2, hp:100 },
+    { kind:"house",     x:153, y: 30, w:3, h:2, hp:100 },
+    { kind:"house",     x:148, y: 38, w:3, h:2, hp:100 },
+    { kind:"house",     x:153, y: 40, w:3, h:2, hp:100 },
+    { kind:"house",     x:148, y: 48, w:3, h:2, hp:100 },
+    { kind:"boathouse", x:153, y: 48, w:4, h:3, hp:120 },
+    // McKay Bay Lodge — west-side marina lodge, sells fuel
+    { kind:"shop",      x:143, y: 58, w:5, h:3, hp:180 },
+    { kind:"house",     x:148, y: 62, w:3, h:2, hp:100 },
+    { kind:"house",     x:148, y: 70, w:3, h:2, hp:100 },
+    { kind:"house",     x:152, y: 70, w:3, h:2, hp:100 },
+    { kind:"house",     x:148, y: 78, w:3, h:2, hp:100 },
+    { kind:"house",     x:148, y: 86, w:3, h:2, hp:100 },
+    { kind:"boathouse", x:154, y: 88, w:4, h:3, hp:120 },
+    { kind:"house",     x:148, y: 96, w:3, h:2, hp:100 },
+    { kind:"house",     x:148, y:104, w:3, h:2, hp:100 },
 
     // ---- BAMFIELD MARINE SCIENCES CENTRE (BMSC) ----
-    // On the south shore of Grappler Inlet, west side ~x=112-130.
-    { kind:"shop",      x:112, y:42, w:6, h:4, hp:200 }, // main research building
-    { kind:"house",     x:120, y:42, w:4, h:3, hp:140 }, // accommodation
-    { kind:"house",     x:126, y:42, w:4, h:3, hp:140 },
-    { kind:"boathouse", x:132, y:41, w:4, h:3, hp:120 }, // boat shed / research boats
+    // South shore of Grappler Inlet: main lab, accommodation, boat barn.
+    { kind:"shop",      x:218, y: 62, w:8, h:5, hp:250 }, // main research building
+    { kind:"house",     x:230, y: 62, w:4, h:3, hp:140 }, // grad student housing
+    { kind:"house",     x:236, y: 62, w:4, h:3, hp:140 },
+    { kind:"house",     x:242, y: 62, w:4, h:3, hp:140 },
+    { kind:"boathouse", x:248, y: 62, w:5, h:4, hp:150 }, // research boat barn
 
     // ---- EAST BAMFIELD (road side) ----
-    // Market / general store (bus stop is here):
-    { kind:"shop",      x:106, y:52, w:4, h:3, hp:160 },
+    // Government wharf / ferry terminal:
+    { kind:"dock",      x:195, y: 52, w:5, h:4, hp:180 },
+    // Ostrom's Gas Bar + metal shop:
+    { kind:"shop",      x:188, y: 66, w:4, h:3, hp:200 },
+    // General store / market (bus stop in front):
+    { kind:"shop",      x:180, y: 72, w:5, h:4, hp:180 },
+    // Breaker's Marine (sells jerry cans, boat parts):
+    { kind:"shop",      x:180, y: 82, w:4, h:3, hp:160 },
     // Houses along Bamfield Main:
-    { kind:"house",     x:106, y:20, w:3, h:2, hp:100 },
-    { kind:"house",     x:106, y:28, w:3, h:2, hp:100 },
-    { kind:"house",     x:106, y:34, w:3, h:2, hp:100 },
-    { kind:"house",     x:106, y:58, w:3, h:2, hp:100 },
-    { kind:"house",     x:106, y:64, w:3, h:2, hp:100 },
-    { kind:"house",     x:106, y:70, w:3, h:2, hp:100 },
-    { kind:"house",     x:107, y:76, w:3, h:2, hp:100 },
-    { kind:"house",     x:107, y:82, w:3, h:2, hp:100 },
-    // Government wharf building (ferry terminal):
-    { kind:"dock",      x:113, y:44, w:4, h:3, hp:180 },
-    // Boathouse near the road's end:
-    { kind:"boathouse", x:104, y:86, w:4, h:3, hp:120 },
+    { kind:"house",     x:190, y: 18, w:3, h:2, hp:100 },
+    { kind:"house",     x:196, y: 18, w:3, h:2, hp:100 },
+    { kind:"house",     x:190, y: 26, w:3, h:2, hp:100 },
+    { kind:"house",     x:196, y: 26, w:3, h:2, hp:100 },
+    { kind:"house",     x:190, y: 34, w:3, h:2, hp:100 },
+    { kind:"house",     x:196, y: 34, w:3, h:2, hp:100 },
+    { kind:"house",     x:190, y: 42, w:3, h:2, hp:100 },
+    { kind:"house",     x:190, y: 76, w:3, h:2, hp:100 },
+    { kind:"house",     x:196, y: 80, w:3, h:2, hp:100 },
+    { kind:"house",     x:190, y: 90, w:3, h:2, hp:100 },
+    { kind:"house",     x:196, y: 96, w:3, h:2, hp:100 },
+    { kind:"house",     x:190, y:104, w:3, h:2, hp:100 },
+    { kind:"house",     x:190, y:112, w:3, h:2, hp:100 },
+    // Boathouse at road end:
+    { kind:"boathouse", x:184, y:120, w:4, h:3, hp:120 },
   ]);
 }
 
 // ---------------------------------------------------------------------------
-// ANACLA / PACHENA BAY  (200 × 120 tiles)
+// ANACLA / PACHENA BAY  (300 × 180 tiles)
 //
-// Real geography key facts:
-//   • Pachena Bay: wide open crescent-shaped bay facing southwest.
-//     Pachena Beach is a long (~3km) flat sandy beach — very wide tidal flat.
-//   • The bay is shallow and sandy; the deep ocean is only at the bay mouth.
-//   • Anacla village sits on the north/east side of the bay.
-//   • Pachena River enters from the north into the NE corner of the bay.
-//   • Bamfield Main road arrives from the north (connects to Bamfield).
-//   • Pachena Bay campground is near the beach in the south.
+// Real geography:
+//   • Bamfield Main road arrives from the NORTH at x≈220.
+//   • Anacla village sits on the NE shore of Pachena Bay, just off the road.
+//   • Pachena Beach: long (~3 km) gently-curving sandy beach that sweeps
+//     from the NE shore all the way around to the west. The tidal flat is huge.
+//   • Keeha Beach: around the headland to the WEST, exposed open Pacific.
+//     This is where the sea-crossing trigger zone is (sail north to Bamfield).
+//   • Pachena River enters from the NE, meanders down to the bay mouth.
+//   • Cape Beale (lighthouse) is at the southern tip — represented as rocky
+//     headland at the very south edge of the map.
+//   • Barkley Sound fills the deep south (y ≥ 160).
 // ---------------------------------------------------------------------------
 function generateAnaclaMap(): WorldMap {
   const W = MAP_WIDTH, H = MAP_HEIGHT;
   const tiles: Tile[] = fill(Tile.Grass);
 
-  // --- PACHENA BAY (wide navigable bay, ringed by a huge sandy flat) ---
-  // An on-map ellipse of water reaching up to ~y=80 in the centre, so there's
-  // real water to boat and fish in, with the open ocean across the very bottom.
+  // --- PACHENA BAY (wide crescent bay facing SW) ---
+  // North shore defined by a sine curve so the bay is deepest at the centre
+  // and closes at both the NE (Anacla side) and NW (Keeha/headland side).
+  //   bay_north(x) = 148 - 68 * sin(π * (x - 22) / 256)   x ∈ [22, 278]
+  // At x=22:  148 (eastern tip)
+  // At x=150: 148 - 68 = 80 (deepest north extent, ~centre of map)
+  // At x=278: 148 (western tip / headland)
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
-      const bx = (x - 100) / 78;
-      const by = (y - 112) / 34;
-      if (bx * bx + by * by < 1.0) tiles[y * W + x] = Tile.Water; // the bay
-      if (y >= 112) tiles[y * W + x] = Tile.Water;                // open ocean
+      if (y >= 160) { tiles[y * W + x] = Tile.Water; continue; } // open ocean
+      if (x >= 22 && x <= 278) {
+        const t = 148 - 68 * Math.sin(Math.PI * (x - 22) / 256);
+        if (y > t) tiles[y * W + x] = Tile.Water;
+      }
     }
   }
 
-  // --- PACHENA RIVER (meanders from north into the bay) ---
-  // Enters at the NE corner of the bay, around x=145-155.
-  for (let y = 0; y < 80; y++) {
-    const rx = 148 + Math.round(8 * Math.sin(y * 0.12));
-    for (let x = rx - 2; x <= rx + 2; x++) {
+  // --- KEEHA BEACH / OPEN PACIFIC (far west, x ≤ 22) ---
+  // West-facing exposure: sea from y=85 to map bottom.
+  rect(tiles, 0, 85, 22, H - 1, Tile.Water);
+
+  // --- PACHENA RIVER (meanders from NE into the bay, around x=240) ---
+  for (let y = 0; y < 90; y++) {
+    const rx = 240 + Math.round(10 * Math.sin(y * 0.10));
+    for (let x = rx - 3; x <= rx + 3; x++) {
       if (x >= 0 && x < W) tiles[y * W + x] = Tile.Water;
     }
   }
 
-  // --- BARKLEY SOUND (open west side of map — boat access from Bamfield) ---
-  rect(tiles, 0, 70, 15, H-1, Tile.Water);
-
-  // --- NATURAL LANDCOVER: rainforest + hills frame the bay ---
+  // --- NATURAL LANDCOVER ---
   applyLandcover(tiles, W, H);
 
-  // --- WIDE SANDY FLAT (Pachena Beach) ---
-  // Pachena is a long, flat, sandy beach — the tidal flat is huge. Carve a wide
-  // sand band around the whole bay shore (over grass AND the forest fringe), so
-  // the tide sweeps far in and out across it.
+  // --- WIDE SANDY FLAT (Pachena Beach tidal zone) ---
+  // The beach is enormous; paint a wide sand band all around the bay shore.
   const dwBay = distanceToWater(tiles, W, H);
-  for (let y = 56; y < H; y++) {
+  for (let y = 65; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
       const t = tiles[i];
-      if ((t === Tile.Grass || t === Tile.Forest) && dwBay[i] > 0 && dwBay[i] <= 16) {
+      if ((t === Tile.Grass || t === Tile.Forest) && dwBay[i] > 0 && dwBay[i] <= 18) {
         tiles[i] = Tile.Sand;
       }
     }
   }
 
-  // --- ROAD (Bamfield Main arriving from north) ---
-  // Road comes in from the north at around x=130, bends west to the village.
-  const roadEntryX = 130;
-  vLine(tiles, roadEntryX, 0, 55, Tile.Road);
-  // Bends west through the village:
-  for (let x = roadEntryX; x >= 80; x--) setTile(tiles, x, 55, Tile.Road);
-  // Then south to the campground area:
-  vLine(tiles, 80, 55, 75, Tile.Road);
+  // --- ROAD (Bamfield Main, arriving from north at x=220) ---
+  const ROAD_X = 220;
+  vLine(tiles, ROAD_X, 0, 60, Tile.Road);
+  // Curves west along the village then south to the campground:
+  for (let x = ROAD_X; x >= 165; x--) setTile(tiles, x, 60, Tile.Road);
+  vLine(tiles, 165, 60, 88, Tile.Road);
+  // Short spur east from village to boat launch:
+  hLine(tiles, ROAD_X, ROAD_X + 18, 50, Tile.Road);
+
   clearRoadMargins(tiles, 2, W, H);
+
+  // --- ANACLA DOCK (boat launch on Pachena River/bay NE corner) ---
+  hLine(tiles, ROAD_X + 10, ROAD_X + 20, 50, Tile.Dock);
+  hLine(tiles, ROAD_X + 10, ROAD_X + 20, 51, Tile.Dock);
 
   return worldMap(beachify(tiles));
 }
 
 function anaclaBuildings(): BuildingState[] {
   return mkBuildings("an", [
-    // ---- ANACLA VILLAGE (along the road) ----
-    { kind:"house",     x:122, y:30, w:3, h:2, hp:100 },
-    { kind:"house",     x:118, y:38, w:3, h:2, hp:100 },
-    { kind:"house",     x:122, y:44, w:3, h:2, hp:100 },
-    { kind:"house",     x:115, y:50, w:3, h:2, hp:100 },
-    { kind:"shop",      x:108, y:52, w:4, h:3, hp:150 }, // village store / bus stop
-    { kind:"house",     x:102, y:52, w:3, h:2, hp:100 },
-    { kind:"house",     x: 96, y:54, w:3, h:2, hp:100 },
-    { kind:"house",     x: 90, y:55, w:3, h:2, hp:100 },
-    // ---- BEACH CAMPGROUND ----
-    { kind:"house",     x: 82, y:64, w:3, h:2, hp: 80 }, // camp shelter
-    { kind:"house",     x: 88, y:64, w:3, h:2, hp: 80 },
-    { kind:"boathouse", x: 76, y:66, w:4, h:3, hp:120 }, // boat launch
+    // ---- ANACLA VILLAGE (NE shore, along Bamfield Main) ----
+    { kind:"house",     x:210, y: 22, w:3, h:2, hp:100 },
+    { kind:"house",     x:216, y: 22, w:3, h:2, hp:100 },
+    { kind:"house",     x:224, y: 22, w:3, h:2, hp:100 },
+    { kind:"house",     x:210, y: 30, w:3, h:2, hp:100 },
+    { kind:"house",     x:216, y: 30, w:3, h:2, hp:100 },
+    { kind:"house",     x:224, y: 30, w:3, h:2, hp:100 },
+    { kind:"house",     x:210, y: 38, w:3, h:2, hp:100 },
+    { kind:"house",     x:216, y: 38, w:3, h:2, hp:100 },
+    { kind:"house",     x:210, y: 46, w:3, h:2, hp:100 },
+    { kind:"house",     x:216, y: 46, w:3, h:2, hp:100 },
+    // Village store / bus stop:
+    { kind:"shop",      x:204, y: 56, w:5, h:4, hp:160 },
+    { kind:"house",     x:196, y: 58, w:3, h:2, hp:100 },
+    { kind:"house",     x:188, y: 60, w:3, h:2, hp:100 },
+    { kind:"house",     x:180, y: 62, w:3, h:2, hp:100 },
+    { kind:"house",     x:172, y: 63, w:3, h:2, hp:100 },
+    // ---- PACHENA BAY CAMPGROUND (mid-beach, y≈82-95) ----
+    { kind:"house",     x:155, y: 80, w:3, h:2, hp: 80 }, // shelter
+    { kind:"house",     x:162, y: 80, w:3, h:2, hp: 80 },
+    { kind:"boathouse", x:148, y: 82, w:4, h:3, hp:120 }, // boat launch
   ]);
 }
 
@@ -560,64 +602,67 @@ export function buildRegions(): RegionDef[] {
     name: "Bamfield",
     map: generateBamfieldMap(),
     buildings: bamfieldBuildings(),
-    spawn: { x: 108, y: 55 }, // East Bamfield, by the market
+    spawn: { x: 183, y: 72 }, // East Bamfield, in front of the market
     travelNodes: [
       {
         id: "bf-bus", kind: "bus",
-        x: 107, y: 55, w: 3, h: 1,
+        x: 181, y: 72, w: 4, h: 2,
         label: "Catch the bus at the market to Anacla",
-        toRegion: "anacla", toSpawn: { x: 108, y: 54 },
+        toRegion: "anacla", toSpawn: { x: 210, y: 58 },
       },
       {
         id: "bf-gate", kind: "gate",
-        x: 110, y: 5, w: 2, h: 1,
+        x: 185, y: 4, w: 2, h: 1,
         label: "Drive the road out to Anacla",
-        toRegion: "anacla", toSpawn: { x: 130, y: 5 },
+        toRegion: "anacla", toSpawn: { x: 220, y: 6 },
       },
       {
         id: "bf-sea", kind: "sea",
-        x: 20, y: 110, w: 140, h: 8,
+        x: 40, y: 168, w: 200, h: 10,
         label: "Sail south out of the inlet to Pachena Bay",
-        toRegion: "anacla", toSpawn: { x: 30, y: 100 },
+        toRegion: "anacla", toSpawn: { x: 10, y: 150 },
       },
     ],
     vehicles: [
-      { id: "bf-car-1",  kind: "car",  x: 112, y: 10  }, // on Bamfield Main
-      { id: "bf-car-2",  kind: "car",  x: 112, y: 60  }, // mid-road
-      { id: "bf-boat-1", kind: "boat", x:  88, y: 50  }, // inlet, west bank
-      { id: "bf-boat-2", kind: "boat", x:  97, y: 46  }, // government wharf
-      { id: "bf-boat-3", kind: "boat", x: 120, y: 38  }, // Grappler Inlet, by BMSC
+      { id: "bf-car-1",  kind: "car",  x: 187, y: 14  }, // north Bamfield Main
+      { id: "bf-car-2",  kind: "car",  x: 187, y: 88  }, // south Bamfield Main
+      { id: "bf-boat-1", kind: "boat", x: 163, y: 74  }, // inlet west bank, near West Bamfield
+      { id: "bf-boat-2", kind: "boat", x: 175, y: 55  }, // near gov't wharf
+      { id: "bf-boat-3", kind: "boat", x: 232, y: 52  }, // Grappler Inlet, BMSC
     ],
     resourceNodes: [
-      // Trees in the forested hills (both sides)
-      { id:"bf-t1",  kind:"tree",      x: 15, y: 20 },
-      { id:"bf-t2",  kind:"tree",      x: 12, y: 35 },
-      { id:"bf-t3",  kind:"tree",      x: 14, y: 55 },
-      { id:"bf-t4",  kind:"tree",      x: 16, y: 70 },
-      { id:"bf-t5",  kind:"tree",      x: 18, y: 85 },
-      { id:"bf-t6",  kind:"tree",      x:130, y: 10 },
-      { id:"bf-t7",  kind:"tree",      x:135, y: 25 },
-      { id:"bf-t8",  kind:"tree",      x:138, y: 55 },
-      { id:"bf-t9",  kind:"tree",      x:132, y: 72 },
-      { id:"bf-t10", kind:"tree",      x:136, y: 85 },
-      // Ore in the rocky hillsides
-      { id:"bf-i1",  kind:"ironOre",   x:  6, y: 30 },
-      { id:"bf-i2",  kind:"ironOre",   x:  7, y: 65 },
-      { id:"bf-s1",  kind:"stoneOre",  x:185, y: 20 },
-      { id:"bf-s2",  kind:"stoneOre",  x:188, y: 50 },
+      // Forest trees on both sides of the inlet
+      { id:"bf-t1",  kind:"tree",      x: 30, y: 20 },
+      { id:"bf-t2",  kind:"tree",      x: 25, y: 45 },
+      { id:"bf-t3",  kind:"tree",      x: 28, y: 70 },
+      { id:"bf-t4",  kind:"tree",      x: 32, y:100 },
+      { id:"bf-t5",  kind:"tree",      x: 28, y:130 },
+      { id:"bf-t6",  kind:"tree",      x:110, y: 15 },
+      { id:"bf-t7",  kind:"tree",      x:115, y: 40 },
+      { id:"bf-t8",  kind:"tree",      x:112, y: 75 },
+      { id:"bf-t9",  kind:"tree",      x:108, y:110 },
+      { id:"bf-t10", kind:"tree",      x:240, y: 12 },
+      { id:"bf-t11", kind:"tree",      x:245, y: 35 },
+      { id:"bf-t12", kind:"tree",      x:242, y: 75 },
+      // Ore in rocky hillsides
+      { id:"bf-i1",  kind:"ironOre",   x:  8, y: 25 },
+      { id:"bf-i2",  kind:"ironOre",   x: 10, y: 70 },
+      { id:"bf-i3",  kind:"ironOre",   x: 10, y:120 },
+      { id:"bf-s1",  kind:"stoneOre",  x:282, y: 20 },
+      { id:"bf-s2",  kind:"stoneOre",  x:285, y: 60 },
       // Native berries along forest edges
-      { id:"bf-b1",  kind:"berryBush", x: 22, y: 18, variety:"huckleberry" },
-      { id:"bf-b2",  kind:"berryBush", x: 20, y: 42, variety:"salmonberry" },
-      { id:"bf-b3",  kind:"berryBush", x: 24, y: 68, variety:"salal" },
-      { id:"bf-b4",  kind:"berryBush", x:128, y: 15, variety:"thimbleberry" },
-      { id:"bf-b5",  kind:"berryBush", x:126, y: 60, variety:"trailing blackberry" },
-      { id:"bf-b6",  kind:"berryBush", x: 18, y: 82, variety:"huckleberry" },
+      { id:"bf-b1",  kind:"berryBush", x: 45, y: 22, variety:"huckleberry" },
+      { id:"bf-b2",  kind:"berryBush", x: 42, y: 55, variety:"salmonberry" },
+      { id:"bf-b3",  kind:"berryBush", x: 48, y: 90, variety:"salal" },
+      { id:"bf-b4",  kind:"berryBush", x:235, y: 18, variety:"thimbleberry" },
+      { id:"bf-b5",  kind:"berryBush", x:232, y: 85, variety:"trailing blackberry" },
+      { id:"bf-b6",  kind:"berryBush", x: 38, y:135, variety:"huckleberry" },
     ],
     plants: [
-      { id:"bf-inv1", kind:"scotchBroom",         x:120, y: 12 },
-      { id:"bf-inv2", kind:"himalayanBlackberry",  x: 25, y: 75 },
-      { id:"bf-inv3", kind:"foxglove",             x:125, y: 65 },
-      { id:"bf-inv4", kind:"scotchBroom",          x:108, y: 85 },
+      { id:"bf-inv1", kind:"scotchBroom",         x:230, y: 14 },
+      { id:"bf-inv2", kind:"himalayanBlackberry",  x: 50, y: 85 },
+      { id:"bf-inv3", kind:"foxglove",             x:226, y: 75 },
+      { id:"bf-inv4", kind:"scotchBroom",          x:192, y:118 },
     ],
   };
 
@@ -626,54 +671,55 @@ export function buildRegions(): RegionDef[] {
     name: "Anacla / Pachena Bay",
     map: generateAnaclaMap(),
     buildings: anaclaBuildings(),
-    spawn: { x: 130, y: 5 }, // arriving from the north road
+    spawn: { x: 222, y: 6 }, // north road arrival from Bamfield
     travelNodes: [
       {
         id: "an-bus", kind: "bus",
-        x: 100, y: 54, w: 3, h: 1,
+        x: 206, y: 58, w: 4, h: 2,
         label: "Catch the bus back to Bamfield",
-        toRegion: "bamfield", toSpawn: { x: 108, y: 55 },
+        toRegion: "bamfield", toSpawn: { x: 183, y: 72 },
       },
       {
         id: "an-gate", kind: "gate",
-        x: 130, y: 0, w: 2, h: 1,
+        x: 220, y: 0, w: 2, h: 1,
         label: "Drive the road back to Bamfield",
-        toRegion: "bamfield", toSpawn: { x: 110, y: 8 },
+        toRegion: "bamfield", toSpawn: { x: 185, y: 8 },
       },
       {
+        // Sea crossing at Keeha Beach (far west) — sail north to Bamfield Inlet.
         id: "an-sea", kind: "sea",
-        x: 0, y: 105, w: 25, h: 12,
-        label: "Sail north out of Pachena Bay round to Bamfield Inlet",
-        toRegion: "bamfield", toSpawn: { x: 30, y: 100 },
+        x: 0, y: 130, w: 18, h: 45,
+        label: "Sail north from Keeha out to Bamfield Inlet",
+        toRegion: "bamfield", toSpawn: { x: 45, y: 165 },
       },
     ],
     vehicles: [
-      { id:"an-car-1",  kind:"car",  x:130, y: 20 }, // on the village road
-      { id:"an-car-2",  kind:"car",  x: 95, y: 55 }, // near the store
-      { id:"an-boat-1", kind:"boat", x: 95, y: 100 }, // Pachena Bay
-      { id:"an-boat-2", kind:"boat", x:115, y: 103 }, // bay, deeper water
+      { id:"an-car-1",  kind:"car",  x:222, y: 25 }, // on Bamfield Main
+      { id:"an-car-2",  kind:"car",  x:200, y: 62 }, // near the village store
+      { id:"an-boat-1", kind:"boat", x: 80, y:145 }, // Pachena Bay
+      { id:"an-boat-2", kind:"boat", x:130, y:148 }, // bay, mid-water
+      { id:"an-boat-3", kind:"boat", x:  8, y:145 }, // Keeha / open Pacific
     ],
     resourceNodes: [
-      { id:"an-t1",  kind:"tree",      x: 20, y: 15 },
-      { id:"an-t2",  kind:"tree",      x: 18, y: 30 },
-      { id:"an-t3",  kind:"tree",      x: 22, y: 45 },
-      { id:"an-t4",  kind:"tree",      x:165, y: 10 },
-      { id:"an-t5",  kind:"tree",      x:168, y: 28 },
-      { id:"an-t6",  kind:"tree",      x:162, y: 48 },
-      { id:"an-i1",  kind:"ironOre",   x:  8, y: 25 },
-      { id:"an-s1",  kind:"stoneOre",  x:  7, y: 40 },
-      { id:"an-s2",  kind:"stoneOre",  x:185, y: 18 },
-      { id:"an-b1",  kind:"berryBush", x: 28, y: 20, variety:"salmonberry" },
-      { id:"an-b2",  kind:"berryBush", x:158, y: 20, variety:"huckleberry" },
-      { id:"an-b3",  kind:"berryBush", x: 24, y: 48, variety:"thimbleberry" },
-      { id:"an-b4",  kind:"berryBush", x:155, y: 45, variety:"salal" },
-      // Campground berry patch:
-      { id:"an-b5",  kind:"berryBush", x: 86, y: 62, variety:"trailing blackberry" },
+      { id:"an-t1",  kind:"tree",      x: 40, y: 20 },
+      { id:"an-t2",  kind:"tree",      x: 35, y: 45 },
+      { id:"an-t3",  kind:"tree",      x: 38, y: 70 },
+      { id:"an-t4",  kind:"tree",      x:260, y: 12 },
+      { id:"an-t5",  kind:"tree",      x:265, y: 35 },
+      { id:"an-t6",  kind:"tree",      x:258, y: 58 },
+      { id:"an-i1",  kind:"ironOre",   x: 10, y: 30 },
+      { id:"an-s1",  kind:"stoneOre",  x: 12, y: 55 },
+      { id:"an-s2",  kind:"stoneOre",  x:282, y: 22 },
+      { id:"an-b1",  kind:"berryBush", x: 55, y: 22, variety:"salmonberry" },
+      { id:"an-b2",  kind:"berryBush", x:252, y: 22, variety:"huckleberry" },
+      { id:"an-b3",  kind:"berryBush", x: 48, y: 55, variety:"thimbleberry" },
+      { id:"an-b4",  kind:"berryBush", x:248, y: 50, variety:"salal" },
+      { id:"an-b5",  kind:"berryBush", x:158, y: 78, variety:"trailing blackberry" },
     ],
     plants: [
-      { id:"an-inv1", kind:"scotchBroom",         x:138, y: 18 },
-      { id:"an-inv2", kind:"foxglove",             x: 28, y: 38 },
-      { id:"an-inv3", kind:"himalayanBlackberry",  x:120, y: 58 },
+      { id:"an-inv1", kind:"scotchBroom",         x:230, y: 20 },
+      { id:"an-inv2", kind:"foxglove",             x: 50, y: 42 },
+      { id:"an-inv3", kind:"himalayanBlackberry",  x:185, y: 72 },
     ],
   };
 
