@@ -85,32 +85,44 @@ export function defaultSkills(): Skills {
 // --- Inventory --------------------------------------------------------------
 export const ITEM_IDS = [
   "wood", "iron", "stone", "plank", "scrap", "rod",
-  "crabmeat", "fish", "liveFish", "berry", "cookedcrab", "cookedfish",
+  "crabmeat", "fish", "liveFish", "salmon", "lingcod", "halibut", "tuna",
+  "berry", "cookedcrab", "cookedfish", "cookedsalmon", "cookedlingcod",
   "ironBar", "shinyLure", "jerryCan",
 ] as const;
 export type ItemId = (typeof ITEM_IDS)[number];
 export type Inventory = Partial<Record<ItemId, number>>;
 export const ITEM_LABEL: Record<ItemId, string> = {
   wood: "Wood", iron: "Iron ore", stone: "Stone", plank: "Plank", scrap: "Scrap", rod: "Rod",
-  crabmeat: "Crab meat", fish: "Raw fish", liveFish: "Live fish", berry: "Berries",
+  crabmeat: "Crab meat",
+  fish: "Raw fish", liveFish: "Live fish",
+  salmon: "Salmon", lingcod: "Lingcod", halibut: "Halibut", tuna: "Tuna",
+  berry: "Berries",
   cookedcrab: "Cooked crab", cookedfish: "Cooked fish",
+  cookedsalmon: "Cooked salmon", cookedlingcod: "Cooked lingcod",
   ironBar: "Iron Bar", shinyLure: "Shiny Lure", jerryCan: "Jerry can",
 };
 
-// What eating an item restores. Raw food is weak; cooking over a fire roughly
-// triples it. Berries are decent straight off the bush (no fire needed).
+// What eating an item restores.
 export const FOOD_VALUE: Partial<Record<ItemId, { hunger: number; hp: number }>> = {
-  crabmeat: { hunger: 9, hp: 3 },
-  fish: { hunger: 9, hp: 3 },
-  liveFish: { hunger: 9, hp: 3 },
-  berry: { hunger: 15, hp: 6 },
-  cookedcrab: { hunger: 36, hp: 20 },
-  cookedfish: { hunger: 42, hp: 24 },
+  crabmeat:     { hunger: 9,  hp: 3  },
+  fish:         { hunger: 9,  hp: 3  },
+  liveFish:     { hunger: 9,  hp: 3  },
+  salmon:       { hunger: 14, hp: 5  },
+  lingcod:      { hunger: 18, hp: 7  },
+  halibut:      { hunger: 22, hp: 10 },
+  tuna:         { hunger: 28, hp: 14 },
+  berry:        { hunger: 15, hp: 6  },
+  cookedcrab:   { hunger: 36, hp: 20 },
+  cookedfish:   { hunger: 42, hp: 24 },
+  cookedsalmon: { hunger: 50, hp: 30 },
+  cookedlingcod:{ hunger: 58, hp: 36 },
 };
 // Raw -> cooked conversions at a campfire.
 export const COOK_MAP: Partial<Record<ItemId, ItemId>> = {
   crabmeat: "cookedcrab",
-  fish: "cookedfish",
+  fish:     "cookedfish",
+  salmon:   "cookedsalmon",
+  lingcod:  "cookedlingcod",
 };
 
 // --- Resource nodes ---------------------------------------------------------
@@ -233,13 +245,16 @@ export interface PlayerState {
 }
 
 export type CreatureKind =
-  | "crab" // low tide, land, swarms structures
-  | "octopus" // either tide
-  | "dogfish" // high tide shark
-  | "sixgill" // high tide bigger shark
-  | "orca" // high tide apex
-  | "humpback" // neutral
-  | "greywhale"; // neutral
+  | "crab"       // low tide, land, swarms structures
+  | "octopus"    // either tide
+  | "dogfish"    // high tide shark
+  | "sixgill"    // high tide bigger shark
+  | "orca"       // high tide apex — very rare, sometimes in pods
+  | "humpback"   // neutral whale
+  | "greywhale"  // neutral whale
+  | "seal"       // common, friendly, follows slow swimmers
+  | "sealLion"   // common, playful, hauls out on rocks
+  | "seaOtter";  // rare, curious, hides when approached
 
 export interface CreatureState {
   id: string;
@@ -340,7 +355,7 @@ export interface RegionInfo {
 // --- Messages: client -> server --------------------------------------------
 export type ClientMessage =
   | { t: "join"; name: string; appearance: Appearance }
-  | { t: "input"; dx: number; dy: number } // intended direction, each -1..1
+  | { t: "input"; dx: number; dy: number; sprint?: boolean } // intended direction, each -1..1
   | { t: "attack"; charge?: number } // charge 0..1 from how long Space was held
   | { t: "dodge" } // quick lunge + i-frames in the current heading
   | { t: "board" } // get in / out of the nearest vehicle

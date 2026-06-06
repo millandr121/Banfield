@@ -60,6 +60,7 @@ interface Session {
   lastHarvest: number; // debounce resource harvesting
   iframeUntil: number; // dodge i-frames: no damage taken until this time
   travelCdUntil: number; // brief cooldown after a region change (stops ping-pong)
+  sprint: boolean; // shift held — run faster but drain stamina / burn more fuel
 }
 
 // Server-side vehicle adds rust tracking (not sent to clients).
@@ -80,6 +81,10 @@ interface Region {
 const TICK_MS = 100; // server simulation step (10 Hz)
 const PLAYER_SPEED = 4.5; // tiles per second on land
 const SWIM_SPEED = 2.4; // tiles per second in water
+const SPRINT_MULT = 1.85; // sprint speed multiplier (Shift key)
+const SPRINT_STAMINA_DRAIN = 18; // stamina/sec drained while sprinting
+const THROTTLE_MULT = 1.6; // boat/car throttle multiplier (Shift while driving)
+const THROTTLE_FUEL_MULT = 2.2; // extra fuel burn when throttling
 const PLAYER_MAX_HP = 100;
 
 // Combat is stamina-gated so it rewards timing over button-mashing.
@@ -99,9 +104,9 @@ const DODGE_COOLDOWN_MS = 650;
 const DODGE_IMPULSE = 14; // lunge speed (tiles/sec) at the start of a dodge
 const DODGE_IFRAMES_MS = 360; // invulnerability window during a dodge
 const REPAIR_RATE = 25; // hp per second
-const CREATURE_CAP_PER_REGION = 22; // scaled for the large (200×120) maps
-const SPAWN_INTERVAL_MS = 5000; // how often a region tops up its creatures
-const SPAWN_BATCH = 4; // creatures added per region per interval (up to the cap)
+const CREATURE_CAP_PER_REGION = 10; // sparse — wildlife is rare, sightings are special
+const SPAWN_INTERVAL_MS = 8000; // slower fill so the world feels alive but not crowded
+const SPAWN_BATCH = 1; // one creature per pass — keeps density low
 const SINK_DEPTH = 7; // how far under the waterline counts as "deep"
 const SINK_DPS = 12; // hp/sec lost while standing still in deep water
 
@@ -336,7 +341,7 @@ export class GameRoom {
   // --- connection lifecycle -------------------------------------------------
   private onConnect(ws: WebSocket) {
     const playerId = `p${this.idCounter++}`;
-    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0, lastDodge: 0, lastHarvest: 0, iframeUntil: 0, travelCdUntil: 0 });
+    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0, lastDodge: 0, lastHarvest: 0, iframeUntil: 0, travelCdUntil: 0, sprint: false });
     ws.addEventListener("message", (ev) => {
       try {
         this.onMessage(ws, JSON.parse(ev.data as string) as ClientMessage);
@@ -414,6 +419,7 @@ export class GameRoom {
         const len = Math.hypot(msg.dx, msg.dy);
         s.dx = len > 1 ? msg.dx / len : msg.dx;
         s.dy = len > 1 ? msg.dy / len : msg.dy;
+        s.sprint = msg.sprint ?? false;
         const p = this.players.get(s.playerId);
         if (p && (msg.dx !== 0 || msg.dy !== 0)) {
           p.dir = Math.atan2(msg.dy, msg.dx);
@@ -585,7 +591,12 @@ export class GameRoom {
         this.giveXP(p, "swimming", XP_SWIM_PER_SEC * dt);
       }
       const swimBonus = 1 + skillLevel(p.skills.swimming) * 0.003;
-      const speed = p.swimming ? SWIM_SPEED * swimBonus : PLAYER_SPEED;
+      const sprinting = s.sprint && !p.swimming && p.stamina > 0 && (s.dx !== 0 || s.dy !== 0);
+      if (sprinting) {
+        p.stamina = Math.max(0, p.stamina - SPRINT_STAMINA_DRAIN * dt);
+      }
+      const speed = p.swimming ? SWIM_SPEED * swimBonus
+                               : sprinting ? PLAYER_SPEED * SPRINT_MULT : PLAYER_SPEED;
       const imp = this.kb.get(p.id);
       const nx = p.x + (s.dx * speed + (imp?.x ?? 0)) * dt;
       const ny = p.y + (s.dy * speed + (imp?.y ?? 0)) * dt;
@@ -643,14 +654,17 @@ export class GameRoom {
               v.kind === "car"
                 ? (onRoad ? CAR_SPEED : CAR_OFFROAD_SPEED) * skillBonus
                 : BOAT_SPEED * skillBonus;
-            activeSpeed = base;
-            const nx = v.x + s.dx * base * dt;
-            const ny = v.y + s.dy * base * dt;
+            // Throttle (Shift): more speed, more fuel burn.
+            const throttle = s.sprint && v.fuel > 0;
+            activeSpeed = throttle ? base * THROTTLE_MULT : base;
+            const nx = v.x + s.dx * activeSpeed * dt;
+            const ny = v.y + s.dy * activeSpeed * dt;
             if (this.vehicleCanGo(v, region.map, nx, v.y, waterline)) { v.x = nx; movedThisTick = true; }
             if (this.vehicleCanGo(v, region.map, v.x, ny, waterline)) { v.y = ny; movedThisTick = true; }
             v.dir = Math.atan2(s.dy, s.dx);
             v.lastDriven = now;
-            v.fuel = Math.max(0, v.fuel - FUEL_DRAIN * dt); // burn gas while driving
+            const fuelRate = throttle ? FUEL_DRAIN * THROTTLE_FUEL_MULT : FUEL_DRAIN;
+            v.fuel = Math.max(0, v.fuel - fuelRate * dt);
             // Skill XP for the driver.
             if (v.kind === "car") this.giveXP(driver, "driving", XP_DRIVE_PER_SEC * dt);
             else this.giveXP(driver, "boating", XP_BOAT_PER_SEC * dt);
@@ -1228,12 +1242,18 @@ export class GameRoom {
       const hasLure = (p.inventory.shinyLure ?? 0) > 0;
       const catchChance = Math.min(0.95, (0.55 + fishingLevel * 0.01) + (hasLure ? 0.20 : 0));
       if (Math.random() < catchChance) {
-        const bonus = fishingLevel >= 20 || hasLure ? 1 : 0;
-        this.addItem(p.inventory, "liveFish", 1 + bonus);
-        this.liveFishTimer.set(p.id, now);
+        const region = this.regions.get(p.region)!;
+        const waterline = this.currentWaterline(now);
+        const depth = this.depthAt(region.map, p.x, p.y, waterline);
+        const caught = pickFish(depth, hasLure, fishingLevel);
+        const bonus = (fishingLevel >= 20 || hasLure) && Math.random() < 0.3 ? 1 : 0;
+        this.addItem(p.inventory, caught, 1 + bonus);
+        // Small "live fish" freshness mechanic only for basic fish.
+        if (caught === "fish") this.liveFishTimer.set(p.id, now);
         this.giveXP(p, "fishing", XP_FISH);
-        const lureMsg = hasLure ? " (shiny lure helped!)" : "";
-        this.tell(p, `Caught a LIVE fish${bonus ? " — double catch!" : ""}!${lureMsg} Sell to the BMSC fast, or cook it before it dies (60s).`);
+        const lureMsg = hasLure ? " (shiny lure!)" : "";
+        const depthHint = depth >= DEPTH_OCEAN ? " (deep-sea catch!)" : depth >= DEPTH_DEEP ? " (deep water!)" : "";
+        this.tell(p, `Caught ${1 + bonus}× ${ITEM_LABEL[caught]}!${lureMsg}${depthHint}`);
       } else {
         this.tell(p, "The fish got away…");
       }
@@ -1514,7 +1534,6 @@ export class GameRoom {
     for (const regionId of active) {
       const region = this.regions.get(regionId)!;
       let count = [...this.creatures.values()].filter((c) => c.region === regionId).length;
-      // Spawn a small batch each tick so the large maps fill in reasonably fast.
       for (let n = 0; n < SPAWN_BATCH && count < CREATURE_CAP_PER_REGION; n++) {
         const kind = pickKind(phase, this.event);
         if (!kind) break;
@@ -1523,6 +1542,18 @@ export class GameRoom {
         const id = `c${this.idCounter++}`;
         this.creatures.set(id, { id, kind, region: regionId, x: spot.x, y: spot.y, hp: creatureHp(kind) });
         count++;
+
+        // Orca spawn in pods (2-5 individuals spread close together).
+        if (kind === "orca" && Math.random() < 0.65) {
+          const podSize = 1 + Math.floor(Math.random() * 3); // 1-3 more
+          for (let p = 0; p < podSize && count < CREATURE_CAP_PER_REGION; p++) {
+            const ox = spot.x + (Math.random() - 0.5) * 8;
+            const oy = spot.y + (Math.random() - 0.5) * 8;
+            const pid = `c${this.idCounter++}`;
+            this.creatures.set(pid, { id: pid, kind, region: regionId, x: ox, y: oy, hp: creatureHp(kind) });
+            count++;
+          }
+        }
       }
     }
   }
@@ -1538,8 +1569,63 @@ export class GameRoom {
         continue;
       }
       if (isNeutral(c.kind)) {
-        c.x += Math.sin(c.y + c.x) * 0.2 * dt;
-        c.y += 0.4 * dt;
+        // Sea otter: shy. Dive and vanish if a player gets too close.
+        if (c.kind === "seaOtter") {
+          let fled = false;
+          for (const p of this.players.values()) {
+            if (p.dead || p.region !== region.id) continue;
+            const d = Math.hypot(p.x - c.x, p.y - c.y);
+            if (d < 4) {
+              const dx = c.x - p.x, dy = c.y - p.y, l = Math.hypot(dx, dy) || 1;
+              c.x += (dx / l) * 3 * dt;
+              c.y += (dy / l) * 3 * dt;
+              if (this.depthAt(region.map, c.x, c.y, waterline) > DEPTH_SWIM) {
+                this.creatures.delete(c.id); fled = true; // dove under
+              }
+              break;
+            }
+          }
+          if (fled) continue;
+          // Gentle float when undisturbed (bobbing in kelp zone).
+          c.x += Math.sin(c.y * 0.9 + now * 0.0009) * 0.6 * dt;
+          c.y += Math.cos(c.x * 0.7 + now * 0.0007) * 0.6 * dt;
+          continue;
+        }
+
+        // Seals/sea lions: follow slow swimmers, wander otherwise.
+        if (c.kind === "seal" || c.kind === "sealLion") {
+          let target: PlayerState | null = null;
+          let tDist = Infinity;
+          for (const p of this.players.values()) {
+            if (p.dead || p.region !== region.id) continue;
+            const d = Math.hypot(p.x - c.x, p.y - c.y);
+            if (d < 8 && d < tDist) { target = p; tDist = d; }
+          }
+          if (target) {
+            const s = this.sessionFor(target.id);
+            const playerMovingFast = s && s.sprint && (Math.abs(s.dx) > 0.3 || Math.abs(s.dy) > 0.3);
+            if (!playerMovingFast && tDist > 1.8) {
+              // Drift toward the curious player.
+              const dx = target.x - c.x, dy = target.y - c.y, l = Math.hypot(dx, dy) || 1;
+              c.x += (dx / l) * 1.4 * dt;
+              c.y += (dy / l) * 1.4 * dt;
+            } else {
+              // Player is moving fast — give them space.
+              c.x += Math.sin(c.x + now * 0.001) * 0.6 * dt;
+              c.y += Math.cos(c.y + now * 0.001) * 0.6 * dt;
+            }
+          } else {
+            // Wander slowly near shore or water surface.
+            c.x += Math.sin(c.y + now * 0.0008) * 0.9 * dt;
+            c.y += Math.cos(c.x + now * 0.0006) * 0.9 * dt;
+          }
+          if (c.y > region.map.height) this.creatures.delete(c.id);
+          continue;
+        }
+
+        // Whales: drift slowly, exit off the south edge.
+        c.x += Math.sin(c.y + c.x) * 0.15 * dt;
+        c.y += 0.35 * dt;
         if (c.y > region.map.height) this.creatures.delete(c.id);
         continue;
       }
@@ -1590,6 +1676,8 @@ export class GameRoom {
     region: Region,
     c: CreatureState,
   ): { x: number; y: number; building?: BuildingState; player?: PlayerState } | null {
+    // Neutral creatures (whales, seals, otters) never attack.
+    if (isNeutral(c.kind)) return null;
     const waterline = this.currentWaterline(Date.now());
     // Sharks & orca only pursue players in water deep enough for them.
     const deepPredator = c.kind === "dogfish" || c.kind === "sixgill" || c.kind === "orca";
@@ -1755,12 +1843,20 @@ export class GameRoom {
     waterline: number,
   ): { x: number; y: number } | null {
     const swims = swimmer(kind);
-    // Depth minimums keep big predators in deep water and crabs in the shallows.
-    const minDepth = (kind === "orca" || kind === "humpback" || kind === "greywhale") ? DEPTH_OCEAN * 0.5
-      : kind === "sixgill" ? DEPTH_DEEP * 0.6
-      : kind === "dogfish" ? DEPTH_SWIM
-      : 0; // crab & octopus anywhere
-    const maxDepth = (kind === "crab") ? DEPTH_DEEP : Infinity;
+    // Depth constraints keep each creature in its ecological niche.
+    const minDepth =
+      (kind === "orca" || kind === "humpback" || kind === "greywhale") ? DEPTH_OCEAN * 0.5
+      : kind === "sixgill"  ? DEPTH_DEEP * 0.6
+      : kind === "dogfish"  ? DEPTH_SWIM
+      : kind === "seal"     ? 0           // seals haul out on shore too
+      : kind === "seaOtter" ? DEPTH_ANKLE // prefer shallow coastal
+      : kind === "sealLion" ? 0
+      : 0;
+    const maxDepth =
+      (kind === "crab")      ? DEPTH_DEEP
+      : kind === "seaOtter"  ? DEPTH_SWIM  // otters stay near surface kelp
+      : kind === "sealLion"  ? DEPTH_SWIM
+      : Infinity;
     for (let i = 0; i < 60; i++) {
       const x = Math.floor(Math.random() * region.map.width);
       const y = Math.floor(Math.random() * region.map.height);
@@ -1912,67 +2008,100 @@ function pickKind(
   phase: ReturnType<typeof phaseForTide>,
   event: "none" | "king" | "tsunami",
 ): CreatureKind | null {
-  if (event === "tsunami") return Math.random() < 0.5 ? "orca" : "sixgill";
-  if (phase === "low") return Math.random() < 0.8 ? "crab" : "octopus";
-  if (phase === "high") {
-    const r = Math.random();
-    if (r < 0.4) return "dogfish";
-    if (r < 0.6) return "sixgill";
-    if (r < 0.72) return "orca";
-    if (r < 0.85) return "octopus";
-    return Math.random() < 0.5 ? "humpback" : "greywhale";
+  const r = Math.random();
+  if (event === "tsunami") {
+    // Tsunami drives big predators into the shallows.
+    return r < 0.5 ? "sixgill" : r < 0.75 ? "dogfish" : "orca";
   }
-  return Math.random() < 0.5 ? "crab" : "octopus";
+  if (phase === "low") {
+    // Low tide: mostly crabs, some octopus, seals on shore.
+    if (r < 0.50) return "crab";
+    if (r < 0.68) return "octopus";
+    if (r < 0.82) return "seal";
+    if (r < 0.91) return "sealLion";
+    if (r < 0.97) return "seaOtter"; // rare
+    return null; // 3% nothing (keep it sparse)
+  }
+  if (phase === "high") {
+    // High tide: water creatures. Predators present but not dominant.
+    if (r < 0.28) return "seal";
+    if (r < 0.44) return "dogfish";
+    if (r < 0.55) return "octopus";
+    if (r < 0.63) return "sealLion";
+    if (r < 0.70) return "seaOtter";
+    if (r < 0.76) return "sixgill";
+    if (r < 0.84) return "humpback";
+    if (r < 0.91) return "greywhale";
+    if (r < 0.97) return null;
+    return "orca"; // ~3% of high-tide picks — rare enough to be exciting
+  }
+  // Mid tide
+  if (r < 0.35) return "crab";
+  if (r < 0.54) return "seal";
+  if (r < 0.68) return "octopus";
+  if (r < 0.80) return "sealLion";
+  if (r < 0.90) return "seaOtter";
+  return null;
+}
+
+function pickFish(depth: number, hasLure: boolean, level: number): ItemId {
+  const bonus = (hasLure ? 0.15 : 0) + (level >= 15 ? 0.10 : 0);
+  const r = Math.random() + bonus * 0.5;
+  if (depth >= DEPTH_OCEAN * 1.5) {
+    // Abyss: tuna territory
+    return r < 0.40 ? "tuna" : r < 0.72 ? "halibut" : "lingcod";
+  }
+  if (depth >= DEPTH_OCEAN) {
+    // Open ocean: halibut, lingcod, rare tuna
+    return r < 0.30 ? "halibut" : r < 0.62 ? "lingcod" : r < 0.88 ? "salmon" : "tuna";
+  }
+  if (depth >= DEPTH_DEEP) {
+    // Deep: lingcod, salmon, halibut
+    return r < 0.38 ? "lingcod" : r < 0.72 ? "salmon" : r < 0.92 ? "halibut" : "fish";
+  }
+  if (depth >= DEPTH_SWIM) {
+    // Waist-deep: salmon, small fish
+    return r < 0.52 ? "salmon" : r < 0.88 ? "fish" : "lingcod";
+  }
+  return "fish"; // shore — small fry
 }
 
 function creatureHp(kind: CreatureKind): number {
   switch (kind) {
-    case "crab":
-      return 20;
-    case "octopus":
-      return 45;
-    case "dogfish":
-      return 60;
-    case "sixgill":
-      return 110;
-    case "orca":
-      return 160;
-    default:
-      return 200;
+    case "crab":      return 20;
+    case "octopus":   return 45;
+    case "dogfish":   return 60;
+    case "sixgill":   return 110;
+    case "orca":      return 200;
+    case "seal":      return 50;
+    case "sealLion":  return 70;
+    case "seaOtter":  return 30;
+    default:          return 250; // whales
   }
 }
 
 function creatureSpeed(kind: CreatureKind): number {
   switch (kind) {
-    case "crab":
-      return 1.6;
-    case "octopus":
-      return 2.0;
-    case "dogfish":
-      return 3.2;
-    case "sixgill":
-      return 2.6;
-    case "orca":
-      return 3.6;
-    default:
-      return 1.0;
+    case "crab":      return 1.6;
+    case "octopus":   return 2.0;
+    case "dogfish":   return 3.2;
+    case "sixgill":   return 2.6;
+    case "orca":      return 3.8;
+    case "seal":      return 2.8;
+    case "sealLion":  return 2.2;
+    case "seaOtter":  return 2.0;
+    default:          return 1.0; // whales, slow and majestic
   }
 }
 
 function creatureDamage(kind: CreatureKind): number {
   switch (kind) {
-    case "crab":
-      return 6;
-    case "octopus":
-      return 14;
-    case "dogfish":
-      return 20;
-    case "sixgill":
-      return 30;
-    case "orca":
-      return 45;
-    default:
-      return 0;
+    case "crab":     return 1.5; // crabs nibble, but they can swarm — reduced building damage
+    case "octopus":  return 14;
+    case "dogfish":  return 20;
+    case "sixgill":  return 32;
+    case "orca":     return 48;
+    default:         return 0; // neutrals never deal damage
   }
 }
 
@@ -1983,11 +2112,12 @@ function nextStage(stage: PlantStage): PlantStage {
 }
 
 function isNeutral(kind: CreatureKind): boolean {
-  return kind === "humpback" || kind === "greywhale";
+  return kind === "humpback" || kind === "greywhale"
+      || kind === "seal" || kind === "sealLion" || kind === "seaOtter";
 }
 
 function swimmer(kind: CreatureKind): boolean {
-  return kind !== "crab";
+  return kind !== "crab" && kind !== "sealLion";
 }
 
 function sanitizeAppearance(a: Appearance | undefined): Appearance {

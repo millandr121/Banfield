@@ -528,9 +528,9 @@ const SHOP_MARKET: ShopDef = {
   name: "Bamfield General Store",
   buys: [
     { item: "berry", price: 3 },
-    { item: "fish", price: 2 },
+    { item: "fish", price: 2 }, { item: "salmon", price: 5 },
     { item: "crabmeat", price: 2 },
-    { item: "cookedfish", price: 6 },
+    { item: "cookedfish", price: 6 }, { item: "cookedsalmon", price: 12 },
     { item: "cookedcrab", price: 6 },
   ],
   sells: [
@@ -540,11 +540,15 @@ const SHOP_MARKET: ShopDef = {
 };
 const SHOP_BMSC: ShopDef = {
   name: "Marine Sciences Centre",
-  // The BMSC pays a premium for fish brought in for study.
+  // BMSC pays a research premium — especially for rare and deep-water specimens.
   buys: [
-    { item: "fish", price: 5 },
-    { item: "crabmeat", price: 4 },
-    { item: "liveFish", price: 8 },
+    { item: "fish",     price: 5  },
+    { item: "liveFish", price: 8  },
+    { item: "salmon",   price: 10 },
+    { item: "lingcod",  price: 16 },
+    { item: "halibut",  price: 28 },
+    { item: "tuna",     price: 50 },
+    { item: "crabmeat", price: 4  },
   ],
   sells: [
     { item: "rod", price: 15 },

@@ -219,7 +219,14 @@ export class Game {
       else this.keys.delete(k);
       e.preventDefault();
     }
+    if (e.key === "Shift") {
+      if (down) this.keys.add("shift");
+      else this.keys.delete("shift");
+      e.preventDefault();
+    }
   }
+
+  private lastSprint = false;
 
   private sendInput() {
     let dx = 0;
@@ -228,9 +235,11 @@ export class Game {
     if (this.keys.has("s") || this.keys.has("arrowdown")) dy += 1;
     if (this.keys.has("a") || this.keys.has("arrowleft")) dx -= 1;
     if (this.keys.has("d") || this.keys.has("arrowright")) dx += 1;
-    if (dx !== this.lastDir.x || dy !== this.lastDir.y) {
+    const sprint = this.keys.has("shift");
+    if (dx !== this.lastDir.x || dy !== this.lastDir.y || sprint !== this.lastSprint) {
       this.lastDir = { x: dx, y: dy };
-      this.net.send({ t: "input", dx, dy });
+      this.lastSprint = sprint;
+      this.net.send({ t: "input", dx, dy, sprint });
     }
   }
 
@@ -278,6 +287,7 @@ export class Game {
     }
 
     this.drawTiles();
+    this.drawCliffShadows();
     this.drawTravelNodes();
     this.drawCampfires(this.snap.campfires);
     this.drawFurnaces(this.snap.furnaces);
@@ -364,6 +374,39 @@ export class Game {
       }
     }
   }
+
+  // Cliff shadows — a second pass over the tile grid that draws a dark gradient
+  // below each elevated tile (Hill/Rock/Forest edge). This simulates a cliff
+  // face visible from above, making terrain feel genuinely three-dimensional.
+  // (Top-down games like Stardew Valley use the same technique: paint a dark
+  // strip in the row BELOW each raised tile after the base tiles are all drawn.)
+  private drawCliffShadows() {
+    const map = this.map!;
+    const ctx = this.ctx;
+    const startX = Math.max(0, Math.floor(this.cam.x / TILE_SIZE));
+    const startY = Math.max(0, Math.floor(this.cam.y / TILE_SIZE));
+    const endX = Math.min(map.width - 1, Math.ceil((this.cam.x + this.canvas.width) / TILE_SIZE));
+    const endY = Math.min(map.height - 2, Math.ceil((this.cam.y + this.canvas.height) / TILE_SIZE));
+    for (let y = startY; y <= endY; y++) {
+      for (let x = startX; x <= endX; x++) {
+        const tile = map.tiles[y * map.width + x] as Tile;
+        const isHigh = tile === Tile.Hill || tile === Tile.Rock;
+        if (!isHigh) continue;
+        const below = map.tiles[(y + 1) * map.width + x] as Tile;
+        const isHighBelow = below === Tile.Hill || below === Tile.Rock;
+        if (isHighBelow) continue; // cliff only where terrain drops
+        const { sx, sy } = this.toScreen(x, y);
+        const depth = tile === Tile.Rock ? 9 : 6;
+        const alpha = tile === Tile.Rock ? 0.72 : 0.52;
+        const grd = ctx.createLinearGradient(sx, sy + TILE_SIZE, sx, sy + TILE_SIZE + depth);
+        grd.addColorStop(0, `rgba(0,0,0,${alpha})`);
+        grd.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = grd;
+        ctx.fillRect(sx, sy + TILE_SIZE, TILE_SIZE, depth);
+      }
+    }
+  }
+
 
   private drawTravelNodes() {
     const ctx = this.ctx;
@@ -1831,13 +1874,16 @@ function drawCreatureSprite(
   if (!inWater || closeEnough) {
     // On land or player right next to it — full sprite.
     switch (kind) {
-      case "crab":    return drawCrab(ctx, x, y);
-      case "octopus": return drawOctopus(ctx, x, y);
-      case "dogfish": return drawShark(ctx, x, y, 0.55, "#5a6b78", false);
-      case "sixgill": return drawShark(ctx, x, y, 0.8,  "#3b4a57", false);
-      case "orca":    return drawShark(ctx, x, y, 0.9,  "#10141a", true);
+      case "crab":      return drawCrab(ctx, x, y);
+      case "octopus":   return drawOctopus(ctx, x, y);
+      case "dogfish":   return drawShark(ctx, x, y, 0.55, "#5a6b78", false);
+      case "sixgill":   return drawShark(ctx, x, y, 0.8,  "#3b4a57", false);
+      case "orca":      return drawShark(ctx, x, y, 0.9,  "#10141a", true);
       case "humpback":  return drawWhale(ctx, x, y, "#33414b");
       case "greywhale": return drawWhale(ctx, x, y, "#6b7480");
+      case "seal":      return drawSeal(ctx, x, y);
+      case "sealLion":  return drawSealLion(ctx, x, y);
+      case "seaOtter":  return drawSeaOtter(ctx, x, y);
     }
     return;
   }
@@ -1913,6 +1959,73 @@ function drawWhaleBlow(ctx: CanvasRenderingContext2D, x: number, y: number) {
   ctx.beginPath();
   ctx.ellipse(x, y + 4, 10, 4, 0, 0, Math.PI * 2);
   ctx.fill();
+}
+
+function drawSeal(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const r = TILE_SIZE * 0.3;
+  // Body — torpedo shape, warm grey
+  ctx.fillStyle = "#8a9ba8";
+  ctx.beginPath();
+  ctx.ellipse(x, y, r * 1.35, r * 0.72, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Belly patch
+  ctx.fillStyle = "#c8d8e0";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 0.2, y, r * 0.72, r * 0.42, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Flippers
+  ctx.fillStyle = "#6c7f8a";
+  ctx.beginPath(); ctx.ellipse(x - r * 0.85, y - r * 0.5, r * 0.55, r * 0.2, -0.4, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x - r * 0.85, y + r * 0.5, r * 0.55, r * 0.2,  0.4, 0, Math.PI * 2); ctx.fill();
+  // Eye — big and dark, characteristic seal look
+  ctx.fillStyle = "#111";
+  ctx.beginPath(); ctx.arc(x + r * 0.78, y - r * 0.22, r * 0.18, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.beginPath(); ctx.arc(x + r * 0.84, y - r * 0.27, r * 0.07, 0, Math.PI * 2); ctx.fill();
+  // Whiskers
+  ctx.strokeStyle = "rgba(255,255,255,0.65)";
+  ctx.lineWidth = 0.8;
+  for (const [ox, oy] of [[r*0.95, -r*0.08],[r*0.98, -r*0.02],[r*0.96, r*0.06]] as const) {
+    ctx.beginPath(); ctx.moveTo(x + ox, y + oy); ctx.lineTo(x + ox + r * 0.6, y + oy); ctx.stroke();
+  }
+}
+
+function drawSealLion(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const r = TILE_SIZE * 0.36;
+  ctx.fillStyle = "#7a6040";
+  ctx.beginPath(); ctx.ellipse(x, y, r * 1.4, r * 0.75, 0, 0, Math.PI * 2); ctx.fill();
+  // Slightly lighter chest
+  ctx.fillStyle = "#9a8060";
+  ctx.beginPath(); ctx.ellipse(x + r * 0.25, y, r * 0.65, r * 0.42, 0, 0, Math.PI * 2); ctx.fill();
+  // Thick neck & head (heavier-set than a seal)
+  ctx.fillStyle = "#7a6040";
+  ctx.beginPath(); ctx.ellipse(x + r * 1.0, y - r * 0.15, r * 0.55, r * 0.45, 0.3, 0, Math.PI * 2); ctx.fill();
+  // Ear nubs (distinguishes sea lion from seal)
+  ctx.fillStyle = "#5a4428";
+  ctx.beginPath(); ctx.ellipse(x + r * 1.3, y - r * 0.45, r * 0.12, r * 0.08, -0.5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#111";
+  ctx.beginPath(); ctx.arc(x + r * 1.18, y - r * 0.25, r * 0.14, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawSeaOtter(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const r = TILE_SIZE * 0.28;
+  // Body — floating on back, round and fluffy
+  ctx.fillStyle = "#6b4c2a";
+  ctx.beginPath(); ctx.ellipse(x, y, r * 1.2, r * 0.75, 0, 0, Math.PI * 2); ctx.fill();
+  // Pale chest / belly patch
+  ctx.fillStyle = "#c8a87a";
+  ctx.beginPath(); ctx.ellipse(x + r * 0.05, y + r * 0.1, r * 0.65, r * 0.42, 0, 0, Math.PI * 2); ctx.fill();
+  // Round head
+  ctx.fillStyle = "#5a3c20";
+  ctx.beginPath(); ctx.arc(x + r * 1.05, y - r * 0.08, r * 0.52, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#c8a87a";
+  ctx.beginPath(); ctx.ellipse(x + r * 1.12, y + r * 0.18, r * 0.28, r * 0.2, 0, 0, Math.PI * 2); ctx.fill();
+  // Tiny paws raised (holding a rock/shellfish)
+  ctx.fillStyle = "#3d2810";
+  ctx.beginPath(); ctx.ellipse(x + r * 0.55, y - r * 0.5, r * 0.2, r * 0.12, -0.8, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x + r * 0.35, y - r * 0.55, r * 0.2, r * 0.12, -1.0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#111";
+  ctx.beginPath(); ctx.arc(x + r * 1.25, y - r * 0.18, r * 0.12, 0, Math.PI * 2); ctx.fill();
 }
 
 function drawCrab(ctx: CanvasRenderingContext2D, x: number, y: number) {
