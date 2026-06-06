@@ -135,6 +135,8 @@ export class Game {
           this.net.send({ t: "eat" });
         } else if (k === "g") {
           this.net.send({ t: "fish" });
+        } else if (k === "z") {
+          this.net.send({ t: "sleep" });
         } else if (k === "t") {
           this.net.send({ t: "travel" });
         } else if (k === "c") {
@@ -313,7 +315,7 @@ export class Game {
       const w = n.w * TILE_SIZE;
       const h = n.h * TILE_SIZE;
       ctx.fillStyle = TRAVEL_COLOR[n.kind];
-      ctx.globalAlpha = 0.55;
+      ctx.globalAlpha = n.kind === "sea" ? 0.16 : 0.55; // sea border is a big subtle zone
       ctx.fillRect(sx, sy, w, h);
       ctx.globalAlpha = 1;
       ctx.strokeStyle = "#f1f1f1";
@@ -759,11 +761,26 @@ export class Game {
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
-    // Name.
+
+    // Sleeping zzz.
+    if (p.sleeping) {
+      ctx.fillStyle = "rgba(180,220,255,0.9)";
+      ctx.font = "12px system-ui";
+      ctx.textAlign = "left";
+      const zt = Math.floor(performance.now() / 400) % 3;
+      ctx.fillText("z".repeat(zt + 1), sx + R, sy - R);
+    }
+
+    // Name (with a crown for the unofficial mayor).
     ctx.fillStyle = "#eaf2f8";
     ctx.font = "11px system-ui";
     ctx.textAlign = "center";
     ctx.fillText(p.name, sx, sy - TILE_SIZE * 0.7);
+    if (p.isMayor) {
+      ctx.fillStyle = "#ffd54f";
+      ctx.font = "13px system-ui";
+      ctx.fillText("♔", sx, sy - TILE_SIZE * 0.95);
+    }
   }
 
   private drawHud(snap: Snapshot, me?: PlayerState) {
@@ -792,12 +809,20 @@ export class Game {
           .join(" ")
       : "";
     const teamStr = me?.team ? ` &nbsp; <b>Team:</b> ${me.team}` : "";
+    const rankStr = me
+      ? me.isMayor
+        ? `<span style="color:#ffd54f">★ MAYOR</span>`
+        : me.rank > 0
+          ? `#${me.rank}`
+          : "unranked"
+      : "";
+    const sleepStr = me?.sleeping ? ` <span style="color:#7ec8a0">💤 resting</span>` : "";
     hud.innerHTML =
       `<b>${this.regionName}</b><br />` +
       `<b>Tide:</b> ${snap.phase} (${tidePct}%)${event}<br />` +
-      `<b>HP:</b> ${hp}/${me?.maxHp ?? 100} &nbsp; <b>Stam:</b> ${stam}/${me?.maxStamina ?? 100}<br />` +
+      `<b>HP:</b> ${hp}/${me?.maxHp ?? 100} &nbsp; <b>Stam:</b> ${stam}/${me?.maxStamina ?? 100}${sleepStr}<br />` +
       `<b>Hunger:</b> <span style="color:${hungerLow ? "#e57373" : "#cfe3ef"}">${hunger}/${me?.maxHunger ?? 100}${hungerLow ? " — EAT (Q)!" : ""}</span><br />` +
-      `<b>Banfielder pts:</b> ${me?.banfielderPts ?? 0}${teamStr}<br />` +
+      `<b>Banfielder:</b> ${me?.banfielderPts ?? 0} pts (${rankStr})${teamStr}<br />` +
       (skillsHtml ? `<b>Skills:</b> <span style="font-size:11px">${skillsHtml}</span><br />` : "") +
       (invItems ? `<b>Inv:</b> <span style="font-size:11px">${invItems}</span><br />` : "") +
       `<b>Here:</b> ${snap.players.length}`;
@@ -813,11 +838,13 @@ export class Game {
 const TRAVEL_COLOR: Record<TravelNode["kind"], string> = {
   bus: "#f4b400",
   gate: "#7e57c2",
+  sea: "#13b6c4",
 };
 
 const TRAVEL_ICON: Record<TravelNode["kind"], string> = {
   bus: "BUS",
   gate: "GATE",
+  sea: "~ SEA ~",
 };
 
 // Deeper water renders darker (shallow teal -> deep navy).

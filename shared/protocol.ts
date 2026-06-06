@@ -32,7 +32,9 @@ export const TILE_ELEVATION: Record<Tile, number> = {
 // --- Tide model -------------------------------------------------------------
 // Elevations now run on a gentle ~2-per-tile beach slope, so a wide waterline
 // band makes the tide crawl across many tiles each cycle.
-export const TIDE_CYCLE_MS = 900_000; // one full low->high->low cycle = 15 min
+// Real Bamfield tides swing high<->low about every 6 hours; we compress that
+// to ~6 minutes each way, so a full low->high->low cycle is 12 minutes.
+export const TIDE_CYCLE_MS = 720_000;
 export const WATERLINE_LOW = 1; // elevation covered at lowest tide
 export const WATERLINE_HIGH = 20; // elevation covered at highest tide
 export const KING_TIDE_SURGE = 10; // extra waterline during a king tide
@@ -192,12 +194,15 @@ export interface PlayerState {
   maxHunger: number;
   skills: Skills;
   banfielderPts: number; // localism score, earned tackling invasive plants etc.
+  rank: number; // 1 = top Banfielder (the unofficial mayor); 0 = unranked
+  isMayor: boolean; // the current highest-ranked Banfielder
   inventory: Inventory;
   team: string | null; // team/crew name (null = none)
   appearance: Appearance;
   swimming: boolean;
   dodging: boolean; // brief lunge with i-frames (client renders a streak)
   fishing: boolean; // currently fishing (rod cast)
+  sleeping: boolean; // resting by a fire to heal (vulnerable, can't move)
   vehicleId: string | null; // id of the vehicle being driven, else null
   dead: boolean;
 }
@@ -256,9 +261,11 @@ export interface BuildingState {
 // A travel node is a pad you stand on and activate to move *yourself* (on foot)
 // to another region — vehicles stay behind. Catch the scheduled bus at the
 // market, or walk through the gate at the road's end up Bamfield Main.
+// Kinds: bus (foot), gate (foot), sea (a stretch of open water — drive a boat
+// into it to cross to the neighbouring region, boat and all).
 export interface TravelNode {
   id: string;
-  kind: "bus" | "gate";
+  kind: "bus" | "gate" | "sea";
   x: number; // top-left tile
   y: number;
   w: number;
@@ -287,6 +294,7 @@ export type ClientMessage =
   | { t: "craft"; recipe: CraftRecipeId } // craft (recipe validated server-side)
   | { t: "fish" } // toggle fishing on/off (needs rod in inventory)
   | { t: "eat" } // consume food from inventory for hunger/HP
+  | { t: "sleep" } // toggle resting by a fire to heal
   | { t: "chat"; msg: string } // text; / global, // team, ///name private
   | { t: "repair" }
   | { t: "travel" };

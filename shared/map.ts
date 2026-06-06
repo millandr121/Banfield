@@ -141,26 +141,33 @@ function beachify(tiles: Tile[]) {
 function generateBamfieldMap(): WorldMap {
   let tiles = fill(Tile.Grass);
 
-  // Bamfield Inlet: a narrow channel that splits the town in two — West
-  // Bamfield (the boardwalk, no road) on the left bank, East Bamfield (road
-  // access) on the right — and opens south into Barkley Sound / Trevor Channel.
-  const center = 27;
+  // Bamfield Inlet: a WIDE channel that splits the town in two — West Bamfield
+  // (the boardwalk, no road) on the left bank, East Bamfield (road access) on
+  // the right. It's a real crossing: you swim a while or take a boat. It opens
+  // south into Barkley Sound / Trevor Channel (open ocean to boat & fish).
+  const center = 26;
   for (let y = 0; y < MAP_HEIGHT; y++) {
     const wig = y < 6 ? Math.round(Math.sin(y)) : 0; // wiggle only at the north end
     const c = center + wig;
-    const half = y >= 30 ? 2 + (y - 29) * 2 : 2; // flare wide into the sound
+    const half = y >= 26 ? 5 + (y - 25) * 1.4 : 5; // ~11 tiles wide, flaring south
     for (let x = 0; x < MAP_WIDTH; x++) {
       if (Math.abs(x - c) <= half) tiles[idx(x, y)] = Tile.Water;
     }
   }
 
+  // Barkley Sound: open ocean across the south end — room to boat around and
+  // fish, and the sea route out to Anacla / Pachena Bay.
+  for (let y = 33; y < MAP_HEIGHT; y++) {
+    for (let x = 3; x < MAP_WIDTH - 3; x++) tiles[idx(x, y)] = Tile.Water;
+  }
+
   // Grappler Inlet: a side-arm branching east off the main inlet to the north.
-  for (let y = 7; y <= 9; y++) {
-    for (let x = center; x <= 36; x++) tiles[idx(x, y)] = Tile.Water;
+  for (let y = 6; y <= 9; y++) {
+    for (let x = center; x <= 38; x++) tiles[idx(x, y)] = Tile.Water;
   }
 
   // Brady's Beach: the open-coast (Pacific-facing) water pocket on the far west.
-  for (let y = 22; y < 31; y++) {
+  for (let y = 20; y < 31; y++) {
     for (let x = 0; x < 4; x++) tiles[idx(x, y)] = Tile.Water;
   }
 
@@ -356,6 +363,17 @@ export function buildRegions(): RegionDef[] {
         toRegion: "anacla",
         toSpawn: { x: 40, y: 1 },
       },
+      {
+        id: "bf-sea",
+        kind: "sea",
+        x: 14,
+        y: 37,
+        w: 26,
+        h: 3,
+        label: "Sail out the mouth of the inlet to Pachena Bay",
+        toRegion: "anacla",
+        toSpawn: { x: 30, y: 35 }, // arrive on the water in Pachena Bay
+      },
     ],
     vehicles: [
       { id: "bf-car-1", kind: "car", x: 38, y: 6 }, // parked on Bamfield Main
@@ -419,6 +437,17 @@ export function buildRegions(): RegionDef[] {
         label: "Hike the road back to Bamfield",
         toRegion: "bamfield",
         toSpawn: { x: 38, y: 28 },
+      },
+      {
+        id: "an-sea",
+        kind: "sea",
+        x: 12,
+        y: 37,
+        w: 30,
+        h: 3,
+        label: "Sail out of Pachena Bay round to Bamfield Inlet",
+        toRegion: "bamfield",
+        toSpawn: { x: 26, y: 35 }, // arrive on the water in Barkley Sound
       },
     ],
     vehicles: [

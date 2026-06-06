@@ -121,6 +121,23 @@ const MINING_LEVEL_REQ_IRON = 5; // need Mining 5 to extract iron
 const COOK_RANGE = 2.0; // tiles from a campfire to cook
 const CAMPFIRE_BURN_MS = 4 * 60 * 1000; // a campfire lasts 4 minutes
 
+// Health scaling -------------------------------------------------------------
+// Your max HP grows with who you ARE: social standing (Banfielder rank),
+// toughness in a fight (combat), endurance (woodcutting+mining grind), and how
+// strong a swimmer you are. A fresh settler has BASE_HP; a decorated local can
+// have well over double.
+const BASE_HP = 100;
+const HP_PER_COMBAT = 3;
+const HP_PER_SWIM = 2;
+const HP_PER_ENDURANCE = 1; // per level of (woodcutting+mining)/2, the "grind"
+const HP_MAYOR_BONUS = 50; // the unofficial mayor is the hardiest local
+const HP_RANK_BONUS = [0, 50, 30, 20, 12, 8]; // by rank position (1-indexed)
+const RANK_RECOMPUTE_MS = 5000;
+
+// Sleeping by a fire to heal.
+const SLEEP_HEAL_PS = 6; // hp/sec while resting by a fire
+const SLEEP_FIRE_RANGE = 2.2;
+
 // Hunger ---------------------------------------------------------------------
 const MAX_HUNGER = 100;
 const HUNGER_DECAY = 100 / (9 * 60); // empties in ~9 min of normal play
@@ -212,6 +229,8 @@ export class GameRoom {
   private event: "none" | "king" | "tsunami" = "none";
   private eventUntil = 0;
   private nextEventCheck = Date.now() + 60_000;
+  private nextRankCheck = 0;
+  private mayorId: string | null = null;
 
   constructor(_state: DurableObjectState, _env: Env) {
     const now = Date.now();
@@ -333,12 +352,15 @@ export class GameRoom {
           maxHunger: MAX_HUNGER,
           skills: defaultSkills(),
           banfielderPts: 0,
+          rank: 0,
+          isMayor: false,
           inventory: {},
           team: null,
           appearance: sanitizeAppearance(msg.appearance),
           swimming: false,
           dodging: false,
           fishing: false,
+          sleeping: false,
           vehicleId: null,
           dead: false,
         };
@@ -379,6 +401,9 @@ export class GameRoom {
         break;
       case "eat":
         this.doEat(s.playerId);
+        break;
+      case "sleep":
+        this.doSleep(s.playerId);
         break;
       case "craft":
         this.doCraft(s.playerId, msg.recipe);
@@ -431,8 +456,10 @@ export class GameRoom {
     this.updateVehicleRust(dt, waterline, now);
     this.updateFishing(now);
     this.updateHunger(dt);
+    this.updateSleep(dt);
     this.updatePlants(now);
     this.updateCampfires(now);
+    this.recomputeRanks(now);
     this.maybeSpawn(now, waterline);
 
     // Each player only sees their own region; cache one snapshot per region.
@@ -573,6 +600,16 @@ export class GameRoom {
         driver.x = v.x;
         driver.y = v.y;
         driver.dir = v.dir;
+
+        // Sail a boat into an open-water "sea" border and it carries you (and
+        // the boat) across to the neighbouring region.
+        if (v.kind === "boat") {
+          const sea = region.travelNodes.find(
+            (n) => n.kind === "sea" &&
+              v.x >= n.x && v.x <= n.x + n.w && v.y >= n.y && v.y <= n.y + n.h,
+          );
+          if (sea) { this.transferBoat(v, driver, sea.toRegion, sea.toSpawn); continue; }
+        }
       } else {
         // Driverless: a boat (or a car the tide has reached) drifts on the swell.
         if (this.depthAt(region.map, v.x, v.y, waterline) > 1) {
@@ -780,7 +817,82 @@ export class GameRoom {
         p.hp -= STARVE_DPS * dt;
         if (p.hp <= 0 && !p.dead) this.killPlayer(p);
       }
+      // Keep max HP in sync with who they've become.
+      this.recomputeMaxHp(p);
     }
+  }
+
+  // Max HP is derived from social standing + combat + endurance + swimming.
+  private recomputeMaxHp(p: PlayerState) {
+    const combat = skillLevel(p.skills.combat);
+    const swim = skillLevel(p.skills.swimming);
+    const endurance = Math.floor((skillLevel(p.skills.woodcutting) + skillLevel(p.skills.mining)) / 2);
+    let hp = BASE_HP + combat * HP_PER_COMBAT + swim * HP_PER_SWIM + endurance * HP_PER_ENDURANCE;
+    if (p.rank >= 1 && p.rank < HP_RANK_BONUS.length) hp += HP_RANK_BONUS[p.rank];
+    if (p.isMayor) hp += HP_MAYOR_BONUS;
+    p.maxHp = Math.round(hp);
+    if (p.hp > p.maxHp) p.hp = p.maxHp;
+  }
+
+  private doSleep(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead || p.vehicleId) return;
+    if (p.sleeping) { p.sleeping = false; this.tell(p, "You wake up."); return; }
+    // Must be next to a lit campfire (homes/beds come with interiors later).
+    const fire = [...this.campfires.values()].find(
+      (f) => f.region === p.region && Math.hypot(f.x + 0.5 - p.x, f.y + 0.5 - p.y) <= SLEEP_FIRE_RANGE,
+    );
+    if (!fire) { this.tell(p, "Rest by a campfire to sleep (craft one with 4 wood)."); return; }
+    p.sleeping = true;
+    this.tell(p, "You curl up by the fire to rest… (move or press Z to wake)");
+  }
+
+  private updateSleep(dt: number) {
+    for (const p of this.players.values()) {
+      if (!p.sleeping) continue;
+      const s = this.sessionFor(p.id);
+      // Moving (or being dead) wakes you.
+      if (p.dead || (s && (s.dx !== 0 || s.dy !== 0))) { p.sleeping = false; continue; }
+      // Still near a fire?
+      const fire = [...this.campfires.values()].find(
+        (f) => f.region === p.region && Math.hypot(f.x + 0.5 - p.x, f.y + 0.5 - p.y) <= SLEEP_FIRE_RANGE,
+      );
+      if (!fire) { p.sleeping = false; continue; }
+      p.hp = Math.min(p.maxHp, p.hp + SLEEP_HEAL_PS * dt);
+      p.stamina = Math.min(p.maxStamina, p.stamina + SLEEP_HEAL_PS * dt);
+    }
+  }
+
+  // Periodically rank everyone by Banfielder points and crown the top local as
+  // the unofficial mayor. When the crown changes hands, everyone hears about it.
+  private recomputeRanks(now: number) {
+    if (now < this.nextRankCheck) return;
+    this.nextRankCheck = now + RANK_RECOMPUTE_MS;
+    const ranked = [...this.players.values()].sort((a, b) => b.banfielderPts - a.banfielderPts);
+    let i = 0;
+    for (const p of ranked) {
+      p.rank = p.banfielderPts > 0 ? i + 1 : 0;
+      p.isMayor = false;
+      i++;
+    }
+    const top = ranked[0];
+    const newMayorId = top && top.banfielderPts > 0 ? top.id : null;
+    if (newMayorId && newMayorId !== this.mayorId) {
+      const prev = this.mayorId ? this.players.get(this.mayorId) : null;
+      const mayor = this.players.get(newMayorId)!;
+      mayor.isMayor = true;
+      this.broadcastLog(
+        prev
+          ? `📣 ${mayor.name} has unseated ${prev.name} as Bamfield's unofficial mayor!`
+          : `📣 ${mayor.name} is Bamfield's unofficial mayor!`,
+      );
+      this.mayorId = newMayorId;
+    } else if (newMayorId) {
+      this.players.get(newMayorId)!.isMayor = true;
+    } else {
+      this.mayorId = null;
+    }
+    for (const p of this.players.values()) this.recomputeMaxHp(p);
   }
 
   private doCraft(playerId: string, recipeId: CraftRecipeId) {
@@ -1086,6 +1198,7 @@ export class GameRoom {
   private doAttack(playerId: string, charge: number) {
     const p = this.players.get(playerId);
     if (!p || p.dead || p.vehicleId) return; // no swinging from the driver's seat
+    p.sleeping = false;
     const s = this.sessionFor(p.id);
     if (!s) return;
     const now = Date.now();
@@ -1175,7 +1288,8 @@ export class GameRoom {
     const region = this.regions.get(p.region);
     if (!region) return;
     const node = region.travelNodes.find(
-      (n) => p.x >= n.x - 0.6 && p.x <= n.x + n.w + 0.6 && p.y >= n.y - 0.6 && p.y <= n.y + n.h + 0.6,
+      (n) => n.kind !== "sea" && // sea routes are for boats, not foot
+        p.x >= n.x - 0.6 && p.x <= n.x + n.w + 0.6 && p.y >= n.y - 0.6 && p.y <= n.y + n.h + 0.6,
     );
     if (!node) return;
     const dest = this.regions.get(node.toRegion);
@@ -1456,6 +1570,43 @@ export class GameRoom {
       }
     }
     return { x: sx, y: sy };
+  }
+
+  // Nearest tile that is open water even at LOW tide, so an arriving boat
+  // (and its skipper) land afloat rather than beached.
+  private seaSpawn(region: Region, sx: number, sy: number): { x: number; y: number } {
+    const wet = (x: number, y: number) =>
+      this.inBounds(region.map, x + 0.5, y + 0.5) &&
+      this.depthAt(region.map, x + 0.5, y + 0.5, WATERLINE_LOW) > 0;
+    const cx = Math.floor(sx);
+    const cy = Math.floor(sy);
+    if (wet(cx, cy)) return { x: cx + 0.5, y: cy + 0.5 };
+    const maxR = Math.max(region.map.width, region.map.height);
+    for (let r = 1; r < maxR; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          if (wet(cx + dx, cy + dy)) return { x: cx + dx + 0.5, y: cy + dy + 0.5 };
+        }
+      }
+    }
+    return { x: sx, y: sy };
+  }
+
+  // Move a driven boat (and its skipper) to another region's water.
+  private transferBoat(v: VehicleRecord, driver: PlayerState, toRegion: RegionId, toSpawn: { x: number; y: number }) {
+    const dest = this.regions.get(toRegion);
+    if (!dest) return;
+    const arrive = this.seaSpawn(dest, toSpawn.x, toSpawn.y);
+    v.region = toRegion;
+    v.x = arrive.x;
+    v.y = arrive.y;
+    driver.region = toRegion;
+    driver.x = arrive.x;
+    driver.y = arrive.y;
+    const s = this.sessionFor(driver.id);
+    if (s) this.sendInit(s.ws, driver); // swap their map to the new region
+    this.broadcastLog(`${driver.name} sailed into ${dest.name}.`);
   }
 
   private nearestBuilding(region: Region, x: number, y: number, range: number): BuildingState | null {
