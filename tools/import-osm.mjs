@@ -1,110 +1,252 @@
 #!/usr/bin/env node
-// Build a Bamfield Tides region from REAL OpenStreetMap data.
+// Build a Banfield Tides region from real OpenStreetMap data + AWS terrain DEM.
 //
-// OSM gives us the actual coastline, inlet, rivers, roads, and building
-// footprints — legally shippable, unlike Google/satellite imagery (use that
-// only as a visual reference). This rasterizes that vector data onto our tile
-// grid and writes a region JSON.
+// This is the same approach used by Build-The-Earth / WorldPainter plugins:
+//   • OSM  → coastline, inlet, docks, roads, building footprints, campground, beach
+//   • AWS Terrain Tiles (legally open, CC0) → real depths and hill heights
 //
-// Two ways to run:
+// USAGE (run in your Codespace — needs internet):
 //
-//   1) Live (needs internet — run on your own machine):
-//      node tools/import-osm.mjs \
-//        --bbox 48.815,-125.16,48.85,-125.11 \
-//        --width 90 --id bamfield --name "Bamfield" \
-//        --sea-seed 0,89 --out shared/regions/bamfield.json
+//   # Bamfield
+//   node tools/import-osm.mjs \
+//     --bbox 48.815,-125.16,48.855,-125.09 \
+//     --width 200 --id bamfield --name "Bamfield" \
+//     --sea-seed 0,199 \
+//     --out shared/regions/bamfield.json
 //
-//   2) Offline (works anywhere): first save Overpass JSON to a file, then:
-//      node tools/import-osm.mjs --osm-json maps/bamfield.osm.json \
-//        --bbox 48.815,-125.16,48.85,-125.11 --width 90 \
-//        --id bamfield --name "Bamfield" --sea-seed 0,89 \
-//        --out shared/regions/bamfield.json
+//   # Anacla / Pachena Bay
+//   node tools/import-osm.mjs \
+//     --bbox 48.785,-125.13,48.820,-125.07 \
+//     --width 200 --id anacla --name "Anacla / Pachena Bay" \
+//     --sea-seed 0,199 \
+//     --out shared/regions/anacla.json
 //
-// --sea-seed X,Y is a tile that sits in the OPEN OCEAN; the ocean is flood-
-// filled from there inland up to the coastline. (Bottom-left works for Bamfield
-// since Barkley Sound is to the south/west.)
+// After each run, re-run the other region so the travel links in the index are
+// up to date, then run `npm run dev` in the project root to see the new maps.
+//
+// OFFLINE (Codespace with flaky internet / sandbox):
+//   1. Open https://overpass-turbo.eu/, paste the query printed by --dump-query,
+//      click Run, then Export → Download as raw OSM data (JSON).
+//   2. Pass the file with --osm-json <file>. Elevation falls back to the
+//      BFS-slope method when AWS tiles can't be fetched (--no-dem flag).
+//
+// OUTPUT: a RegionData JSON that shared/regions/index.ts imports so the engine
+// uses it instead of the handcrafted map for that region id.
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { dirname, resolve, join } from "node:path";
+import { createRequire } from "node:module";
 
-const Tile = { Water: 0, Sand: 1, Grass: 2, Forest: 3, Hill: 4, Rock: 5, Road: 6, Dock: 7 };
+// ---------------------------------------------------------------------------
+// Tile enum (mirrors shared/protocol.ts — no TS import in a .mjs script)
+// ---------------------------------------------------------------------------
+const T = { Water: 0, Sand: 1, Grass: 2, Forest: 3, Hill: 4, Rock: 5, Road: 6, Dock: 7 };
 
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
 function parseArgs(argv) {
   const a = {};
-  for (let i = 2; i < argv.length; i += 2) a[argv[i].replace(/^--/, "")] = argv[i + 1];
+  for (let i = 2; i < argv.length; i++) {
+    if (argv[i].startsWith("--")) {
+      const key = argv[i].slice(2);
+      const next = argv[i + 1];
+      if (!next || next.startsWith("--")) { a[key] = true; }
+      else { a[key] = next; i++; }
+    }
+  }
   return a;
 }
 
-const OVERPASS = "https://overpass-api.de/api/interpreter";
+const args = parseArgs(process.argv);
 
-function overpassQuery(s, w, n, e) {
-  const box = `(${s},${w},${n},${e})`;
-  return `[out:json][timeout:60];
+if (args["dump-query"] && args.bbox) {
+  const [S, W, N, E] = args.bbox.split(",").map(Number);
+  console.log(buildOverpassQuery(S, W, N, E));
+  process.exit(0);
+}
+
+if (!args.bbox || !args.width || !args.id || !args.out) {
+  console.error(
+    "Usage: --bbox S,W,N,E --width N --id <id> --name <name> --out <json>\n" +
+    "       [--osm-json <file>] [--sea-seed X,Y] [--no-dem] [--dump-query]"
+  );
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Overpass query
+// ---------------------------------------------------------------------------
+function buildOverpassQuery(S, W, N, E) {
+  const box = `(${S},${W},${N},${E})`;
+  return `[out:json][timeout:90];
 (
   way["natural"="coastline"]${box};
   way["natural"="water"]${box};
   relation["natural"="water"]${box};
   way["waterway"]${box};
   way["natural"="beach"]${box};
+  way["natural"="sand"]${box};
   way["natural"="wood"]${box};
   way["landuse"="forest"]${box};
+  way["landuse"="grass"]${box};
+  way["leisure"="campsite"]${box};
+  way["leisure"="campground"]${box};
+  way["man_made"="pier"]${box};
+  way["man_made"="breakwater"]${box};
+  way["man_made"="jetty"]${box};
   way["highway"]${box};
   way["building"]${box};
   relation["building"]${box};
+  node["amenity"="ferry_terminal"]${box};
+  node["man_made"="pier"]${box};
 );
 out body geom;`;
 }
 
-async function fetchOsm(s, w, n, e) {
+async function fetchOsm(S, W, N, E) {
+  const OVERPASS = "https://overpass-api.de/api/interpreter";
   const res = await fetch(OVERPASS, {
     method: "POST",
-    body: "data=" + encodeURIComponent(overpassQuery(s, w, n, e)),
+    body: "data=" + encodeURIComponent(buildOverpassQuery(S, W, N, E)),
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
   });
-  if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`Overpass HTTP ${res.status}: ${await res.text()}`);
   return res.json();
 }
 
-// --- rasterization ----------------------------------------------------------
+// ---------------------------------------------------------------------------
+// AWS Terrain Tiles (open data, CC0)
+// https://registry.opendata.aws/terrain-tiles/
+// Elevation encoded as PNG: height = (R*256 + G + B/256) - 32768  (metres)
+// ---------------------------------------------------------------------------
+function latLonToTileXY(lat, lon, zoom) {
+  const n = Math.pow(2, zoom);
+  const x = Math.floor((lon + 180) / 360 * n);
+  const latR = lat * Math.PI / 180;
+  const y = Math.floor((1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2 * n);
+  return { x, y };
+}
+
+async function fetchTerrainTile(z, x, y) {
+  const url = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const buf = Buffer.from(await res.arrayBuffer());
+  // Parse PNG ourselves — we only need the RGB channels.
+  // Use pngjs if available (in devDependencies), otherwise skip.
+  try {
+    const require = createRequire(import.meta.url);
+    const { PNG } = require("pngjs");
+    return await new Promise((resolve, reject) => {
+      const png = new PNG();
+      png.parse(buf, (err, data) => {
+        if (err) reject(err);
+        else resolve(data);
+      });
+    });
+  } catch {
+    return null; // pngjs not installed, fall back
+  }
+}
+
+// Sample the real elevation (metres) for a lat/lon using AWS Terrarium tiles.
+// Returns an array parallel to the tile grid: elev[y*W+x] = metres above sea level.
+async function fetchDEM(S, W_lon, N, E, gridW, gridH) {
+  console.log("  Fetching terrain elevation (AWS Terrarium tiles)…");
+  const zoom = 13; // ~10m/pixel at this latitude
+
+  // Figure out which terrain tiles we need to cover the bbox.
+  const tl = latLonToTileXY(N, W_lon, zoom);
+  const br = latLonToTileXY(S, E, zoom);
+
+  const TILE_PX = 256;
+
+  // Build a mosaic of all needed terrain tiles.
+  const mosaicTilesX = br.x - tl.x + 1;
+  const mosaicTilesY = br.y - tl.y + 1;
+  const mosaicW = mosaicTilesX * TILE_PX;
+  const mosaicH = mosaicTilesY * TILE_PX;
+  const mosaic = new Float32Array(mosaicW * mosaicH); // elevation in metres
+
+  let fetchedAny = false;
+  for (let ty = tl.y; ty <= br.y; ty++) {
+    for (let tx = tl.x; tx <= br.x; tx++) {
+      const png = await fetchTerrainTile(zoom, tx, ty);
+      if (!png) continue;
+      fetchedAny = true;
+      const offX = (tx - tl.x) * TILE_PX;
+      const offY = (ty - tl.y) * TILE_PX;
+      for (let py = 0; py < TILE_PX; py++) {
+        for (let px = 0; px < TILE_PX; px++) {
+          const pi = (py * TILE_PX + px) * 4; // RGBA
+          const r = png.data[pi], g = png.data[pi + 1], b = png.data[pi + 2];
+          const metres = (r * 256 + g + b / 256) - 32768;
+          mosaic[(offY + py) * mosaicW + (offX + px)] = metres;
+        }
+      }
+    }
+  }
+
+  if (!fetchedAny) {
+    console.log("  ⚠ Terrain tiles unavailable — falling back to BFS slope elevation.");
+    return null;
+  }
+
+  // Resample mosaic onto our game tile grid.
+  const lonSpan = E - W_lon, latSpan = N - S;
+  const grid = new Float32Array(gridW * gridH);
+  for (let gy = 0; gy < gridH; gy++) {
+    for (let gx = 0; gx < gridW; gx++) {
+      const lat = N - (gy / (gridH - 1)) * latSpan;
+      const lon = W_lon + (gx / (gridW - 1)) * lonSpan;
+      // Map lat/lon to mosaic pixel coords.
+      const tileX = (lon + 180) / 360 * Math.pow(2, zoom);
+      const latR = lat * Math.PI / 180;
+      const tileY = (1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2 * Math.pow(2, zoom);
+      const px = Math.round((tileX - tl.x) * TILE_PX);
+      const py = Math.round((tileY - tl.y) * TILE_PX);
+      const clampedPx = Math.max(0, Math.min(mosaicW - 1, px));
+      const clampedPy = Math.max(0, Math.min(mosaicH - 1, py));
+      grid[gy * gridW + gx] = mosaic[clampedPy * mosaicW + clampedPx];
+    }
+  }
+  console.log(`  ✓ Elevation sampled (${mosaicTilesX * mosaicTilesY} terrain tiles)`);
+  return grid;
+}
+
+// ---------------------------------------------------------------------------
+// Grid helpers
+// ---------------------------------------------------------------------------
 function makeGrid(W, H) {
-  return { W, H, t: new Array(W * H).fill(Tile.Grass) };
+  return { W, H, t: new Int32Array(W * H).fill(T.Grass) };
 }
-
-function inBounds(g, x, y) {
-  return x >= 0 && y >= 0 && x < g.W && y < g.H;
-}
-
 function set(g, x, y, tile) {
-  if (inBounds(g, x, y)) g.t[y * g.W + x] = tile;
+  if (x >= 0 && y >= 0 && x < g.W && y < g.H) g.t[y * g.W + x] = tile;
+}
+function get(g, x, y) {
+  if (x < 0 || y < 0 || x >= g.W || y >= g.H) return -1;
+  return g.t[y * g.W + x];
 }
 
 function fillPolygon(g, pts, tile) {
   if (pts.length < 3) return;
   let minY = Infinity, maxY = -Infinity;
-  for (const p of pts) {
-    minY = Math.min(minY, p.y);
-    maxY = Math.max(maxY, p.y);
-  }
+  for (const p of pts) { minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); }
   minY = Math.max(0, Math.floor(minY));
   maxY = Math.min(g.H - 1, Math.ceil(maxY));
   for (let y = minY; y <= maxY; y++) {
     const xs = [];
     for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
       const a = pts[i], b = pts[j];
-      if (a.y <= y && b.y > y) {
-        // a.y < y <= b.y
-      }
-      const intersects = a.y > y !== b.y > y;
-      if (intersects) {
-        const x = a.x + ((y - a.y) / (b.y - a.y)) * (b.x - a.x);
-        xs.push(x);
+      if (a.y > y !== b.y > y) {
+        xs.push(a.x + ((y - a.y) / (b.y - a.y)) * (b.x - a.x));
       }
     }
-    xs.sort((p, q) => p - q);
+    xs.sort((a, b) => a - b);
     for (let i = 0; i + 1 < xs.length; i += 2) {
-      const x0 = Math.max(0, Math.round(xs[i]));
-      const x1 = Math.min(g.W - 1, Math.round(xs[i + 1]));
-      for (let x = x0; x <= x1; x++) set(g, x, y, tile);
+      for (let x = Math.max(0, Math.round(xs[i])); x <= Math.min(g.W - 1, Math.round(xs[i + 1])); x++)
+        set(g, x, y, tile);
     }
   }
 }
@@ -112,15 +254,13 @@ function fillPolygon(g, pts, tile) {
 function drawLine(g, pts, tile, thickness = 1) {
   const r = Math.max(0, Math.floor((thickness - 1) / 2));
   for (let i = 0; i + 1 < pts.length; i++) {
-    let { x: x0, y: y0 } = pts[i];
-    let { x: x1, y: y1 } = pts[i + 1];
+    let { x: x0, y: y0 } = pts[i], { x: x1, y: y1 } = pts[i + 1];
     x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
     const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
     const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
     let err = dx + dy;
     for (;;) {
-      for (let ox = -r; ox <= r; ox++)
-        for (let oy = -r; oy <= r; oy++) set(g, x0 + ox, y0 + oy, tile);
+      for (let ox = -r; ox <= r; ox++) for (let oy = -r; oy <= r; oy++) set(g, x0 + ox, y0 + oy, tile);
       if (x0 === x1 && y0 === y1) break;
       const e2 = 2 * err;
       if (e2 >= dy) { err += dy; x0 += sx; }
@@ -129,136 +269,369 @@ function drawLine(g, pts, tile, thickness = 1) {
   }
 }
 
-// Flood the ocean inland from a seed, stopping at any non-grass (coastline is
-// drawn as Sand, so it acts as the shoreline barrier).
-function floodOcean(g, sx, sy) {
-  if (!inBounds(g, sx, sy)) return;
+function floodFill(g, sx, sy, target, replace) {
+  if (!Number.isFinite(sx) || !Number.isFinite(sy)) return;
+  sx = Math.max(0, Math.min(g.W - 1, Math.round(sx)));
+  sy = Math.max(0, Math.min(g.H - 1, Math.round(sy)));
+  if (get(g, sx, sy) !== target) return;
   const stack = [[sx, sy]];
   while (stack.length) {
     const [x, y] = stack.pop();
-    if (!inBounds(g, x, y) || g.t[y * g.W + x] !== Tile.Grass) continue;
-    g.t[y * g.W + x] = Tile.Water;
+    if (get(g, x, y) !== target) continue;
+    set(g, x, y, replace);
     stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
   }
 }
 
 function beachify(g) {
   const out = g.t.slice();
-  for (let y = 0; y < g.H; y++)
-    for (let x = 0; x < g.W; x++) {
-      if (g.t[y * g.W + x] !== Tile.Water) continue;
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const nx = x + dx, ny = y + dy;
-        if (inBounds(g, nx, ny) && out[ny * g.W + nx] === Tile.Grass)
-          out[ny * g.W + nx] = Tile.Sand;
-      }
+  for (let y = 0; y < g.H; y++) for (let x = 0; x < g.W; x++) {
+    if (g.t[y * g.W + x] !== T.Water) continue;
+    for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]]) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= g.W || ny >= g.H) continue;
+      if (out[ny * g.W + nx] === T.Grass) out[ny * g.W + nx] = T.Sand;
     }
+  }
   g.t = out;
 }
 
-// --- main -------------------------------------------------------------------
-async function main() {
-  const args = parseArgs(process.argv);
-  if (!args.bbox || !args.width || !args.id || !args.out) {
-    console.error(
-      "Usage: --bbox S,W,N,E --width N --id <id> --name <name> --out <json> " +
-        "[--osm-json <file>] [--sea-seed X,Y]",
-    );
-    process.exit(1);
+// ---------------------------------------------------------------------------
+// Elevation: convert real DEM metres -> game elevation values
+// Game range: 0..100, waterline sweeps 1..30.
+// Sea level = 0m, beach = ~1-3m, town = 5-30m, forest/hill = 20-150m+
+// ---------------------------------------------------------------------------
+function demToGameElevation(demGrid, tileGrid, W, H) {
+  if (!demGrid) return null; // caller will use BFS fallback
+
+  // Find sea-level reference: median of submerged tiles' DEM values.
+  const waterDems = [];
+  for (let i = 0; i < W * H; i++) {
+    if (tileGrid[i] === T.Water) waterDems.push(demGrid[i]);
+  }
+  waterDems.sort((a, b) => a - b);
+  const seaRef = waterDems[Math.floor(waterDems.length / 2)] ?? 0;
+
+  // Typical land range in Bamfield is 0–150m. We map:
+  //   seaRef - 30m (deep water) -> game elevation 0
+  //   seaRef             (shore) -> game elevation 8
+  //   seaRef + 20m (low town)   -> game elevation 24
+  //   seaRef + 60m (forested)   -> game elevation 48
+  //   seaRef + 150m (hill top)  -> game elevation 90
+  const elev = new Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    const m = demGrid[i] - seaRef;
+    let e;
+    if (m <= 0) {
+      // Water / submerged: deeper = lower elevation
+      e = Math.max(0, 8 + m * 0.25); // -1m → 7.75, -30m → 0.5
+    } else {
+      // Land: gentle ramp, clamp at 100
+      e = 8 + m * 0.55;
+    }
+    elev[i] = Math.min(100, Math.max(0, Math.round(e)));
+  }
+  return elev;
+}
+
+// ---------------------------------------------------------------------------
+// Resource-node auto-placement
+// ---------------------------------------------------------------------------
+const BERRY_VARIETIES = ["huckleberry", "salmonberry", "salal", "thimbleberry", "trailing blackberry"];
+const INVASIVE_KINDS  = ["scotchBroom", "himalayanBlackberry", "foxglove"];
+
+function autoPlaceResources(g, regionId) {
+  const { W, H, t } = g;
+  const nodes = [], plants = [];
+  let ni = 0, pi = 0;
+
+  // Spacing: every ~8 tiles for trees, ~20 for ore, ~12 for berry.
+  for (let y = 2; y < H - 2; y += 8) {
+    for (let x = 2; x < W - 2; x += 8) {
+      const tile = t[y * W + x];
+      if (tile === T.Forest) {
+        nodes.push({ id: `${regionId}-t${ni++}`, kind: "tree", x, y });
+        // Chance of a berry bush in the forest understorey.
+        if ((x + y) % 24 === 0) {
+          const v = BERRY_VARIETIES[(x * 3 + y) % BERRY_VARIETIES.length];
+          nodes.push({ id: `${regionId}-b${ni++}`, kind: "berryBush", x: x + 2, y: y + 1, variety: v });
+        }
+      } else if (tile === T.Hill || tile === T.Rock) {
+        if ((x + y) % 20 === 0) nodes.push({ id: `${regionId}-i${ni++}`, kind: "ironOre", x, y });
+        if ((x + y) % 20 === 10) nodes.push({ id: `${regionId}-s${ni++}`, kind: "stoneOre", x, y });
+      } else if (tile === T.Grass) {
+        // Sparse berry on grass edges near forest.
+        if ((x + y) % 32 === 4) {
+          const hasNearbyForest = [-1,0,1].some(dx => [-1,0,1].some(dy => {
+            const ni2 = (y+dy)*W+(x+dx);
+            return ni2>=0 && ni2<W*H && t[ni2]===T.Forest;
+          }));
+          if (hasNearbyForest) {
+            const v = BERRY_VARIETIES[(x + y * 2) % BERRY_VARIETIES.length];
+            nodes.push({ id: `${regionId}-b${ni++}`, kind: "berryBush", x, y, variety: v });
+          }
+        }
+      }
+    }
   }
 
-  const [S, Wd, N, E] = args.bbox.split(",").map(Number);
-  const W = parseInt(args.width, 10);
+  // Place a few invasive plants in disturbed/open sandy zones.
+  let plantCount = 0;
+  for (let y = 3; y < H - 3 && plantCount < 6; y += 15) {
+    for (let x = 3; x < W - 3 && plantCount < 6; x += 18) {
+      if (t[y * W + x] === T.Sand || t[y * W + x] === T.Grass) {
+        const kind = INVASIVE_KINDS[plantCount % INVASIVE_KINDS.length];
+        plants.push({ id: `${regionId}-inv${pi++}`, kind, x, y });
+        plantCount++;
+      }
+    }
+  }
 
-  // Keep tiles roughly square: scale height by the lat/lon metric ratio.
+  return { nodes, plants };
+}
+
+// ---------------------------------------------------------------------------
+// Named building kinds from OSM tags
+// ---------------------------------------------------------------------------
+function buildingKind(tags) {
+  const name = (tags.name || "").toLowerCase();
+  const use  = (tags.building || tags["building:use"] || "").toLowerCase();
+  if (name.includes("marine") || name.includes("research") || name.includes("science")) return "shop";
+  if (use === "commercial" || name.includes("shop") || name.includes("store") || name.includes("market")) return "shop";
+  if (name.includes("boat") || name.includes("marina") || use === "boathouse") return "boathouse";
+  if (name.includes("dock") || name.includes("ferry")) return "dock";
+  return "house";
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+async function main() {
+  const [S, W_lon, N, E] = args.bbox.split(",").map(Number);
+  const gridW = parseInt(args.width, 10);
+
+  // Keep tiles roughly square via lat/lon metric ratio.
   const midLat = (S + N) / 2;
+  const mPerLon = 111320 * Math.cos(midLat * Math.PI / 180);
   const mPerLat = 111320;
-  const mPerLon = 111320 * Math.cos((midLat * Math.PI) / 180);
-  const widthM = (E - Wd) * mPerLon;
+  const widthM  = (E - W_lon) * mPerLon;
   const heightM = (N - S) * mPerLat;
-  const H = Math.max(8, Math.round((W * heightM) / widthM));
+  const gridH = Math.max(8, Math.round(gridW * heightM / widthM));
 
+  console.log(`Grid: ${gridW} × ${gridH} tiles  bbox: ${S},${W_lon} → ${N},${E}`);
+
+  // --- OSM -------------------------------------------------------------------
+  console.log(args["osm-json"]
+    ? `  Loading OSM from ${args["osm-json"]}`
+    : "  Fetching OSM from Overpass…");
   const osm = args["osm-json"]
     ? JSON.parse(readFileSync(args["osm-json"], "utf8"))
-    : await fetchOsm(S, Wd, N, E);
+    : await fetchOsm(S, W_lon, N, E);
+  const ways  = (osm.elements || []).filter(e => e.type === "way");
+  const nodes_osm = (osm.elements || []).filter(e => e.type === "node");
+  console.log(`  ✓ ${ways.length} ways, ${nodes_osm.length} nodes`);
 
-  const lonSpan = E - Wd, latSpan = N - S;
+  const lonSpan = E - W_lon, latSpan = N - S;
   const toTile = (lon, lat) => ({
-    x: ((lon - Wd) / lonSpan) * (W - 1),
-    y: ((N - lat) / latSpan) * (H - 1), // north at top
+    x: ((lon - W_lon) / lonSpan) * (gridW - 1),
+    y: ((N - lat)    / latSpan) * (gridH - 1),
   });
-  // Overpass "geom" gives each way an inline geometry array of {lat,lon}.
-  const geom = (el) => (el.geometry || []).filter(Boolean).map((p) => toTile(p.lon, p.lat));
+  const geom = el => (el.geometry || []).filter(Boolean).map(p => toTile(p.lon, p.lat));
+  const tag  = (e, k) => e.tags && e.tags[k];
 
-  const g = makeGrid(W, H);
-  const ways = (osm.elements || []).filter((e) => e.type === "way");
-
-  const tag = (e, k) => e.tags && e.tags[k];
-
-  // 1. areas: forest, then inlet/lake water, then beaches
-  for (const e of ways)
-    if (tag(e, "natural") === "wood" || tag(e, "landuse") === "forest")
-      fillPolygon(g, geom(e), Tile.Forest);
-  for (const e of ways) if (tag(e, "natural") === "water") fillPolygon(g, geom(e), Tile.Water);
-  for (const e of ways) if (tag(e, "natural") === "beach") fillPolygon(g, geom(e), Tile.Sand);
-
-  // 2. coastline as the shoreline barrier (Sand)
-  for (const e of ways) if (tag(e, "natural") === "coastline") drawLine(g, geom(e), Tile.Sand, 1);
-
-  // 3. rivers/streams as water lines
-  for (const e of ways) if (tag(e, "waterway")) drawLine(g, geom(e), Tile.Water, 2);
-
-  // 4. flood the open ocean inland from the seed
-  if (args["sea-seed"]) {
-    const [sx, sy] = args["sea-seed"].split(",").map(Number);
-    floodOcean(g, sx, sy);
+  // --- DEM ------------------------------------------------------------------
+  let demGrid = null;
+  if (!args["no-dem"]) {
+    demGrid = await fetchDEM(S, W_lon, N, E, gridW, gridH).catch(err => {
+      console.warn("  ⚠ DEM fetch failed:", err.message, "— using BFS slope fallback.");
+      return null;
+    });
   }
 
-  // 5. roads on top
-  for (const e of ways) if (tag(e, "highway")) drawLine(g, geom(e), Tile.Road, 1);
+  // --- Rasterize OSM --------------------------------------------------------
+  const g = makeGrid(gridW, gridH);
 
-  // 6. soften shorelines
+  // 1. Forest / wood areas
+  for (const e of ways)
+    if (tag(e,"natural")==="wood" || tag(e,"landuse")==="forest")
+      fillPolygon(g, geom(e), T.Forest);
+
+  // 2. Water bodies (inland lakes, Grappler Inlet as a polygon, etc.)
+  for (const e of ways)
+    if (tag(e,"natural")==="water" || tag(e,"waterway")==="riverbank")
+      fillPolygon(g, geom(e), T.Water);
+
+  // 3. Beach / sand polygons
+  for (const e of ways)
+    if (tag(e,"natural")==="beach" || tag(e,"natural")==="sand")
+      fillPolygon(g, geom(e), T.Sand);
+
+  // 4. Campground / campsite → Grass with a marker we keep
+  for (const e of ways)
+    if (tag(e,"leisure")==="campsite" || tag(e,"leisure")==="campground")
+      fillPolygon(g, geom(e), T.Grass); // stays grass, spawn players here
+
+  // 5. Coastline as a sand shoreline barrier
+  for (const e of ways)
+    if (tag(e,"natural")==="coastline")
+      drawLine(g, geom(e), T.Sand, 1);
+
+  // 6. Waterways as water lines (rivers, streams, the main inlet as a way)
+  for (const e of ways) {
+    const ww = tag(e, "waterway");
+    if (ww) {
+      const thickness = ww === "river" ? 3 : ww === "stream" ? 2 : 1;
+      drawLine(g, geom(e), T.Water, thickness);
+    }
+  }
+
+  // 7. Flood open ocean from the sea seed (flood-fill from the seed tile).
+  if (args["sea-seed"]) {
+    const [sx, sy] = args["sea-seed"].split(",").map(Number);
+    floodFill(g, sx, sy, T.Grass, T.Water);
+  }
+
+  // 8. Roads (on top of everything — they're authoritative).
+  for (const e of ways) {
+    const hw = tag(e, "highway");
+    if (!hw) continue;
+    // Skip footpaths and cycleway only; keep everything motorised.
+    if (hw === "footway" || hw === "path" || hw === "cycleway" || hw === "steps") continue;
+    const thickness = hw === "primary" || hw === "secondary" ? 2 : 1;
+    drawLine(g, geom(e), T.Road, thickness);
+  }
+
+  // 9. Docks / piers / breakwaters
+  for (const e of ways) {
+    const mm = tag(e, "man_made");
+    if (mm === "pier" || mm === "breakwater" || mm === "jetty")
+      drawLine(g, geom(e), T.Dock, 2);
+  }
+
+  // 10. Soften shorelines
   beachify(g);
 
-  // 7. buildings -> rectangles (footprint bounding boxes)
+  // 11. Apply DEM: upgrade grass tiles with real elevation to Hill/Rock.
+  if (demGrid) {
+    for (let i = 0; i < gridW * gridH; i++) {
+      if (g.t[i] === T.Grass || g.t[i] === T.Forest) {
+        const seaRef = 0; // already relative
+        const m = demGrid[i];
+        if (m > 80 && g.t[i] === T.Grass)  g.t[i] = T.Hill;
+        if (m > 150 && g.t[i] !== T.Water) g.t[i] = T.Rock;
+      }
+    }
+  }
+
+  // --- Buildings -----------------------------------------------------------
   const buildings = [];
   let bi = 0;
   for (const e of ways) {
     if (!tag(e, "building")) continue;
     const pts = geom(e);
     if (pts.length < 3) continue;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
     for (const p of pts) {
-      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
-      maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+      minX = Math.min(minX,p.x); minY = Math.min(minY,p.y);
+      maxX = Math.max(maxX,p.x); maxY = Math.max(maxY,p.y);
     }
-    const x = Math.max(0, Math.round(minX)), y = Math.max(0, Math.round(minY));
-    const w = Math.max(1, Math.min(g.W - x, Math.round(maxX - minX) || 1));
-    const h = Math.max(1, Math.min(g.H - y, Math.round(maxY - minY) || 1));
-    buildings.push({ id: `${args.id}-b${bi++}`, kind: "house", x, y, w, h, hp: 100, maxHp: 100 });
+    const bx = Math.max(0, Math.round(minX));
+    const by = Math.max(0, Math.round(minY));
+    const bw = Math.max(1, Math.min(gridW - bx, Math.round(maxX - minX) || 1));
+    const bh = Math.max(1, Math.min(gridH - by, Math.round(maxY - minY) || 1));
+    buildings.push({
+      id: `${args.id}-b${bi++}`,
+      kind: buildingKind(e.tags || {}),
+      x: bx, y: by, w: bw, h: bh, hp: 100, maxHp: 100,
+    });
   }
 
+  // --- Spawn ---------------------------------------------------------------
+  // Default: find a road tile near the middle of the map (= town centre).
+  let spawnX = Math.floor(gridW / 2), spawnY = Math.floor(gridH / 2);
+  for (let r = 0; r < Math.max(gridW, gridH); r++) {
+    let found = false;
+    for (let dy = -r; dy <= r && !found; dy++) {
+      for (let dx = -r; dx <= r && !found; dx++) {
+        if (Math.max(Math.abs(dx),Math.abs(dy)) !== r) continue;
+        const x = spawnX + dx, y = spawnY + dy;
+        if (x<0||y<0||x>=gridW||y>=gridH) continue;
+        if (g.t[y*gridW+x] === T.Road || g.t[y*gridW+x] === T.Grass) {
+          spawnX = x; spawnY = y; found = true;
+        }
+      }
+    }
+    if (found) break;
+  }
+
+  // --- Game elevation -------------------------------------------------------
+  const elevation = demToGameElevation(demGrid, Array.from(g.t), gridW, gridH);
+
+  // --- Resource nodes + invasive plants ------------------------------------
+  const { nodes: resourceNodes, plants } = autoPlaceResources(g, args.id);
+
+  // --- Output JSON ----------------------------------------------------------
   const out = {
     id: args.id,
     name: args.name || args.id,
-    width: W,
-    height: H,
-    tiles: g.t,
+    width: gridW,
+    height: gridH,
+    tiles: Array.from(g.t),
+    ...(elevation ? { elevation } : {}),
     buildings,
-    spawn: { x: Math.floor(W / 2), y: Math.floor(H / 3) },
-    travelNodes: [],
+    spawn: { x: spawnX, y: spawnY },
+    travelNodes: [],      // derived dynamically at runtime by applyImported()
+    vehicles: [],         // place by hand after first look
+    resourceNodes,
+    plants,
   };
 
-  mkdirSync(dirname(args.out), { recursive: true });
-  writeFileSync(args.out, JSON.stringify(out));
+  const outPath = resolve(args.out);
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, JSON.stringify(out, null, 0)); // compact — it's big
   console.log(
-    `Wrote ${args.out}: ${W}x${H} tiles from ${ways.length} OSM ways, ` +
-      `${buildings.length} buildings.\n` +
-      `Next: set spawn + travelNodes, then register it in shared/map.ts buildRegions().`,
+    `✓ Wrote ${outPath}  (${gridW}×${gridH} = ${(gridW*gridH/1000).toFixed(0)}k tiles, ` +
+    `${buildings.length} buildings, ${resourceNodes.length} resource nodes, ` +
+    `${plants.length} invasive plants)`
   );
+
+  // Rewrite shared/regions/index.ts to import this JSON and export it.
+  updateRegionIndex(outPath, args.id, args.name || args.id);
+
+  console.log("\nNext steps:");
+  console.log("  1. git pull in your Codespace, then npm run dev");
+  console.log("  2. Walk around, note the spawn, vehicles, and travel-link tiles");
+  console.log("  3. Edit travelNodes / vehicles / spawn directly in the JSON if needed");
+  console.log("  4. Run for the other region (Anacla) to get the full world");
 }
 
-main().catch((err) => {
-  console.error(err.message || err);
-  process.exit(1);
-});
+// ---------------------------------------------------------------------------
+// Rewrite shared/regions/index.ts to include this and any other already-
+// imported region JSONs found alongside it.
+// ---------------------------------------------------------------------------
+function updateRegionIndex(outPath, id, _name) {
+  const dir = dirname(outPath);
+  const indexPath = join(dir, "index.ts");
+
+  // Discover all region JSONs present alongside the index.
+  const candidates = ["bamfield", "anacla", id].filter((v, i, a) => a.indexOf(v) === i);
+  const present = candidates.filter(rid => existsSync(join(dir, `${rid}.json`)));
+
+  const lines = [
+    "// AUTO-GENERATED by tools/import-osm.mjs — do not edit by hand.",
+    "import type { RegionData } from \"../map\";",
+    "",
+    ...present.map(f => {
+      const rid = f.replace(".json","");
+      return `import ${rid}Data from "./${f}" assert { type: "json" };`;
+    }),
+    "",
+    "export const IMPORTED_REGIONS: RegionData[] = [",
+    ...present.map(f => `  ${f.replace(".json","")}Data as unknown as RegionData,`),
+    "];",
+  ];
+  writeFileSync(indexPath, lines.join("\n") + "\n");
+  console.log(`✓ Updated ${indexPath}  (regions: ${present.map(f=>f.replace(".json","")).join(", ")})`);
+}
+
+main().catch(err => { console.error(err); process.exit(1); });

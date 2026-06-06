@@ -1,4 +1,5 @@
 import { BuildingState, InvasiveKind, ResourceKind, Tile, TravelNode, VehicleKind, WorldMap } from "./protocol";
+import { IMPORTED_REGIONS } from "./regions";
 
 // Where a driveable vehicle starts life in a region.
 export interface VehicleSpawn {
@@ -474,7 +475,153 @@ export function buildRegions(): RegionDef[] {
     ],
   };
 
-  return [bamfield, anacla];
+  return applyImported([bamfield, anacla]);
+}
+
+// ---------------------------------------------------------------------------
+// Real-geography overlay (OSM + terrain DEM)
+// ---------------------------------------------------------------------------
+// If the importer has produced region JSON (listed in ./regions), use it in
+// place of the handcrafted version of that region. The imported map can be a
+// very different SIZE, so we re-derive the cross-region travel links from the
+// new geometry instead of trusting the handcrafted coordinates.
+function applyImported(handcrafted: RegionDef[]): RegionDef[] {
+  if (!IMPORTED_REGIONS.length) return handcrafted;
+
+  const byId = new Map(handcrafted.map((r) => [r.id, r]));
+  for (const data of IMPORTED_REGIONS) {
+    const imported = regionFromData(data);
+    const base = byId.get(data.id);
+    byId.set(data.id, {
+      ...imported,
+      // The importer auto-generates these from the tile grid; if it left any
+      // empty, fall back to the handcrafted placements for that region.
+      vehicles: imported.vehicles.length ? imported.vehicles : base?.vehicles ?? [],
+      resourceNodes: imported.resourceNodes.length
+        ? imported.resourceNodes
+        : base?.resourceNodes ?? [],
+      plants: imported.plants.length ? imported.plants : base?.plants ?? [],
+      travelNodes: [], // filled in below once every region's geometry is known
+    });
+  }
+
+  const regions = [...byId.values()];
+  // Second pass: now that all regions exist, link each to the "other" one.
+  for (const r of regions) {
+    const data = IMPORTED_REGIONS.find((d) => d.id === r.id);
+    if (data && data.travelNodes.length) {
+      r.travelNodes = data.travelNodes; // importer/author supplied explicit links
+      continue;
+    }
+    const other = regions.find((o) => o.id !== r.id);
+    if (other) r.travelNodes = deriveTravelNodes(r, other);
+  }
+  return regions;
+}
+
+// Find a walkable (dry, non-water) tile nearest to a target, spiralling out.
+function nearestWalkable(map: WorldMap, tx: number, ty: number): { x: number; y: number } {
+  const { width: w, height: h, tiles } = map;
+  for (let r = 0; r < Math.max(w, h); r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const x = tx + dx;
+        const y = ty + dy;
+        if (x < 0 || y < 0 || x >= w || y >= h) continue;
+        if (tiles[y * w + x] !== Tile.Water) return { x, y };
+      }
+    }
+  }
+  return { x: Math.floor(w / 2), y: Math.floor(h / 2) };
+}
+
+// Build bus / gate / sea links from one region's geometry to another. The sea
+// node spans the region's southern open-water edge (boat across); the gate sits
+// at the northernmost road tile (hike out); the bus waits at the spawn (market).
+function deriveTravelNodes(from: RegionDef, to: RegionDef): TravelNode[] {
+  const map = from.map;
+  const { width: w, height: h, tiles } = map;
+  const nodes: TravelNode[] = [];
+
+  // Destination foot arrival: a dry tile near the other region's spawn.
+  const footTo = nearestWalkable(to.map, to.spawn.x, to.spawn.y);
+  // Destination boat arrival: open water near the other region's southern edge.
+  const seaTo = openWaterAnchor(to.map);
+
+  // Bus at this region's spawn.
+  nodes.push({
+    id: `${from.id}-bus`,
+    kind: "bus",
+    x: from.spawn.x,
+    y: from.spawn.y,
+    w: 2,
+    h: 1,
+    label: `Catch the bus to ${to.name}`,
+    toRegion: to.id,
+    toSpawn: footTo,
+  });
+
+  // Gate at the northernmost stretch of road.
+  let gate: { x: number; y: number } | null = null;
+  for (let y = 0; y < h && !gate; y++) {
+    for (let x = 0; x < w; x++) {
+      if (tiles[y * w + x] === Tile.Road) { gate = { x, y }; break; }
+    }
+  }
+  if (gate) {
+    nodes.push({
+      id: `${from.id}-gate`,
+      kind: "gate",
+      x: gate.x,
+      y: gate.y,
+      w: 1,
+      h: 1,
+      label: `Hike the road to ${to.name}`,
+      toRegion: to.id,
+      toSpawn: footTo,
+    });
+  }
+
+  // Sea node spanning the southern open-water band (drive a boat across).
+  const band = southernWaterBand(map);
+  if (band) {
+    nodes.push({
+      id: `${from.id}-sea`,
+      kind: "sea",
+      x: band.x,
+      y: band.y,
+      w: band.w,
+      h: band.h,
+      label: `Sail the open water round to ${to.name}`,
+      toRegion: to.id,
+      toSpawn: seaTo,
+    });
+  }
+  return nodes;
+}
+
+// A patch of open water near a region's southern edge (where boats arrive).
+function openWaterAnchor(map: WorldMap): { x: number; y: number } {
+  const { width: w, height: h, tiles } = map;
+  for (let y = h - 1; y >= 0; y--) {
+    for (let x = Math.floor(w / 2); x >= 0; x--) {
+      if (tiles[y * w + x] === Tile.Water) return { x, y: Math.max(0, y - 1) };
+    }
+  }
+  return { x: Math.floor(w / 2), y: h - 2 };
+}
+
+// The contiguous water band along the southern edge, as a travel rectangle.
+function southernWaterBand(map: WorldMap): { x: number; y: number; w: number; h: number } | null {
+  const { width: w, height: h, tiles } = map;
+  const bottom = h - 1;
+  let minX = w, maxX = -1;
+  for (let x = 0; x < w; x++) {
+    if (tiles[bottom * w + x] === Tile.Water) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); }
+  }
+  if (maxX < 0) return null;
+  return { x: minX, y: Math.max(0, h - 3), w: maxX - minX + 1, h: 3 };
 }
 
 export const DEFAULT_REGION = "bamfield";
