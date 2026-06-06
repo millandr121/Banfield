@@ -404,9 +404,10 @@ function generateAnaclaMap(): WorldMap {
   // West-facing exposure: sea from y=85 to map bottom.
   rect(tiles, 0, 85, 22, H - 1, Tile.Water);
 
-  // --- PACHENA RIVER (meanders from NE into the bay, around x=240) ---
+  // --- PACHENA RIVER (meanders from north into the bay, at x≈195) ---
+  // Village is on the EAST bank; river is west of the road.
   for (let y = 0; y < 90; y++) {
-    const rx = 240 + Math.round(10 * Math.sin(y * 0.10));
+    const rx = 195 + Math.round(8 * Math.sin(y * 0.10));
     for (let x = rx - 3; x <= rx + 3; x++) {
       if (x >= 0 && x < W) tiles[y * W + x] = Tile.Water;
     }
@@ -416,9 +417,9 @@ function generateAnaclaMap(): WorldMap {
   applyLandcover(tiles, W, H);
 
   // Anacla village is a settled Huu-ay-aht community — clear the forest
-  // for the village strip along the road so houses aren't in trees.
+  // for the village strip east of the river so houses aren't in trees.
   for (let y = 15; y <= 72; y++)
-    for (let x = 168; x <= 244; x++)
+    for (let x = 200; x <= 250; x++)
       if (tiles[y * W + x] === Tile.Forest || tiles[y * W + x] === Tile.Hill)
         tiles[y * W + x] = Tile.Grass;
 
@@ -435,44 +436,49 @@ function generateAnaclaMap(): WorldMap {
     }
   }
 
-  // --- ROAD (Bamfield Main, arriving from north at x=220) ---
-  const ROAD_X = 220;
-  vLine(tiles, ROAD_X, 0, 60, Tile.Road);
-  // Curves west along the village then south to the campground:
-  for (let x = ROAD_X; x >= 165; x--) setTile(tiles, x, 60, Tile.Road);
-  vLine(tiles, 165, 60, 78, Tile.Road); // stop at y=78 (water starts ~y=81 at x=165)
-  // Short spur east from village to boat launch:
-  hLine(tiles, ROAD_X, ROAD_X + 18, 50, Tile.Road);
+  // --- ROAD (Bamfield Main, arriving from north at x=215) ---
+  // Road is east of the Pachena River (which is at x≈195).
+  const ROAD_X = 215;
+  vLine(tiles, ROAD_X, 0, 65, Tile.Road);
+  // Curves west toward the bay then south to the campground:
+  for (let x = ROAD_X; x >= 165; x--) setTile(tiles, x, 65, Tile.Road);
+  vLine(tiles, 165, 65, 78, Tile.Road); // stop at y=78 (bay waterline ~y=81 at x=165)
 
   clearRoadMargins(tiles, 2, W, H);
 
-  // --- ANACLA DOCK (boat launch on Pachena River/bay NE corner) ---
-  hLine(tiles, ROAD_X + 10, ROAD_X + 20, 50, Tile.Dock);
-  hLine(tiles, ROAD_X + 10, ROAD_X + 20, 51, Tile.Dock);
+  // --- RIVER DOCK (boat landing on the Pachena River, east bank) ---
+  hLine(tiles, 202, 210, 48, Tile.Dock);
+  hLine(tiles, 202, 210, 49, Tile.Dock);
 
   return worldMap(beachify(tiles));
 }
 
 function anaclaBuildings(): BuildingState[] {
   return mkBuildings("an", [
-    // ---- ANACLA VILLAGE (NE shore, along Bamfield Main) ----
-    { kind:"house",     x:210, y: 22, w:3, h:2, hp:100 },
-    { kind:"house",     x:216, y: 22, w:3, h:2, hp:100 },
-    { kind:"house",     x:224, y: 22, w:3, h:2, hp:100 },
-    { kind:"house",     x:210, y: 30, w:3, h:2, hp:100 },
-    { kind:"house",     x:216, y: 30, w:3, h:2, hp:100 },
-    { kind:"house",     x:224, y: 30, w:3, h:2, hp:100 },
-    { kind:"house",     x:210, y: 38, w:3, h:2, hp:100 },
-    { kind:"house",     x:216, y: 38, w:3, h:2, hp:100 },
-    { kind:"house",     x:210, y: 46, w:3, h:2, hp:100 },
-    { kind:"house",     x:216, y: 46, w:3, h:2, hp:100 },
-    // Village store / bus stop:
-    { kind:"shop",      x:204, y: 56, w:5, h:4, hp:160 },
-    { kind:"house",     x:196, y: 58, w:3, h:2, hp:100 },
-    { kind:"house",     x:188, y: 60, w:3, h:2, hp:100 },
-    { kind:"house",     x:180, y: 62, w:3, h:2, hp:100 },
-    { kind:"house",     x:172, y: 63, w:3, h:2, hp:100 },
-    // ---- PACHENA BAY CAMPGROUND (above the high-tide line, y≈72-78) ----
+    // ---- ANACLA VILLAGE (east bank of Pachena River, along Bamfield Main) ----
+    // Houses on both sides of the road:
+    { kind:"house",     x:208, y: 18, w:3, h:2, hp:100 },
+    { kind:"house",     x:218, y: 18, w:3, h:2, hp:100 },
+    { kind:"house",     x:226, y: 18, w:3, h:2, hp:100 },
+    { kind:"house",     x:208, y: 26, w:3, h:2, hp:100 },
+    { kind:"house",     x:218, y: 26, w:3, h:2, hp:100 },
+    { kind:"house",     x:226, y: 26, w:3, h:2, hp:100 },
+    { kind:"house",     x:208, y: 34, w:3, h:2, hp:100 },
+    { kind:"house",     x:218, y: 34, w:3, h:2, hp:100 },
+    { kind:"house",     x:226, y: 34, w:3, h:2, hp:100 },
+    { kind:"house",     x:208, y: 42, w:3, h:2, hp:100 },
+    { kind:"house",     x:218, y: 42, w:3, h:2, hp:100 },
+    // Gas bar (sells fuel, east of road):
+    { kind:"shop",      x:222, y: 50, w:4, h:3, hp:180 },
+    // House-based goods seller (west side, along road):
+    { kind:"house",     x:208, y: 52, w:3, h:2, hp:100 },
+    // Home ice seller (small house):
+    { kind:"house",     x:208, y: 58, w:3, h:2, hp:100 },
+    // Bus stop area / home goods seller (faces road):
+    { kind:"house",     x:218, y: 58, w:3, h:2, hp:100 },
+    // Boat seller on the river bank (west of road, near river dock):
+    { kind:"boathouse", x:204, y: 43, w:5, h:4, hp:160 },
+    // ---- PACHENA BAY CAMPGROUND (above the high-tide line, y≈74-78) ----
     { kind:"house",     x:155, y: 74, w:3, h:2, hp: 80 }, // shelter
     { kind:"house",     x:162, y: 74, w:3, h:2, hp: 80 },
     { kind:"boathouse", x:148, y: 76, w:4, h:3, hp:120 }, // boat launch
@@ -688,17 +694,17 @@ export function buildRegions(): RegionDef[] {
     name: "Anacla / Pachena Bay",
     map: generateAnaclaMap(),
     buildings: anaclaBuildings(),
-    spawn: { x: 222, y: 6 }, // north road arrival from Bamfield
+    spawn: { x: 217, y: 6 }, // north road arrival from Bamfield
     travelNodes: [
       {
         id: "an-bus", kind: "bus",
-        x: 206, y: 58, w: 4, h: 2,
+        x: 214, y: 60, w: 4, h: 2,
         label: "Catch the bus back to Bamfield",
         toRegion: "bamfield", toSpawn: { x: 183, y: 72 },
       },
       {
         id: "an-gate", kind: "gate",
-        x: 220, y: 0, w: 2, h: 1,
+        x: 215, y: 0, w: 2, h: 1,
         label: "Drive the road back to Bamfield",
         toRegion: "bamfield", toSpawn: { x: 185, y: 8 },
       },
@@ -711,8 +717,8 @@ export function buildRegions(): RegionDef[] {
       },
     ],
     vehicles: [
-      { id:"an-car-1",  kind:"car",  x:222, y: 25 }, // on Bamfield Main
-      { id:"an-car-2",  kind:"car",  x:200, y: 62 }, // near the village store
+      { id:"an-car-1",  kind:"car",  x:215, y: 25 }, // on Bamfield Main
+      { id:"an-car-2",  kind:"car",  x:215, y: 50 }, // near the gas bar
       { id:"an-boat-1", kind:"boat", x: 80, y:145 }, // Pachena Bay
       { id:"an-boat-2", kind:"boat", x:130, y:148 }, // bay, mid-water
       { id:"an-boat-3", kind:"boat", x:  8, y:145 }, // Keeha / open Pacific

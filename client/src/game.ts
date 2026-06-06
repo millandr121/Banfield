@@ -59,6 +59,7 @@ export class Game {
   private chatOpen = false; // is the chat text box visible?
   private craftOpen = false; // is the crafting panel visible?
   private craftSelected = 0; // highlighted recipe index
+  private mapOpen = false;   // is the full-region map overlay open?
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -139,6 +140,13 @@ export class Game {
           this.net.send({ t: "sleep" });
         } else if (k === "t") {
           this.net.send({ t: "travel" });
+        } else if (k === "m") {
+          this.mapOpen = !this.mapOpen;
+          e.preventDefault();
+        } else if (k === "escape") {
+          this.mapOpen = false;
+          this.craftOpen = false;
+          e.preventDefault();
         } else if (k === "c") {
           this.craftOpen = !this.craftOpen;
           this.craftSelected = 0;
@@ -245,6 +253,7 @@ export class Game {
     this.drawHarvestPrompt(this.snap.resourceNodes, this.snap.plants, me);
     this.drawFishPrompt(me);
     if (this.craftOpen) this.drawCraftPanel(me);
+    if (this.mapOpen) this.drawMapOverlay(me);
   }
 
   // Charge meter under your feet while you wind up a swing.
@@ -540,6 +549,85 @@ export class Game {
       }
       void needsStr; // suppress unused
     }
+  }
+
+  // Full-region map overlay — press M to open/close.
+  private drawMapOverlay(me?: PlayerState) {
+    if (!this.map) return;
+    const ctx = this.ctx;
+    const map = this.map;
+    const mw = map.width;
+    const mh = map.height;
+
+    // Scale so the whole map fits inside 80% of the screen.
+    const maxW = Math.floor(this.canvas.width  * 0.82);
+    const maxH = Math.floor(this.canvas.height * 0.82);
+    const scale = Math.min(Math.floor(maxW / mw), Math.floor(maxH / mh), 3) || 1;
+    const pw = mw * scale;  // pixel width of drawn map
+    const ph = mh * scale;  // pixel height
+    const ox = Math.floor((this.canvas.width  - pw) / 2); // top-left corner
+    const oy = Math.floor((this.canvas.height - ph) / 2);
+
+    // Dim background.
+    ctx.fillStyle = "rgba(5,15,25,0.88)";
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+    // Draw tiles.
+    for (let y = 0; y < mh; y++) {
+      for (let x = 0; x < mw; x++) {
+        const tile = map.tiles[y * mw + x] as Tile;
+        ctx.fillStyle = TILE_COLORS[tile] ?? "#333";
+        ctx.fillRect(ox + x * scale, oy + y * scale, scale, scale);
+      }
+    }
+
+    // Buildings — small white squares.
+    if (this.snap) {
+      ctx.fillStyle = "#e0d8c8";
+      for (const b of this.snap.buildings) {
+        ctx.fillRect(ox + b.x * scale, oy + b.y * scale,
+          Math.max(scale, b.w * scale), Math.max(scale, b.h * scale));
+      }
+
+      // Travel nodes — coloured marks.
+      for (const n of this.travelNodes) {
+        ctx.fillStyle = n.kind === "sea" ? "#00bcd4" : n.kind === "bus" ? "#ff9800" : "#8bc34a";
+        ctx.fillRect(ox + n.x * scale - 1, oy + n.y * scale - 1, n.w * scale + 2, Math.max(2, n.h * scale + 2));
+      }
+
+      // Other players — cyan dots.
+      ctx.fillStyle = "#00e5ff";
+      for (const p of this.snap.players) {
+        if (p.id === this.myId) continue;
+        ctx.fillRect(ox + Math.round(p.x) * scale - 1, oy + Math.round(p.y) * scale - 1, scale + 2, scale + 2);
+      }
+    }
+
+    // Player position — bright white cross.
+    if (me) {
+      const px = ox + Math.round(me.x) * scale;
+      const py = oy + Math.round(me.y) * scale;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(px - 1, py - scale, 3, scale * 3);
+      ctx.fillRect(px - scale, py - 1, scale * 3, 3);
+    }
+
+    // Border.
+    ctx.strokeStyle = "#00acc1";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(ox - 1, oy - 1, pw + 2, ph + 2);
+
+    // Title and hint.
+    ctx.font = "bold 16px system-ui";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#eaf2f8";
+    ctx.fillText(this.regionName, this.canvas.width / 2, oy - 10);
+
+    // Legend strip below map.
+    const legendY = oy + ph + 18;
+    ctx.font = "12px system-ui";
+    ctx.fillStyle = "#aabbcc";
+    ctx.fillText("■ You   ■ Buildings   ■ Bus stop   ■ Sea route   ■ Gate   — Press M or Esc to close", this.canvas.width / 2, legendY);
   }
 
   private drawFishPrompt(me?: PlayerState) {

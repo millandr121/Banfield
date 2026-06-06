@@ -103,7 +103,6 @@ const CAR_OFFROAD_SPEED = 3.0; // sluggish on grass/sand
 const BOAT_SPEED = 5.5; // tiles/sec on water
 const VEHICLE_BOARD_RANGE = 1.6; // how close you must be to board
 const VEHICLE_MAX_HP = 200;
-const TIDE_SWEEP = 1.4; // how fast a driverless boat/car drifts when afloat
 const RUST_START_MS = 20 * 60 * 1000; // idle this long before rusting
 const RUST_DPS = 200 / (40 * 60); // destroys a full-HP vehicle in ~40 min
 const COLLISION_RANGE = 0.85; // tiles; how close before a moving vehicle hits
@@ -612,13 +611,7 @@ export class GameRoom {
           if (sea) { this.transferBoat(v, driver, sea.toRegion, sea.toSpawn); continue; }
         }
       } else {
-        // Driverless: a boat (or a car the tide has reached) drifts on the swell.
-        if (this.depthAt(region.map, v.x, v.y, waterline) > 1) {
-          const nx = v.x + Math.sin(now / 1700 + v.y) * TIDE_SWEEP * dt;
-          const ny = v.y + TIDE_SWEEP * 0.5 * dt;
-          if (this.vehicleCanGo(v, region.map, nx, v.y, waterline)) v.x = nx;
-          if (this.vehicleCanGo(v, region.map, v.x, ny, waterline)) v.y = ny;
-        }
+        // Driverless boats stay put — they're moored, not adrift.
       }
 
       // Collision: a moving vehicle above the danger threshold can hurt players.
