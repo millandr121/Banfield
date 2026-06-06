@@ -527,7 +527,7 @@ export class GameRoom {
     this.updateLiveFish(now);
     this.updateHunger(dt);
     this.updateSleep(dt);
-    this.updatePlants(now);
+    this.updatePlants(now, waterline);
     this.updateCampfires(now);
     this.recomputeRanks(now);
     this.maybeSpawn(now, waterline);
@@ -902,8 +902,14 @@ export class GameRoom {
     });
   }
 
-  private updatePlants(now: number) {
+  private updatePlants(now: number, waterline: number) {
     for (const pl of this.plants.values()) {
+      // Plants can't survive submerged — high tide kills them.
+      const plRegion = this.regions.get(pl.region);
+      if (plRegion && this.depthAt(plRegion.map, pl.x, pl.y, waterline) > 0) {
+        this.plants.delete(pl.id);
+        continue;
+      }
       // Dormant (recently cut-back) plants wait, then re-emerge.
       if (pl.dormantUntil !== null) {
         if (now >= pl.dormantUntil) {
@@ -1685,6 +1691,55 @@ export class GameRoom {
           continue;
         }
 
+        // Orca: curious, stay in deep water, rare capsize.
+        if (c.kind === "orca") {
+          const depth = this.depthAt(region.map, c.x, c.y, waterline);
+          if (depth < DEPTH_DEEP) {
+            // Too shallow — steer back toward deeper water (south/center).
+            c.y += 0.8 * dt;
+            c.x += (region.map.width * 0.5 - c.x) * 0.05 * dt;
+          } else {
+            // Look for the nearest boat within curious range.
+            let nearBoat: import("../shared/protocol").VehicleState | null = null;
+            let nearDist = Infinity;
+            for (const v of this.vehicles.values()) {
+              if (v.kind !== "boat" || v.region !== c.region) continue;
+              const d = Math.hypot(v.x - c.x, v.y - c.y);
+              if (d < 22 && d < nearDist) { nearBoat = v; nearDist = d; }
+            }
+            if (nearBoat && nearDist > 5) {
+              // Drift toward the boat slowly — curious approach.
+              const dx = nearBoat.x - c.x, dy = nearBoat.y - c.y, l = Math.hypot(dx, dy) || 1;
+              c.x += (dx / l) * 1.0 * dt;
+              c.y += (dy / l) * 1.0 * dt;
+            } else if (nearBoat && nearDist <= 5) {
+              // Very close — very rare capsize chance (~0.3% per second).
+              if (Math.random() < 0.003 * dt) {
+                const driver = nearBoat.driverId ? this.players.get(nearBoat.driverId) : null;
+                const s2 = driver ? this.sessionFor(driver.id) : null;
+                if (s2) this.send(s2.ws, { t: "log", msg: "An orca surfaced under your boat and capsized it!" });
+                if (driver) {
+                  driver.vehicleId = null;
+                  driver.x = nearBoat.x + (Math.random() - 0.5) * 5;
+                  driver.y = nearBoat.y + (Math.random() - 0.5) * 5;
+                }
+                nearBoat.driverId = null;
+                nearBoat.hp = Math.max(0, nearBoat.hp - 120);
+                this.broadcastLog(`An orca capsized a boat in the ${region.name}!`);
+              }
+              // Wander nearby.
+              c.x += Math.sin(c.y * 0.6 + now * 0.0006) * 1.2 * dt;
+              c.y += Math.cos(c.x * 0.5 + now * 0.0005) * 1.2 * dt;
+            } else {
+              // No boats in range — gentle patrol.
+              c.x += Math.sin(c.y * 0.5 + now * 0.0004) * 1.5 * dt;
+              c.y += Math.cos(c.x * 0.4 + now * 0.0003) * 1.2 * dt;
+            }
+          }
+          if (c.y > region.map.height || c.y < 0) this.creatures.delete(c.id);
+          continue;
+        }
+
         // Whales: drift slowly, exit off the south edge.
         c.x += Math.sin(c.y + c.x) * 0.15 * dt;
         c.y += 0.35 * dt;
@@ -1741,8 +1796,8 @@ export class GameRoom {
     // Neutral creatures (whales, seals, otters) never attack.
     if (isNeutral(c.kind)) return null;
     const waterline = this.currentWaterline(Date.now());
-    // Sharks & orca only pursue players in water deep enough for them.
-    const deepPredator = c.kind === "dogfish" || c.kind === "sixgill" || c.kind === "orca";
+    // Sharks only pursue players in water deep enough for them.
+    const deepPredator = c.kind === "dogfish" || c.kind === "sixgill";
     const landPred = isLandPredator(c.kind);
     const creatureDepth = this.depthAt(region.map, c.x, c.y, waterline);
     // Cougars are stealthy — longer detection range but only charge at very close range.
@@ -2213,7 +2268,7 @@ function nextStage(stage: PlantStage): PlantStage {
 }
 
 function isNeutral(kind: CreatureKind): boolean {
-  return kind === "humpback" || kind === "greywhale"
+  return kind === "humpback" || kind === "greywhale" || kind === "orca"
       || kind === "seal" || kind === "sealLion" || kind === "seaOtter"
       || kind === "deer" || kind === "elk" || kind === "grouse";
 }

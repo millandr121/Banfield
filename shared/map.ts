@@ -759,7 +759,7 @@ export function buildRegions(): RegionDef[] {
         id: "bf-sea", kind: "sea",
         x: 40, y: 168, w: 200, h: 10,
         label: "Sail south out of the inlet round to Pachena Bay",
-        toRegion: "anacla", toSpawn: { x: 90, y: 165 },
+        toRegion: "anacla", toSpawn: { x: 145, y: 145 }, // inside Pachena Bay, not in the sea zone
       },
     ],
     vehicles: [
@@ -836,7 +836,7 @@ export function buildRegions(): RegionDef[] {
         id: "an-sea", kind: "sea",
         x: 0, y: 158, w: 150, h: 22,
         label: "Sail out the bay and round the coast to Bamfield",
-        toRegion: "bamfield", toSpawn: { x: 90, y: 165 },
+        toRegion: "bamfield", toSpawn: { x: 90, y: 155 }, // Barkley Sound, south of inlet
       },
     ],
     vehicles: [

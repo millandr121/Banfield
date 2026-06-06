@@ -641,6 +641,7 @@ export class Game {
 
   private drawPlants(plants: PlantState[]) {
     for (const pl of plants) {
+      if (this.clientDepthAt(pl.x, pl.y) > 0) continue; // don't render submerged plants
       const { sx, sy } = this.toScreen(pl.x + 0.5, pl.y + 0.5);
       drawPlantSprite(this.ctx, pl, sx, sy);
     }
