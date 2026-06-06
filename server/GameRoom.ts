@@ -2,6 +2,7 @@ import {
   Appearance,
   BuildingState,
   CampfireState,
+  FurnaceState,
   COOK_MAP,
   CRAFT_RECIPES,
   ClientMessage,
@@ -216,6 +217,7 @@ export class GameRoom {
   private resourceNodes = new Map<string, ResourceNode>();
   private plants = new Map<string, PlantState>();
   private campfires = new Map<string, CampfireState>();
+  private furnaces  = new Map<string, FurnaceState>();
   // playerId → timestamp when they cast their line (null = not fishing)
   private fishingStates = new Map<string, number>();
   // Transient knockback impulses by entity id (players + creatures).
@@ -252,6 +254,10 @@ export class GameRoom {
         this.plants.set(pl.id, this.mkPlant(pl, def.id, now));
       }
     }
+    // Pre-place the forge at Ostrom's Gas Bar in Bamfield.
+    this.furnaces.set("forge-ostroms", { id: "forge-ostroms", region: "bamfield", x: 191, y: 70 });
+    // Pre-place a forge at the Anacla gas bar too.
+    this.furnaces.set("forge-anacla",  { id: "forge-anacla",  region: "anacla",   x: 223, y: 52 });
   }
 
   private mkNode(def: ResourceNodeDef, regionId: string): ResourceNode {
@@ -930,6 +936,30 @@ export class GameRoom {
       return;
     }
 
+    if (recipeId === "furnace") {
+      const id = `forge${this.idCounter++}`;
+      this.furnaces.set(id, { id, region: p.region, x: Math.round(p.x), y: Math.round(p.y) });
+      this.broadcastLog(`${p.name} built a furnace.`);
+      return;
+    }
+
+    if (recipeId === "smelt") {
+      const furnace = [...this.furnaces.values()].find(
+        (f) => f.region === p.region && Math.hypot(f.x + 0.5 - p.x, f.y + 0.5 - p.y) <= 2.5,
+      );
+      if (!furnace) {
+        this.tell(p, "Stand next to a furnace to smelt (build one: 6 stone + 2 iron ore).");
+        // Refund consumed ingredients.
+        for (const [item, qty] of Object.entries(recipe.needs) as [ItemId, number][]) {
+          this.addItem(p.inventory, item, qty);
+        }
+        return;
+      }
+      this.addItem(p.inventory, "ironBar", 1);
+      this.tell(p, "Smelted 2 iron ore → 1 iron bar. (Craft shiny lures from iron bars!)");
+      return;
+    }
+
     // Special-case recipes that do world actions rather than produce items.
     if (recipeId === "repairVehicle") {
       let best: VehicleRecord | null = null;
@@ -1083,18 +1113,27 @@ export class GameRoom {
       if (s) this.send(s.ws, { t: "log", msg: "Need a fishing rod. Craft one: 3 wood + 2 iron." });
       return;
     }
-    // Must be near water (swimming or adjacent to a water tile).
+    // Must be within 1 tile of water — standing on the shore, not swimming out.
     const region = this.regions.get(p.region);
     if (!region) return;
     const waterline = this.currentWaterline(Date.now());
-    const nearWater = this.depthAt(region.map, p.x, p.y, waterline) > -1;
+    const { width: mw, height: mh, tiles, elevation } = region.map;
+    const px = Math.floor(p.x), py = Math.floor(p.y);
+    const nearWater = [[0,0],[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy]) => {
+      const nx = px + dx, ny = py + dy;
+      if (nx < 0 || ny < 0 || nx >= mw || ny >= mh) return false;
+      const i = ny * mw + nx;
+      return tiles[i] === Tile.Water || waterline > elevation[i];
+    });
     if (!nearWater) {
       const s = this.sessionFor(p.id);
-      if (s) this.send(s.ws, { t: "log", msg: "Need to be near the water to fish." });
+      if (s) this.send(s.ws, { t: "log", msg: "Cast from the shore — stand next to the water to fish." });
       return;
     }
     const fishingLevel = skillLevel(p.skills.fishing);
-    const waitMs = Math.max(2000, FISHING_TIME_MS - fishingLevel * 50); // faster at higher level
+    const hasLure = (p.inventory.shinyLure ?? 0) > 0;
+    const lureBonus = hasLure ? 0.75 : 1.0; // lure cuts wait time by 25%
+    const waitMs = Math.max(1500, Math.round((FISHING_TIME_MS - fishingLevel * 50) * lureBonus));
     this.fishingStates.set(playerId, Date.now() + waitMs);
     p.fishing = true;
     const s = this.sessionFor(p.id);
@@ -1109,11 +1148,14 @@ export class GameRoom {
       if (!p || p.dead) continue;
       p.fishing = false;
       const fishingLevel = skillLevel(p.skills.fishing);
-      const catchChance = 0.55 + fishingLevel * 0.01; // 55% + 1% per level
+      const hasLure = (p.inventory.shinyLure ?? 0) > 0;
+      const catchChance = Math.min(0.95, (0.55 + fishingLevel * 0.01) + (hasLure ? 0.20 : 0));
       if (Math.random() < catchChance) {
-        this.addItem(p.inventory, "fish", 1 + (fishingLevel >= 20 ? 1 : 0));
+        const bonus = fishingLevel >= 20 || hasLure ? 1 : 0;
+        this.addItem(p.inventory, "fish", 1 + bonus);
         this.giveXP(p, "fishing", XP_FISH);
-        this.tell(p, "You caught a fish! (cook it on a fire to eat well)");
+        const lureMsg = hasLure ? " (shiny lure helped!)" : "";
+        this.tell(p, `You caught a fish${bonus ? " — double catch!" : ""}!${lureMsg} (cook it on a fire)`);
       } else {
         this.tell(p, "The fish got away…");
       }
@@ -1688,6 +1730,7 @@ export class GameRoom {
       resourceNodes: [...this.resourceNodes.values()].filter((n) => n.region === regionId),
       plants: [...this.plants.values()].filter((pl) => pl.region === regionId && pl.dormantUntil === null),
       campfires: [...this.campfires.values()].filter((f) => f.region === regionId),
+      furnaces:  [...this.furnaces.values()].filter((f) => f.region === regionId),
     };
   }
 

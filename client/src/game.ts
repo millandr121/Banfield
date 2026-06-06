@@ -2,6 +2,7 @@ import {
   Appearance,
   BuildingState,
   CampfireState,
+  FurnaceState,
   CRAFT_RECIPES,
   CreatureState,
   FOOD_VALUE,
@@ -258,6 +259,7 @@ export class Game {
     this.drawTiles();
     this.drawTravelNodes();
     this.drawCampfires(this.snap.campfires);
+    this.drawFurnaces(this.snap.furnaces);
     this.drawResourceNodes(this.snap.resourceNodes, me);
     this.drawPlants(this.snap.plants);
     this.drawBuildings(this.snap.buildings);
@@ -494,6 +496,13 @@ export class Game {
     for (const f of fires) {
       const { sx, sy } = this.toScreen(f.x + 0.5, f.y + 0.5);
       drawCampfireSprite(this.ctx, sx, sy);
+    }
+  }
+
+  private drawFurnaces(furnaces: FurnaceState[]) {
+    for (const f of furnaces) {
+      const { sx, sy } = this.toScreen(f.x + 0.5, f.y + 0.5);
+      drawFurnaceSprite(this.ctx, sx, sy);
     }
   }
 
@@ -1291,6 +1300,40 @@ function drawCampfireSprite(ctx: CanvasRenderingContext2D, x: number, y: number)
   ctx.beginPath();
   ctx.arc(x, y, TILE_SIZE * 0.7, 0, Math.PI * 2);
   ctx.fill();
+}
+
+function drawFurnaceSprite(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const T = TILE_SIZE;
+  const hw = T * 0.44;
+  const hh = T * 0.40;
+  // Stone body
+  ctx.fillStyle = "#4a4a4a";
+  ctx.fillRect(x - hw, y - hh, hw * 2, hh * 2);
+  // Darker stone face
+  ctx.fillStyle = "#333";
+  ctx.fillRect(x - hw + 2, y - hh + 2, hw * 2 - 4, hh * 2 - 4);
+  // Glowing aperture
+  const glow = Math.sin(performance.now() / 300) * 0.15 + 0.85;
+  const grad = ctx.createRadialGradient(x, y + 2, 1, x, y + 2, T * 0.25);
+  grad.addColorStop(0, `rgba(255,200,60,${glow})`);
+  grad.addColorStop(0.5, `rgba(255,100,20,${glow * 0.7})`);
+  grad.addColorStop(1, "rgba(80,20,0,0)");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.ellipse(x, y + 2, T * 0.22, T * 0.16, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Smoke wisps
+  const t = performance.now() / 600;
+  for (const [ox, phase] of [[-3, 0], [0, 1.2], [3, 2.4]] as const) {
+    const drift = Math.sin(t + phase) * 2;
+    const alpha = 0.15 + Math.abs(Math.sin(t + phase)) * 0.1;
+    ctx.strokeStyle = `rgba(200,200,200,${alpha})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x + ox, y - hh);
+    ctx.quadraticCurveTo(x + ox + drift, y - hh - 5, x + ox + drift * 1.5, y - hh - 10);
+    ctx.stroke();
+  }
 }
 
 // --- vehicle sprites (top-down) ---------------------------------------------

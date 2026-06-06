@@ -79,13 +79,15 @@ export function defaultSkills(): Skills {
 export const ITEM_IDS = [
   "wood", "iron", "stone", "plank", "scrap", "rod",
   "crabmeat", "fish", "berry", "cookedcrab", "cookedfish",
+  "ironBar", "shinyLure",
 ] as const;
 export type ItemId = (typeof ITEM_IDS)[number];
 export type Inventory = Partial<Record<ItemId, number>>;
 export const ITEM_LABEL: Record<ItemId, string> = {
-  wood: "Wood", iron: "Iron", stone: "Stone", plank: "Plank", scrap: "Scrap", rod: "Rod",
+  wood: "Wood", iron: "Iron ore", stone: "Stone", plank: "Plank", scrap: "Scrap", rod: "Rod",
   crabmeat: "Crab meat", fish: "Raw fish", berry: "Berries",
   cookedcrab: "Cooked crab", cookedfish: "Cooked fish",
+  ironBar: "Iron Bar", shinyLure: "Shiny Lure",
 };
 
 // What eating an item restores. Raw food is weak; cooking over a fire roughly
@@ -157,9 +159,20 @@ export interface CampfireState {
   expiresAt: number; // burns out at this time
 }
 
+// --- Furnaces ---------------------------------------------------------------
+// Permanent stone forge — smelt iron ore into bars here.
+export interface FurnaceState {
+  id: string;
+  region: RegionId;
+  x: number;
+  y: number;
+}
+
 // --- Crafting ---------------------------------------------------------------
 export type CraftRecipeId =
-  | "plank" | "rod" | "campfire" | "cook" | "repairVehicle" | "repairBuilding";
+  | "plank" | "rod" | "campfire" | "cook"
+  | "smelt" | "furnace" | "shinyLure"
+  | "repairVehicle" | "repairBuilding";
 
 // Shared recipe data — used by server for logic AND by client for the craft panel.
 export interface RecipeInfo {
@@ -171,12 +184,15 @@ export interface RecipeInfo {
 }
 
 export const CRAFT_RECIPES: RecipeInfo[] = [
-  { id: "plank",         name: "Plank",           needs: { wood: 3 },                gives: { plank: 1 }, note: "3 timber → 1 plank" },
-  { id: "rod",           name: "Fishing Rod",      needs: { wood: 3, iron: 2 },       gives: { rod: 1 },   note: "3 wood + 2 iron → fishing rod" },
-  { id: "campfire",      name: "Campfire",          needs: { wood: 4 },                gives: {},           note: "4 wood — light a fire to cook on" },
-  { id: "cook",          name: "Cook (at a fire)",  needs: {},                         gives: {},           note: "Cook raw meat/fish on a nearby fire" },
-  { id: "repairVehicle", name: "Repair Vehicle",    needs: { plank: 2, scrap: 2 },     gives: {},           note: "2 plank + 2 scrap → +50 HP nearest vehicle" },
-  { id: "repairBuilding",name: "Repair Building",   needs: { wood: 5, stone: 3 },      gives: {},           note: "5 wood + 3 stone → +80 HP nearest building" },
+  { id: "plank",         name: "Plank",              needs: { wood: 3 },                gives: { plank: 1 },     note: "3 timber → 1 plank" },
+  { id: "rod",           name: "Fishing Rod",         needs: { wood: 3, iron: 2 },       gives: { rod: 1 },       note: "3 wood + 2 iron ore → fishing rod" },
+  { id: "campfire",      name: "Campfire",             needs: { wood: 4 },                gives: {},               note: "4 wood — light a fire to cook on" },
+  { id: "cook",          name: "Cook (at a fire)",     needs: {},                         gives: {},               note: "Cook raw meat/fish on a nearby fire" },
+  { id: "furnace",       name: "Build Furnace",        needs: { stone: 6, iron: 2 },      gives: {},               note: "6 stone + 2 iron ore → permanent forge" },
+  { id: "smelt",         name: "Smelt Iron (furnace)", needs: { iron: 2 },                gives: { ironBar: 1 },   note: "2 iron ore → 1 iron bar (stand at a furnace)" },
+  { id: "shinyLure",     name: "Shiny Lure",           needs: { ironBar: 1 },             gives: { shinyLure: 1 }, note: "1 iron bar → 1 shiny lure (better fishing)" },
+  { id: "repairVehicle", name: "Repair Vehicle",       needs: { plank: 2, scrap: 2 },     gives: {},               note: "2 plank + 2 scrap → +50 HP nearest vehicle" },
+  { id: "repairBuilding",name: "Repair Building",      needs: { wood: 5, stone: 3 },      gives: {},               note: "5 wood + 3 stone → +80 HP nearest building" },
 ];
 
 export interface PlayerState {
@@ -330,6 +346,7 @@ export interface Snapshot {
   resourceNodes: ResourceNode[];
   plants: PlantState[];
   campfires: CampfireState[];
+  furnaces: FurnaceState[];
 }
 
 export type ServerMessage =
