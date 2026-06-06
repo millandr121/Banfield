@@ -190,33 +190,49 @@ const FISHING_TIME_MS = 5000; // base wait time; reduced by fishing level
 const FISHING_ROD_REQUIRED = true;
 
 // Loot table -----------------------------------------------------------------
-// Crabs give crab meat; fish-eaters give raw fish; everything gives scrap.
 function rollLoot(kind: CreatureKind): Array<{ item: ItemId; qty: number }> {
   const drops: Array<{ item: ItemId; qty: number }> = [];
   const r = Math.random;
   switch (kind) {
     case "crab":
       if (r() < 0.85) drops.push({ item: "crabmeat", qty: 1 });
-      if (r() < 0.4) drops.push({ item: "scrap", qty: 1 });
+      if (r() < 0.35) drops.push({ item: "scrap", qty: 1 });
       break;
     case "octopus":
       if (r() < 0.6) drops.push({ item: "fish", qty: 1 });
-      if (r() < 0.5) drops.push({ item: "scrap", qty: 1 });
+      if (r() < 0.45) drops.push({ item: "scrap", qty: 1 });
       break;
     case "dogfish":
-      if (r() < 0.9) drops.push({ item: "fish", qty: 2 });
-      if (r() < 0.7) drops.push({ item: "scrap", qty: 1 });
+      drops.push({ item: "fish", qty: 1 + (r() < 0.6 ? 1 : 0) });
+      if (r() < 0.6) drops.push({ item: "scrap", qty: 1 });
       break;
     case "sixgill":
-      drops.push({ item: "fish", qty: 2 });
-      if (r() < 1.0) drops.push({ item: "scrap", qty: 2 });
+      drops.push({ item: "lingcod", qty: 1 });
+      drops.push({ item: "scrap", qty: 2 });
       break;
     case "orca":
-      drops.push({ item: "fish", qty: 3 });
+      drops.push({ item: "fish", qty: 2 });
       drops.push({ item: "scrap", qty: 2 + Math.floor(r() * 2) });
       break;
-    default: // neutrals (humpback, greywhale) — not killable but here for completeness
+    // Land prey
+    case "deer":
+      drops.push({ item: "venison", qty: 1 + (r() < 0.5 ? 1 : 0) });
       break;
+    case "elk":
+      drops.push({ item: "venison", qty: 2 + (r() < 0.6 ? 1 : 0) });
+      break;
+    case "grouse":
+      drops.push({ item: "poultry", qty: 1 });
+      break;
+    case "bear":
+      drops.push({ item: "venison", qty: 2 });
+      if (r() < 0.4) drops.push({ item: "scrap", qty: 1 });
+      break;
+    case "cougar": case "wolf":
+      if (r() < 0.5) drops.push({ item: "venison", qty: 1 });
+      if (r() < 0.35) drops.push({ item: "scrap", qty: 1 });
+      break;
+    default: break; // neutrals (whales, seals, otters) — discourage killing
   }
   return drops;
 }
@@ -721,14 +737,34 @@ export class GameRoom {
 
   private updateVehicleRust(dt: number, waterline: number, now: number) {
     for (const [id, v] of this.vehicles) {
+      const region = this.regions.get(v.region);
+      const depth = region ? this.depthAt(region.map, v.x, v.y, waterline) : 0;
+
+      // Car in deeper-than-ankle water: warn the driver, then sink after 4s.
+      if (v.kind === "car" && depth > DEPTH_ANKLE) {
+        const driver = v.driverId ? this.players.get(v.driverId) : null;
+        if (driver) {
+          // Warn the driver and eject them.
+          const s = this.sessionFor(driver.id);
+          if (s) this.send(s.ws, { t: "log", msg: "Your car is flooding! Bailing out…" });
+          driver.vehicleId = null;
+          v.driverId = null;
+          if (region) {
+            const shore = this.landSpawn(region, Math.round(v.x), Math.round(v.y));
+            driver.x = shore.x; driver.y = shore.y;
+          }
+        }
+        // Sink immediately (tide took the car).
+        this.broadcastLog(`A car was swallowed by the tide.`);
+        this.vehicles.delete(id);
+        continue;
+      }
+
       if (v.driverId) continue; // driven vehicles don't rust
       if (now - v.lastDriven < RUST_START_MS) continue;
-      // Vehicles in deep water rust faster (salt damage + submersion).
-      const depth = this.depthAt(this.regions.get(v.region)?.map ?? { width: 0, height: 0, tiles: [], elevation: [] } as WorldMap, v.x, v.y, waterline);
       const rate = RUST_DPS * (depth > 2 ? 3 : 1);
       v.hp -= rate * dt;
       if (v.hp <= 0) {
-        // Gone for good — log once then delete.
         this.broadcastLog(`A ${v.kind} has rusted away.`);
         this.vehicles.delete(id);
       }
@@ -1623,6 +1659,32 @@ export class GameRoom {
           continue;
         }
 
+        // Prey (deer, elk, grouse): flee from any player within range.
+        if (isPrey(c.kind)) {
+          const fleeRange = c.kind === "grouse" ? 5 : 9;
+          let threat: PlayerState | null = null;
+          let threatDist = Infinity;
+          for (const p of this.players.values()) {
+            if (p.dead || p.region !== region.id) continue;
+            const d = Math.hypot(p.x - c.x, p.y - c.y);
+            if (d < fleeRange && d < threatDist) { threat = p; threatDist = d; }
+          }
+          if (threat) {
+            const dx = c.x - threat.x, dy = c.y - threat.y, l = Math.hypot(dx, dy) || 1;
+            const nx = c.x + (dx / l) * creatureSpeed(c.kind) * dt;
+            const ny = c.y + (dy / l) * creatureSpeed(c.kind) * dt;
+            if (this.walkable(region.map, nx, c.y, waterline, false)) c.x = nx;
+            if (this.walkable(region.map, c.x, ny, waterline, false)) c.y = ny;
+          } else {
+            // Wander slowly when safe
+            const wx = c.x + Math.sin(c.y * 0.7 + now * 0.0004) * 0.8 * dt;
+            const wy = c.y + Math.cos(c.x * 0.5 + now * 0.0003) * 0.8 * dt;
+            if (this.walkable(region.map, wx, c.y, waterline, false)) c.x = wx;
+            if (this.walkable(region.map, c.x, wy, waterline, false)) c.y = wy;
+          }
+          continue;
+        }
+
         // Whales: drift slowly, exit off the south edge.
         c.x += Math.sin(c.y + c.x) * 0.15 * dt;
         c.y += 0.35 * dt;
@@ -1681,25 +1743,28 @@ export class GameRoom {
     const waterline = this.currentWaterline(Date.now());
     // Sharks & orca only pursue players in water deep enough for them.
     const deepPredator = c.kind === "dogfish" || c.kind === "sixgill" || c.kind === "orca";
+    const landPred = isLandPredator(c.kind);
     const creatureDepth = this.depthAt(region.map, c.x, c.y, waterline);
+    // Cougars are stealthy — longer detection range but only charge at very close range.
+    const detectionRange = c.kind === "cougar" ? 10 : c.kind === "wolf" ? 8 : 6;
     let best: { x: number; y: number; player?: PlayerState } | null = null;
     let bestD = Infinity;
     for (const p of this.players.values()) {
       if (p.dead || p.region !== region.id) continue;
-      if (deepPredator) {
-        // Don't chase players onto land or into ankle-deep water — too shallow.
-        const pd = this.depthAt(region.map, p.x, p.y, waterline);
-        if (pd <= DEPTH_ANKLE) continue;
-      }
+      const pd = this.depthAt(region.map, p.x, p.y, waterline);
+      if (deepPredator && pd <= DEPTH_ANKLE) continue;
+      if (landPred && pd > 0) continue; // land predators stay on dry land
       const d = Math.hypot(p.x - c.x, p.y - c.y);
-      if (d < 6 && d < bestD) {
-        // Creature must itself be in enough water to attack.
+      const range = landPred ? detectionRange : 6;
+      if (d < range && d < bestD) {
         if (deepPredator && creatureDepth <= DEPTH_ANKLE) continue;
         bestD = d;
         best = { x: p.x, y: p.y, player: p };
       }
     }
     if (best) return best;
+    // Land predators don't attack buildings; only marine/crab do.
+    if (landPred) return null;
     const b = region.buildings
       .filter((b) => b.kind !== "rubble")
       .map((b) => ({ b, d: Math.hypot(b.x + b.w / 2 - c.x, b.y + b.h / 2 - c.y) }))
@@ -1848,14 +1913,16 @@ export class GameRoom {
       (kind === "orca" || kind === "humpback" || kind === "greywhale") ? DEPTH_OCEAN * 0.5
       : kind === "sixgill"  ? DEPTH_DEEP * 0.6
       : kind === "dogfish"  ? DEPTH_SWIM
-      : kind === "seal"     ? 0           // seals haul out on shore too
-      : kind === "seaOtter" ? DEPTH_ANKLE // prefer shallow coastal
+      : kind === "seal"     ? 0
+      : kind === "seaOtter" ? DEPTH_ANKLE
       : kind === "sealLion" ? 0
-      : 0;
+      : 0; // land creatures: depth=0 (on dry land)
     const maxDepth =
-      (kind === "crab")      ? DEPTH_DEEP
-      : kind === "seaOtter"  ? DEPTH_SWIM  // otters stay near surface kelp
+        kind === "crab"      ? DEPTH_DEEP
+      : kind === "seaOtter"  ? DEPTH_SWIM
       : kind === "sealLion"  ? DEPTH_SWIM
+      // Land creatures spawn on dry land — maxDepth keeps them off the water
+      : (isPrey(kind) || isLandPredator(kind)) ? 0
       : Infinity;
     for (let i = 0; i < 60; i++) {
       const x = Math.floor(Math.random() * region.map.width);
@@ -2010,37 +2077,44 @@ function pickKind(
 ): CreatureKind | null {
   const r = Math.random();
   if (event === "tsunami") {
-    // Tsunami drives big predators into the shallows.
     return r < 0.5 ? "sixgill" : r < 0.75 ? "dogfish" : "orca";
   }
+  // 30% of spawns are always land creatures (tide-independent).
+  if (r < 0.30) {
+    const lr = Math.random();
+    if (lr < 0.28) return "deer";
+    if (lr < 0.50) return "grouse";
+    if (lr < 0.66) return "elk";
+    if (lr < 0.78) return "wolf";
+    if (lr < 0.92) return "bear";
+    return "cougar"; // rarest land predator
+  }
+  const w = Math.random(); // water creature pick
   if (phase === "low") {
-    // Low tide: mostly crabs, some octopus, seals on shore.
-    if (r < 0.50) return "crab";
-    if (r < 0.68) return "octopus";
-    if (r < 0.82) return "seal";
-    if (r < 0.91) return "sealLion";
-    if (r < 0.97) return "seaOtter"; // rare
-    return null; // 3% nothing (keep it sparse)
+    if (w < 0.48) return "crab";
+    if (w < 0.66) return "octopus";
+    if (w < 0.80) return "seal";
+    if (w < 0.90) return "sealLion";
+    if (w < 0.97) return "seaOtter";
+    return null;
   }
   if (phase === "high") {
-    // High tide: water creatures. Predators present but not dominant.
-    if (r < 0.28) return "seal";
-    if (r < 0.44) return "dogfish";
-    if (r < 0.55) return "octopus";
-    if (r < 0.63) return "sealLion";
-    if (r < 0.70) return "seaOtter";
-    if (r < 0.76) return "sixgill";
-    if (r < 0.84) return "humpback";
-    if (r < 0.91) return "greywhale";
-    if (r < 0.97) return null;
-    return "orca"; // ~3% of high-tide picks — rare enough to be exciting
+    if (w < 0.26) return "seal";
+    if (w < 0.42) return "dogfish";
+    if (w < 0.53) return "octopus";
+    if (w < 0.61) return "sealLion";
+    if (w < 0.68) return "seaOtter";
+    if (w < 0.74) return "sixgill";
+    if (w < 0.82) return "humpback";
+    if (w < 0.89) return "greywhale";
+    if (w < 0.97) return null;
+    return "orca"; // ~3% — a real event
   }
-  // Mid tide
-  if (r < 0.35) return "crab";
-  if (r < 0.54) return "seal";
-  if (r < 0.68) return "octopus";
-  if (r < 0.80) return "sealLion";
-  if (r < 0.90) return "seaOtter";
+  if (w < 0.38) return "crab";
+  if (w < 0.56) return "seal";
+  if (w < 0.70) return "octopus";
+  if (w < 0.82) return "sealLion";
+  if (w < 0.92) return "seaOtter";
   return null;
 }
 
@@ -2076,6 +2150,14 @@ function creatureHp(kind: CreatureKind): number {
     case "seal":      return 50;
     case "sealLion":  return 70;
     case "seaOtter":  return 30;
+    // Land prey
+    case "deer":      return 40;
+    case "elk":       return 80;
+    case "grouse":    return 12;
+    // Land predators
+    case "bear":      return 150;
+    case "cougar":    return 90;
+    case "wolf":      return 60;
     default:          return 250; // whales
   }
 }
@@ -2090,19 +2172,38 @@ function creatureSpeed(kind: CreatureKind): number {
     case "seal":      return 2.8;
     case "sealLion":  return 2.2;
     case "seaOtter":  return 2.0;
-    default:          return 1.0; // whales, slow and majestic
+    // Land prey flee speed
+    case "grouse":    return 5.5;
+    case "deer":      return 4.8;
+    case "elk":       return 4.2;
+    // Land predator chase speed
+    case "cougar":    return 4.5;
+    case "wolf":      return 3.8;
+    case "bear":      return 3.0;
+    default:          return 1.0;
   }
 }
 
 function creatureDamage(kind: CreatureKind): number {
   switch (kind) {
-    case "crab":     return 1.5; // crabs nibble, but they can swarm — reduced building damage
+    case "crab":     return 1.5;
     case "octopus":  return 14;
     case "dogfish":  return 20;
     case "sixgill":  return 32;
     case "orca":     return 48;
-    default:         return 0; // neutrals never deal damage
+    case "bear":     return 36;
+    case "cougar":   return 28;
+    case "wolf":     return 18;
+    default:         return 0;
   }
+}
+
+function isPrey(kind: CreatureKind): boolean {
+  return kind === "deer" || kind === "elk" || kind === "grouse";
+}
+
+function isLandPredator(kind: CreatureKind): boolean {
+  return kind === "bear" || kind === "cougar" || kind === "wolf";
 }
 
 function nextStage(stage: PlantStage): PlantStage {
@@ -2113,11 +2214,15 @@ function nextStage(stage: PlantStage): PlantStage {
 
 function isNeutral(kind: CreatureKind): boolean {
   return kind === "humpback" || kind === "greywhale"
-      || kind === "seal" || kind === "sealLion" || kind === "seaOtter";
+      || kind === "seal" || kind === "sealLion" || kind === "seaOtter"
+      || kind === "deer" || kind === "elk" || kind === "grouse";
 }
 
 function swimmer(kind: CreatureKind): boolean {
-  return kind !== "crab" && kind !== "sealLion";
+  // Land creatures and sea lions don't swim
+  return kind !== "crab" && kind !== "sealLion"
+      && kind !== "deer" && kind !== "elk" && kind !== "grouse"
+      && kind !== "bear" && kind !== "cougar" && kind !== "wolf";
 }
 
 function sanitizeAppearance(a: Appearance | undefined): Appearance {

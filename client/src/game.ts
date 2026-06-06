@@ -287,7 +287,8 @@ export class Game {
     }
 
     this.drawTiles();
-    this.drawCliffShadows();
+    this.drawKelpBeds();
+    this.drawTerrainWalls();
     this.drawTravelNodes();
     this.drawCampfires(this.snap.campfires);
     this.drawFurnaces(this.snap.furnaces);
@@ -375,34 +376,118 @@ export class Game {
     }
   }
 
-  // Cliff shadows — a second pass over the tile grid that draws a dark gradient
-  // below each elevated tile (Hill/Rock/Forest edge). This simulates a cliff
-  // face visible from above, making terrain feel genuinely three-dimensional.
-  // (Top-down games like Stardew Valley use the same technique: paint a dark
-  // strip in the row BELOW each raised tile after the base tiles are all drawn.)
-  private drawCliffShadows() {
+  // Wall-face terrain rendering — Stardew Valley technique: after all base tiles
+  // are drawn, paint a solid cliff face below each elevated tile, topped with a
+  // rim highlight and fading into a gradient shadow. Gives real 3-D depth to
+  // Hill/Rock edges without needing an isometric projection.
+  private drawTerrainWalls() {
     const map = this.map!;
     const ctx = this.ctx;
     const startX = Math.max(0, Math.floor(this.cam.x / TILE_SIZE));
     const startY = Math.max(0, Math.floor(this.cam.y / TILE_SIZE));
     const endX = Math.min(map.width - 1, Math.ceil((this.cam.x + this.canvas.width) / TILE_SIZE));
     const endY = Math.min(map.height - 2, Math.ceil((this.cam.y + this.canvas.height) / TILE_SIZE));
+
+    const isElevated = (t: Tile) => t === Tile.Hill || t === Tile.Rock || t === Tile.Forest;
+
+    ctx.save();
     for (let y = startY; y <= endY; y++) {
       for (let x = startX; x <= endX; x++) {
         const tile = map.tiles[y * map.width + x] as Tile;
-        const isHigh = tile === Tile.Hill || tile === Tile.Rock;
-        if (!isHigh) continue;
-        const below = map.tiles[(y + 1) * map.width + x] as Tile;
-        const isHighBelow = below === Tile.Hill || below === Tile.Rock;
-        if (isHighBelow) continue; // cliff only where terrain drops
+        if (!isElevated(tile)) continue;
         const { sx, sy } = this.toScreen(x, y);
-        const depth = tile === Tile.Rock ? 9 : 6;
-        const alpha = tile === Tile.Rock ? 0.72 : 0.52;
-        const grd = ctx.createLinearGradient(sx, sy + TILE_SIZE, sx, sy + TILE_SIZE + depth);
-        grd.addColorStop(0, `rgba(0,0,0,${alpha})`);
-        grd.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = grd;
-        ctx.fillRect(sx, sy + TILE_SIZE, TILE_SIZE, depth);
+
+        // South face — where terrain drops below this tile.
+        const belowTile = map.tiles[(y + 1) * map.width + x] as Tile;
+        if (!isElevated(belowTile)) {
+          const faceH = tile === Tile.Rock ? 11 : tile === Tile.Forest ? 7 : 6;
+          const faceColor  = tile === Tile.Rock ? "#38322c" : tile === Tile.Forest ? "#243820" : "#7a5c38";
+          const rimColor   = tile === Tile.Rock ? "#58524c" : tile === Tile.Forest ? "#3d5a38" : "#a07848";
+          const shadowAlpha = tile === Tile.Rock ? 0.6 : 0.42;
+
+          // Bright rim — top edge of cliff face catches the sun.
+          ctx.fillStyle = rimColor;
+          ctx.fillRect(sx, sy + TILE_SIZE - 1, TILE_SIZE, 2);
+
+          // Solid cliff face.
+          ctx.fillStyle = faceColor;
+          ctx.fillRect(sx, sy + TILE_SIZE + 1, TILE_SIZE, faceH);
+
+          // Gradient shadow below the face — contact shadow blends into ground.
+          const shadowH = 10;
+          const grd = ctx.createLinearGradient(sx, sy + TILE_SIZE + faceH, sx, sy + TILE_SIZE + faceH + shadowH);
+          grd.addColorStop(0, `rgba(0,0,0,${shadowAlpha})`);
+          grd.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.fillStyle = grd;
+          ctx.fillRect(sx, sy + TILE_SIZE + faceH, TILE_SIZE, shadowH);
+        }
+
+        // East lateral face — cliff drops to the right.
+        if (x + 1 <= endX) {
+          const rightTile = map.tiles[y * map.width + x + 1] as Tile;
+          if (!isElevated(rightTile)) {
+            const grd = ctx.createLinearGradient(sx + TILE_SIZE, sy, sx + TILE_SIZE + 6, sy);
+            grd.addColorStop(0, "rgba(0,0,0,0.35)");
+            grd.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = grd;
+            ctx.fillRect(sx + TILE_SIZE, sy, 6, TILE_SIZE);
+          }
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  // Kelp bed overlay — drawn on ankle-depth water tiles after tiles but before
+  // creatures/players, using deterministic per-tile randomness so the fronds
+  // stay still relative to the map (only the gentle wave is animated).
+  private drawKelpBeds() {
+    const map = this.map!;
+    const snap = this.snap!;
+    const ctx = this.ctx;
+    const startX = Math.max(0, Math.floor(this.cam.x / TILE_SIZE));
+    const startY = Math.max(0, Math.floor(this.cam.y / TILE_SIZE));
+    const endX = Math.min(map.width, startX + Math.ceil(this.canvas.width / TILE_SIZE) + 1);
+    const endY = Math.min(map.height, startY + Math.ceil(this.canvas.height / TILE_SIZE) + 1);
+    const now = Date.now();
+
+    for (let y = startY; y < endY; y++) {
+      for (let x = startX; x < endX; x++) {
+        const i = y * map.width + x;
+        const depth = snap.waterline - map.elevation[i];
+        if (depth <= 0 || depth > DEPTH_ANKLE + 3) continue;
+
+        // Deterministic hash for this tile.
+        const h = Math.abs(((x * 374761393 + y * 1160490541) ^ (x * 13 ^ y * 7)) | 0);
+        if (h % 100 >= 38) continue; // ~38 % of ankle-deep tiles get kelp
+
+        const { sx, sy } = this.toScreen(x, y);
+        const fronds = 2 + (h % 3);
+
+        for (let f = 0; f < fronds; f++) {
+          const hf = Math.abs((h * (f + 3) * 137) | 0);
+          const fx = sx + 3 + (hf % (TILE_SIZE - 6));
+          const fy = sy + 3 + ((hf >> 4) % (TILE_SIZE - 6));
+          const wave = Math.sin(now / 1800 + f * 1.1 + x * 0.4 + y * 0.3) * 2.5;
+
+          // Stalk
+          ctx.strokeStyle = "rgba(55,85,28,0.75)";
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.moveTo(fx, fy + 5);
+          ctx.quadraticCurveTo(fx + wave * 0.5, fy + 2, fx + wave, fy - 4);
+          ctx.stroke();
+
+          // Blade
+          ctx.save();
+          ctx.translate(fx + wave, fy - 4);
+          ctx.rotate(wave * 0.2 + f * 0.7);
+          ctx.fillStyle = "rgba(42,75,22,0.62)";
+          ctx.beginPath();
+          ctx.ellipse(0, -2.5, 2, 5, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
       }
     }
   }
@@ -1884,6 +1969,12 @@ function drawCreatureSprite(
       case "seal":      return drawSeal(ctx, x, y);
       case "sealLion":  return drawSealLion(ctx, x, y);
       case "seaOtter":  return drawSeaOtter(ctx, x, y);
+      case "deer":      return drawDeer(ctx, x, y);
+      case "elk":       return drawElk(ctx, x, y);
+      case "grouse":    return drawGrouse(ctx, x, y);
+      case "bear":      return drawBear(ctx, x, y);
+      case "cougar":    return drawCougar(ctx, x, y);
+      case "wolf":      return drawWolf(ctx, x, y);
     }
     return;
   }
@@ -2163,6 +2254,338 @@ function drawWhale(ctx: CanvasRenderingContext2D, x: number, y: number, color: s
   ctx.beginPath();
   ctx.arc(x + L * 0.6, y - L * 0.1, L * 0.07, 0, Math.PI * 2);
   ctx.fill();
+}
+
+function drawDeer(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const r = TILE_SIZE * 0.3;
+  // Body — slender golden tan
+  ctx.fillStyle = "#c08848";
+  ctx.beginPath();
+  ctx.ellipse(x, y, r * 1.2, r * 0.65, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Rump — slightly paler
+  ctx.fillStyle = "#d4a868";
+  ctx.beginPath();
+  ctx.ellipse(x - r * 0.6, y, r * 0.55, r * 0.48, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // White tail
+  ctx.fillStyle = "#eeeeee";
+  ctx.beginPath();
+  ctx.ellipse(x - r * 1.05, y, r * 0.2, r * 0.28, 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  // Head
+  ctx.fillStyle = "#b07838";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 1.0, y - r * 0.12, r * 0.4, r * 0.32, -0.2, 0, Math.PI * 2);
+  ctx.fill();
+  // Ears — tall, pointed
+  ctx.fillStyle = "#b07838";
+  for (const oy of [-0.42, -0.22]) {
+    ctx.beginPath();
+    ctx.moveTo(x + r * 1.12, y + r * oy);
+    ctx.lineTo(x + r * 1.35, y + r * (oy - 0.38));
+    ctx.lineTo(x + r * 1.22, y + r * oy);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Eye
+  ctx.fillStyle = "#111";
+  ctx.beginPath();
+  ctx.arc(x + r * 1.2, y - r * 0.2, r * 0.1, 0, Math.PI * 2);
+  ctx.fill();
+  // Thin legs as dark lines
+  ctx.strokeStyle = "#8a5c28";
+  ctx.lineWidth = 1.5;
+  for (const [ox, leg] of [[-0.2, 0.72], [0.1, 0.75], [-0.5, 0.7], [-0.8, 0.68]] as const) {
+    ctx.beginPath();
+    ctx.moveTo(x + r * ox, y + r * 0.48);
+    ctx.lineTo(x + r * ox, y + r * leg);
+    ctx.stroke();
+  }
+}
+
+function drawElk(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const r = TILE_SIZE * 0.38;
+  // Body — large dark brown
+  ctx.fillStyle = "#5a3a1a";
+  ctx.beginPath();
+  ctx.ellipse(x, y, r * 1.3, r * 0.72, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Pale rump and neck mane
+  ctx.fillStyle = "#c8a040";
+  ctx.beginPath();
+  ctx.ellipse(x - r * 0.7, y + r * 0.05, r * 0.5, r * 0.38, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#c8a040";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 0.85, y - r * 0.15, r * 0.32, r * 0.48, 0.4, 0, Math.PI * 2);
+  ctx.fill();
+  // Head
+  ctx.fillStyle = "#4a2a10";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 1.18, y - r * 0.18, r * 0.42, r * 0.3, -0.15, 0, Math.PI * 2);
+  ctx.fill();
+  // Dark muzzle
+  ctx.fillStyle = "#3a2010";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 1.48, y - r * 0.1, r * 0.18, r * 0.14, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Antler rack (top view — two branching lines)
+  ctx.strokeStyle = "#6a4820";
+  ctx.lineWidth = 2;
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(x + r * 1.12, y - r * 0.35);
+    ctx.lineTo(x + r * 1.12 + side * r * 0.25, y - r * 0.78);
+    ctx.lineTo(x + r * 1.12 + side * r * 0.42, y - r * 0.62);
+    ctx.moveTo(x + r * 1.12 + side * r * 0.25, y - r * 0.78);
+    ctx.lineTo(x + r * 1.12 + side * r * 0.55, y - r * 0.95);
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#111";
+  ctx.beginPath();
+  ctx.arc(x + r * 1.32, y - r * 0.25, r * 0.1, 0, Math.PI * 2);
+  ctx.fill();
+  // Legs
+  ctx.strokeStyle = "#3a2010";
+  ctx.lineWidth = 2;
+  for (const [ox, leg] of [[-0.1, 0.68], [0.2, 0.72], [-0.55, 0.65], [-0.85, 0.62]] as const) {
+    ctx.beginPath();
+    ctx.moveTo(x + r * ox, y + r * 0.52);
+    ctx.lineTo(x + r * ox, y + r * leg);
+    ctx.stroke();
+  }
+}
+
+function drawGrouse(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const r = TILE_SIZE * 0.22;
+  // Round body — speckled brown
+  ctx.fillStyle = "#7a6038";
+  ctx.beginPath();
+  ctx.ellipse(x, y, r * 1.1, r * 0.88, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Speckle pattern
+  ctx.fillStyle = "rgba(200,170,100,0.45)";
+  for (const [ox, oy] of [[-0.4,-0.2],[0.1,-0.4],[0.35,0.1],[-0.1,0.3],[0.5,-0.15]] as const) {
+    ctx.beginPath();
+    ctx.ellipse(x + r * ox, y + r * oy, r * 0.18, r * 0.12, ox * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = "rgba(40,25,10,0.3)";
+  for (const [ox, oy] of [[0.3,-0.3],[-0.3,0.2],[0.0,-0.1],[0.45,0.25]] as const) {
+    ctx.beginPath();
+    ctx.ellipse(x + r * ox, y + r * oy, r * 0.15, r * 0.1, ox * 0.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Small head
+  ctx.fillStyle = "#6a5028";
+  ctx.beginPath();
+  ctx.arc(x + r * 0.9, y - r * 0.35, r * 0.42, 0, Math.PI * 2);
+  ctx.fill();
+  // Red eyebrow comb
+  ctx.fillStyle = "#c23020";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 1.08, y - r * 0.58, r * 0.22, r * 0.1, -0.3, 0, Math.PI * 2);
+  ctx.fill();
+  // Eye
+  ctx.fillStyle = "#111";
+  ctx.beginPath();
+  ctx.arc(x + r * 1.05, y - r * 0.45, r * 0.1, 0, Math.PI * 2);
+  ctx.fill();
+  // Short tail
+  ctx.fillStyle = "#5a4828";
+  ctx.beginPath();
+  ctx.moveTo(x - r * 0.85, y - r * 0.1);
+  ctx.lineTo(x - r * 1.42, y - r * 0.35);
+  ctx.lineTo(x - r * 1.38, y + r * 0.2);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawBear(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const r = TILE_SIZE * 0.4;
+  // Massive body — very dark brown
+  ctx.fillStyle = "#251810";
+  ctx.beginPath();
+  ctx.ellipse(x, y, r * 1.28, r * 0.9, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Slightly lighter underbelly
+  ctx.fillStyle = "#3a2a1a";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 0.1, y + r * 0.15, r * 0.7, r * 0.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Broad round head
+  ctx.fillStyle = "#251810";
+  ctx.beginPath();
+  ctx.arc(x + r * 1.1, y - r * 0.05, r * 0.55, 0, Math.PI * 2);
+  ctx.fill();
+  // Muzzle — tan snout
+  ctx.fillStyle = "#7a5530";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 1.5, y + r * 0.08, r * 0.28, r * 0.22, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Nose
+  ctx.fillStyle = "#1a1010";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 1.65, y + r * 0.05, r * 0.12, r * 0.09, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Small round ears
+  ctx.fillStyle = "#251810";
+  for (const oy of [-0.48, -0.62]) {
+    ctx.beginPath();
+    ctx.arc(x + r * 0.95, y + r * oy, r * 0.22, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Eye
+  ctx.fillStyle = "#111";
+  ctx.beginPath();
+  ctx.arc(x + r * 1.22, y - r * 0.22, r * 0.12, 0, Math.PI * 2);
+  ctx.fill();
+  // Eye shine
+  ctx.fillStyle = "rgba(255,255,255,0.5)";
+  ctx.beginPath();
+  ctx.arc(x + r * 1.25, y - r * 0.25, r * 0.05, 0, Math.PI * 2);
+  ctx.fill();
+  // Thick paws
+  ctx.fillStyle = "#1a1008";
+  for (const [ox, oy] of [[-0.82,0.72],[0.15,0.82],[-0.42,0.8],[0.55,0.72]] as const) {
+    ctx.beginPath();
+    ctx.ellipse(x + r * ox, y + r * oy, r * 0.28, r * 0.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawCougar(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const r = TILE_SIZE * 0.33;
+  // Sleek elongated tawny body
+  ctx.fillStyle = "#c88040";
+  ctx.beginPath();
+  ctx.ellipse(x, y, r * 1.45, r * 0.58, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Lighter belly
+  ctx.fillStyle = "#e8c088";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 0.1, y + r * 0.1, r * 0.8, r * 0.32, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Head
+  ctx.fillStyle = "#c07838";
+  ctx.beginPath();
+  ctx.arc(x + r * 1.3, y - r * 0.1, r * 0.45, 0, Math.PI * 2);
+  ctx.fill();
+  // Pale muzzle
+  ctx.fillStyle = "#e8d0a0";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 1.6, y + r * 0.05, r * 0.22, r * 0.18, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Pointy ears
+  ctx.fillStyle = "#b06828";
+  for (const oy of [-0.4, -0.58]) {
+    ctx.beginPath();
+    ctx.moveTo(x + r * 1.18, y + r * oy);
+    ctx.lineTo(x + r * 1.32, y + r * (oy - 0.3));
+    ctx.lineTo(x + r * 1.42, y + r * oy);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Dark nose & eye
+  ctx.fillStyle = "#2a1808";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 1.72, y + r * 0.02, r * 0.09, r * 0.07, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#111";
+  ctx.beginPath();
+  ctx.arc(x + r * 1.48, y - r * 0.18, r * 0.1, 0, Math.PI * 2);
+  ctx.fill();
+  // Long thin tail curves back
+  ctx.strokeStyle = "#b07030";
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(x - r * 1.28, y);
+  ctx.quadraticCurveTo(x - r * 1.7, y - r * 0.6, x - r * 1.5, y - r * 1.0);
+  ctx.stroke();
+  // Dark tail tip
+  ctx.strokeStyle = "#2a1808";
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(x - r * 1.58, y - r * 0.88);
+  ctx.lineTo(x - r * 1.5, y - r * 1.0);
+  ctx.stroke();
+}
+
+function drawWolf(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const r = TILE_SIZE * 0.32;
+  // Body — medium grey with darker back saddle
+  ctx.fillStyle = "#8a8878";
+  ctx.beginPath();
+  ctx.ellipse(x, y, r * 1.35, r * 0.68, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Dark dorsal saddle
+  ctx.fillStyle = "#4a4840";
+  ctx.beginPath();
+  ctx.ellipse(x - r * 0.1, y - r * 0.15, r * 0.95, r * 0.32, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Pale underside
+  ctx.fillStyle = "#c8c0a8";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 0.15, y + r * 0.18, r * 0.72, r * 0.3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Angular head
+  ctx.fillStyle = "#7a7868";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 1.15, y - r * 0.12, r * 0.48, r * 0.37, -0.1, 0, Math.PI * 2);
+  ctx.fill();
+  // Long narrow muzzle
+  ctx.fillStyle = "#6a6858";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 1.5, y + r * 0.02, r * 0.28, r * 0.18, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Tall pointed ears
+  ctx.fillStyle = "#6a6858";
+  for (const ey of [-0.44, -0.65]) {
+    ctx.beginPath();
+    ctx.moveTo(x + r * 1.0, y + r * ey);
+    ctx.lineTo(x + r * 1.18, y + r * (ey - 0.4));
+    ctx.lineTo(x + r * 1.3, y + r * ey);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Inner ear pink
+  ctx.fillStyle = "rgba(200,120,100,0.55)";
+  for (const ey of [-0.44, -0.65]) {
+    ctx.beginPath();
+    ctx.moveTo(x + r * 1.05, y + r * ey);
+    ctx.lineTo(x + r * 1.18, y + r * (ey - 0.28));
+    ctx.lineTo(x + r * 1.25, y + r * ey);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Yellow eye
+  ctx.fillStyle = "#d4a820";
+  ctx.beginPath();
+  ctx.arc(x + r * 1.28, y - r * 0.2, r * 0.12, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#111";
+  ctx.beginPath();
+  ctx.arc(x + r * 1.28, y - r * 0.2, r * 0.07, 0, Math.PI * 2);
+  ctx.fill();
+  // Nose
+  ctx.fillStyle = "#1a1010";
+  ctx.beginPath();
+  ctx.ellipse(x + r * 1.68, y - r * 0.02, r * 0.1, r * 0.08, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Bushy tail
+  ctx.fillStyle = "#7a7868";
+  ctx.beginPath();
+  ctx.moveTo(x - r * 1.18, y - r * 0.08);
+  ctx.quadraticCurveTo(x - r * 1.55, y - r * 0.5, x - r * 1.4, y - r * 0.85);
+  const grd2 = ctx.createLinearGradient(x - r * 1.18, y, x - r * 1.4, y - r * 0.85);
+  grd2.addColorStop(0, "#7a7868");
+  grd2.addColorStop(1, "#c8c0a8");
+  ctx.strokeStyle = grd2;
+  ctx.lineWidth = r * 0.4;
+  ctx.lineCap = "round";
+  ctx.stroke();
+  ctx.lineCap = "butt";
 }
 
 function hpColor(frac: number): string {

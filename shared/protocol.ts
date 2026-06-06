@@ -86,7 +86,9 @@ export function defaultSkills(): Skills {
 export const ITEM_IDS = [
   "wood", "iron", "stone", "plank", "scrap", "rod",
   "crabmeat", "fish", "liveFish", "salmon", "lingcod", "halibut", "tuna",
+  "venison", "poultry",
   "berry", "cookedcrab", "cookedfish", "cookedsalmon", "cookedlingcod",
+  "cookedvenison", "cookedpoultry",
   "ironBar", "shinyLure", "jerryCan",
 ] as const;
 export type ItemId = (typeof ITEM_IDS)[number];
@@ -96,33 +98,40 @@ export const ITEM_LABEL: Record<ItemId, string> = {
   crabmeat: "Crab meat",
   fish: "Raw fish", liveFish: "Live fish",
   salmon: "Salmon", lingcod: "Lingcod", halibut: "Halibut", tuna: "Tuna",
+  venison: "Venison", poultry: "Game bird",
   berry: "Berries",
   cookedcrab: "Cooked crab", cookedfish: "Cooked fish",
   cookedsalmon: "Cooked salmon", cookedlingcod: "Cooked lingcod",
+  cookedvenison: "Roast venison", cookedpoultry: "Roast game bird",
   ironBar: "Iron Bar", shinyLure: "Shiny Lure", jerryCan: "Jerry can",
 };
 
 // What eating an item restores.
 export const FOOD_VALUE: Partial<Record<ItemId, { hunger: number; hp: number }>> = {
-  crabmeat:     { hunger: 9,  hp: 3  },
-  fish:         { hunger: 9,  hp: 3  },
-  liveFish:     { hunger: 9,  hp: 3  },
-  salmon:       { hunger: 14, hp: 5  },
-  lingcod:      { hunger: 18, hp: 7  },
-  halibut:      { hunger: 22, hp: 10 },
-  tuna:         { hunger: 28, hp: 14 },
-  berry:        { hunger: 15, hp: 6  },
-  cookedcrab:   { hunger: 36, hp: 20 },
-  cookedfish:   { hunger: 42, hp: 24 },
-  cookedsalmon: { hunger: 50, hp: 30 },
-  cookedlingcod:{ hunger: 58, hp: 36 },
+  crabmeat:      { hunger: 9,  hp: 3  },
+  fish:          { hunger: 9,  hp: 3  },
+  liveFish:      { hunger: 9,  hp: 3  },
+  salmon:        { hunger: 14, hp: 5  },
+  lingcod:       { hunger: 18, hp: 7  },
+  halibut:       { hunger: 22, hp: 10 },
+  tuna:          { hunger: 28, hp: 14 },
+  venison:       { hunger: 16, hp: 6  },
+  poultry:       { hunger: 10, hp: 4  },
+  berry:         { hunger: 15, hp: 6  },
+  cookedcrab:    { hunger: 36, hp: 20 },
+  cookedfish:    { hunger: 42, hp: 24 },
+  cookedsalmon:  { hunger: 50, hp: 30 },
+  cookedlingcod: { hunger: 58, hp: 36 },
+  cookedvenison: { hunger: 55, hp: 32 },
+  cookedpoultry: { hunger: 38, hp: 22 },
 };
-// Raw -> cooked conversions at a campfire.
 export const COOK_MAP: Partial<Record<ItemId, ItemId>> = {
   crabmeat: "cookedcrab",
   fish:     "cookedfish",
   salmon:   "cookedsalmon",
   lingcod:  "cookedlingcod",
+  venison:  "cookedvenison",
+  poultry:  "cookedpoultry",
 };
 
 // --- Resource nodes ---------------------------------------------------------
@@ -245,6 +254,7 @@ export interface PlayerState {
 }
 
 export type CreatureKind =
+  // --- marine ---
   | "crab"       // low tide, land, swarms structures
   | "octopus"    // either tide
   | "dogfish"    // high tide shark
@@ -254,7 +264,14 @@ export type CreatureKind =
   | "greywhale"  // neutral whale
   | "seal"       // common, friendly, follows slow swimmers
   | "sealLion"   // common, playful, hauls out on rocks
-  | "seaOtter";  // rare, curious, hides when approached
+  | "seaOtter"   // rare, curious, hides when approached
+  // --- land ---
+  | "deer"       // prey, flees from players
+  | "elk"        // prey, large, flees
+  | "grouse"     // prey bird, spooks at close range
+  | "bear"       // dangerous, attacks if provoked or surprised
+  | "cougar"     // stealth predator, dangerous
+  | "wolf";      // pack hunter, bold
 
 export interface CreatureState {
   id: string;
