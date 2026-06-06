@@ -15,6 +15,7 @@ import {
   Inventory,
   InvasiveKind,
   ItemId,
+  NpcState,
   PlantStage,
   PlantState,
   PlayerState,
@@ -105,6 +106,8 @@ const CAR_OFFROAD_SPEED = 3.0; // sluggish on grass/sand
 const BOAT_SPEED = 5.5; // tiles/sec on water
 const VEHICLE_BOARD_RANGE = 1.6; // how close you must be to board
 const VEHICLE_MAX_HP = 200;
+const VEHICLE_FUEL_MAX = 100; // a full tank
+const FUEL_DRAIN = 100 / (20 * 60); // empties in ~20 min of steady driving
 const RUST_START_MS = 20 * 60 * 1000; // idle this long before rusting
 const RUST_DPS = 200 / (40 * 60); // destroys a full-HP vehicle in ~40 min
 const COLLISION_RANGE = 0.85; // tiles; how close before a moving vehicle hits
@@ -117,6 +120,7 @@ const TREE_MAX_HP = 5; // hits to fell a tree (each gives wood)
 const ORE_MAX_HP = 4; // hits to exhaust an ore vein
 const BERRY_MAX_HP = 3; // pickings per berry bush before it's bare
 const TREE_RESPAWN_MS = 3 * 60 * 1000; // 3 minutes
+const ARBUTUS_RESPAWN_MS = 15 * 60 * 1000; // arbutus is slow-growing & rare
 const ORE_RESPAWN_MS = 8 * 60 * 1000; // 8 minutes
 const BERRY_RESPAWN_MS = 2 * 60 * 1000; // 2 minutes — berries come back fast
 const MINING_LEVEL_REQ_IRON = 5; // need Mining 5 to extract iron
@@ -218,8 +222,13 @@ export class GameRoom {
   private plants = new Map<string, PlantState>();
   private campfires = new Map<string, CampfireState>();
   private furnaces  = new Map<string, FurnaceState>();
+  private npcs: NpcState[] = [];
   // playerId → timestamp when they cast their line (null = not fishing)
   private fishingStates = new Map<string, number>();
+  // playerId → epoch ms a live fish was caught (dies → raw fish after 60s)
+  private liveFishTimer = new Map<string, number>();
+  // vehicleId → last time we warned the driver it's out of fuel (rate-limit)
+  private lastFuelWarn = new Map<string, number>();
   // Transient knockback impulses by entity id (players + creatures).
   private kb = new Map<string, { x: number; y: number }>();
 
@@ -244,6 +253,7 @@ export class GameRoom {
           id: v.id, kind: v.kind, region: def.id,
           x: v.x + 0.5, y: v.y + 0.5, dir: 0,
           hp: VEHICLE_MAX_HP, maxHp: VEHICLE_MAX_HP,
+          fuel: VEHICLE_FUEL_MAX, maxFuel: VEHICLE_FUEL_MAX,
           driverId: null, lastDriven: now,
         });
       }
@@ -258,6 +268,22 @@ export class GameRoom {
     this.furnaces.set("forge-ostroms", { id: "forge-ostroms", region: "bamfield", x: 191, y: 70 });
     // Pre-place a forge at the Anacla gas bar too.
     this.furnaces.set("forge-anacla",  { id: "forge-anacla",  region: "anacla",   x: 223, y: 52 });
+
+    // Static townsfolk — flavour, lore, and local hints. They don't move.
+    this.npcs = [
+      // Bamfield
+      { id: "npc-naturalist", kind: "naturalist", region: "bamfield", x: 168, y: 50 },
+      { id: "npc-pirate",     kind: "pirate",     region: "bamfield", x: 175, y: 72 },
+      { id: "npc-scientist",  kind: "scientist",  region: "bamfield", x: 183, y: 65 },
+      { id: "npc-historian",  kind: "historian",  region: "bamfield", x: 190, y: 68 },
+      { id: "npc-eastsider",  kind: "eastsider",  region: "bamfield", x: 195, y: 55 },
+      { id: "npc-westsider",  kind: "westsider",  region: "bamfield", x: 152, y: 60 },
+      // Anacla
+      { id: "npc-huuayaht",   kind: "huuayaht",   region: "anacla",   x: 218, y: 28 },
+      { id: "npc-boatdealer", kind: "boatdealer", region: "anacla",   x: 225, y: 35 },
+      { id: "npc-icevendor",  kind: "icevendor",  region: "anacla",   x: 222, y: 42 },
+      { id: "npc-mayor",      kind: "mayor",      region: "anacla",   x: 230, y: 20 },
+    ];
   }
 
   private mkNode(def: ResourceNodeDef, regionId: string): ResourceNode {
@@ -329,6 +355,7 @@ export class GameRoom {
       this.players.delete(s.playerId);
       this.kb.delete(s.playerId);
       this.fishingStates.delete(s.playerId);
+      this.liveFishTimer.delete(s.playerId);
     }
     this.sessions.delete(ws);
     if (this.sessions.size === 0 && this.loop) {
@@ -425,6 +452,9 @@ export class GameRoom {
       case "trade":
         this.doTrade(s.playerId, msg.buildingId, msg.kind, msg.item, msg.qty);
         break;
+      case "refuel":
+        this.doHarvest(s.playerId); // harvest doubles as the refuel action
+        break;
       case "travel":
         this.doTravel(ws, s.playerId);
         break;
@@ -466,6 +496,7 @@ export class GameRoom {
     this.updateResourceRespawn(now);
     this.updateVehicleRust(dt, waterline, now);
     this.updateFishing(now);
+    this.updateLiveFish(now);
     this.updateHunger(dt);
     this.updateSleep(dt);
     this.updatePlants(now);
@@ -587,25 +618,34 @@ export class GameRoom {
       if (driver && !driver.dead) {
         const s = this.sessionFor(driver.id);
         if (s && (s.dx !== 0 || s.dy !== 0)) {
-          const onRoad = this.tileAt(region.map, v.x, v.y) === Tile.Road;
-          const skillBonus =
-            v.kind === "car"
-              ? 1 + skillLevel(driver.skills.driving) * 0.003
-              : 1 + skillLevel(driver.skills.boating) * 0.002;
-          const base =
-            v.kind === "car"
-              ? (onRoad ? CAR_SPEED : CAR_OFFROAD_SPEED) * skillBonus
-              : BOAT_SPEED * skillBonus;
-          activeSpeed = base;
-          const nx = v.x + s.dx * base * dt;
-          const ny = v.y + s.dy * base * dt;
-          if (this.vehicleCanGo(v, region.map, nx, v.y, waterline)) { v.x = nx; movedThisTick = true; }
-          if (this.vehicleCanGo(v, region.map, v.x, ny, waterline)) { v.y = ny; movedThisTick = true; }
-          v.dir = Math.atan2(s.dy, s.dx);
-          v.lastDriven = now;
-          // Skill XP for the driver.
-          if (v.kind === "car") this.giveXP(driver, "driving", XP_DRIVE_PER_SEC * dt);
-          else this.giveXP(driver, "boating", XP_BOAT_PER_SEC * dt);
+          if (v.fuel <= 0) {
+            // Dry tank — won't budge. Nudge them to refuel (E with a jerry can).
+            if (now - (this.lastFuelWarn.get(v.id) ?? 0) > 3000) {
+              this.lastFuelWarn.set(v.id, now);
+              this.tell(driver, `The ${v.kind} is out of fuel! Refuel with a jerry can (E key beside it).`);
+            }
+          } else {
+            const onRoad = this.tileAt(region.map, v.x, v.y) === Tile.Road;
+            const skillBonus =
+              v.kind === "car"
+                ? 1 + skillLevel(driver.skills.driving) * 0.003
+                : 1 + skillLevel(driver.skills.boating) * 0.002;
+            const base =
+              v.kind === "car"
+                ? (onRoad ? CAR_SPEED : CAR_OFFROAD_SPEED) * skillBonus
+                : BOAT_SPEED * skillBonus;
+            activeSpeed = base;
+            const nx = v.x + s.dx * base * dt;
+            const ny = v.y + s.dy * base * dt;
+            if (this.vehicleCanGo(v, region.map, nx, v.y, waterline)) { v.x = nx; movedThisTick = true; }
+            if (this.vehicleCanGo(v, region.map, v.x, ny, waterline)) { v.y = ny; movedThisTick = true; }
+            v.dir = Math.atan2(s.dy, s.dx);
+            v.lastDriven = now;
+            v.fuel = Math.max(0, v.fuel - FUEL_DRAIN * dt); // burn gas while driving
+            // Skill XP for the driver.
+            if (v.kind === "car") this.giveXP(driver, "driving", XP_DRIVE_PER_SEC * dt);
+            else this.giveXP(driver, "boating", XP_BOAT_PER_SEC * dt);
+          }
         }
         // The driver rides along.
         driver.x = v.x;
@@ -678,6 +718,22 @@ export class GameRoom {
     const now = Date.now();
     if (now - s.lastHarvest < HARVEST_COOLDOWN_MS) return;
 
+    // Refuel check first: if you carry a jerry can and there's a thirsty vehicle
+    // within reach, top it up instead of harvesting.
+    for (const v of this.vehicles.values()) {
+      if (v.region !== p.region) continue;
+      if (Math.hypot(v.x - p.x, v.y - p.y) > VEHICLE_BOARD_RANGE) continue;
+      if (v.fuel >= v.maxFuel) continue;
+      const cans = p.inventory["jerryCan"] ?? 0;
+      if (cans <= 0) continue;
+      p.inventory["jerryCan"] = cans - 1;
+      v.fuel = Math.min(v.maxFuel, v.fuel + 50);
+      v.lastDriven = now;
+      s.lastHarvest = now;
+      this.tell(p, `Refuelled the ${v.kind} (+50 fuel, now ${v.fuel.toFixed(0)}/${v.maxFuel}).`);
+      return;
+    }
+
     // Consider both resource nodes and invasive plants — act on the nearest.
     let bestNode: ResourceNode | null = null;
     let bestPlant: PlantState | null = null;
@@ -712,7 +768,7 @@ export class GameRoom {
     if (bestNode.kind === "tree") {
       this.addItem(p.inventory, "wood", 1);
       this.giveXP(p, "woodcutting", XP_CHOP);
-      respawnMs = TREE_RESPAWN_MS;
+      respawnMs = bestNode.variety === "arbutus" ? ARBUTUS_RESPAWN_MS : TREE_RESPAWN_MS;
     } else if (bestNode.kind === "berryBush") {
       this.addItem(p.inventory, "berry", 1);
       this.giveXP(p, "gardening", XP_FORAGE);
@@ -1152,13 +1208,29 @@ export class GameRoom {
       const catchChance = Math.min(0.95, (0.55 + fishingLevel * 0.01) + (hasLure ? 0.20 : 0));
       if (Math.random() < catchChance) {
         const bonus = fishingLevel >= 20 || hasLure ? 1 : 0;
-        this.addItem(p.inventory, "fish", 1 + bonus);
+        this.addItem(p.inventory, "liveFish", 1 + bonus);
+        this.liveFishTimer.set(p.id, now);
         this.giveXP(p, "fishing", XP_FISH);
         const lureMsg = hasLure ? " (shiny lure helped!)" : "";
-        this.tell(p, `You caught a fish${bonus ? " — double catch!" : ""}!${lureMsg} (cook it on a fire)`);
+        this.tell(p, `Caught a LIVE fish${bonus ? " — double catch!" : ""}!${lureMsg} Sell to the BMSC fast, or cook it before it dies (60s).`);
       } else {
         this.tell(p, "The fish got away…");
       }
+    }
+  }
+
+  // Live fish suffocate after a minute out of water, turning into raw fish.
+  private updateLiveFish(now: number) {
+    for (const [pid, caughtAt] of this.liveFishTimer) {
+      if (now - caughtAt < 60_000) continue;
+      const p = this.players.get(pid);
+      this.liveFishTimer.delete(pid);
+      if (!p) continue;
+      const count = p.inventory["liveFish"] ?? 0;
+      if (count <= 0) continue;
+      p.inventory["liveFish"] = 0;
+      this.addItem(p.inventory, "fish", count);
+      this.tell(p, "Your live fish died — now just raw fish. Get to the BMSC quicker next time!");
     }
   }
 
@@ -1731,6 +1803,7 @@ export class GameRoom {
       plants: [...this.plants.values()].filter((pl) => pl.region === regionId && pl.dormantUntil === null),
       campfires: [...this.campfires.values()].filter((f) => f.region === regionId),
       furnaces:  [...this.furnaces.values()].filter((f) => f.region === regionId),
+      npcs: this.npcs.filter((n) => n.region === regionId),
     };
   }
 

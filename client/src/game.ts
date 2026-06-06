@@ -10,6 +10,7 @@ import {
   ITEM_IDS,
   ITEM_LABEL,
   ItemId,
+  NpcState,
   PlantState,
   PlayerState,
   ResourceNode,
@@ -63,6 +64,8 @@ export class Game {
   private craftSelected = 0; // highlighted recipe index
   private mapOpen = false;   // is the full-region map overlay open?
   private shopId: string | null = null; // building id of the open shop, else null
+  private invOpen = false;   // is the inventory bag panel open?
+  private npcOpen: string | null = null; // id of the NPC whose dialogue is showing
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -133,8 +136,20 @@ export class Game {
         } else if (k === "f") {
           this.net.send({ t: "board" });
         } else if (k === "e") {
-          this.net.send({ t: "harvest" });
-          this.net.send({ t: "repair" });
+          // Near an NPC? Talk instead of harvesting.
+          const npc = this.nearbyNpc();
+          if (npc) {
+            this.npcOpen = this.npcOpen === npc.id ? null : npc.id;
+          } else {
+            this.net.send({ t: "harvest" });
+            this.net.send({ t: "repair" });
+          }
+        } else if (k === "n") {
+          const npc = this.nearbyNpc();
+          if (npc) this.npcOpen = this.npcOpen === npc.id ? null : npc.id;
+        } else if (k === "i") {
+          this.invOpen = !this.invOpen;
+          e.preventDefault();
         } else if (k === "q") {
           this.net.send({ t: "eat" });
         } else if (k === "g") {
@@ -150,6 +165,8 @@ export class Game {
           this.mapOpen = false;
           this.craftOpen = false;
           this.shopId = null;
+          this.invOpen = false;
+          this.npcOpen = null;
           e.preventDefault();
         } else if (k === "b") {
           // Toggle the shop panel for the nearest shop building.
@@ -263,6 +280,7 @@ export class Game {
     this.drawResourceNodes(this.snap.resourceNodes, me);
     this.drawPlants(this.snap.plants);
     this.drawBuildings(this.snap.buildings);
+    this.drawNpcs(this.snap.npcs ?? [], me);
     this.drawVehicles(this.snap.vehicles);
     this.drawCreatures(this.snap.creatures);
     for (const p of this.snap.players) this.drawPlayer(p, p.id === this.myId);
@@ -271,10 +289,14 @@ export class Game {
     this.drawTravelPrompt(me);
     this.drawBoardPrompt(me);
     this.drawShopPrompt(me);
+    this.drawNpcPrompt(me);
+    this.drawRefuelPrompt(me);
     this.drawHarvestPrompt(this.snap.resourceNodes, this.snap.plants, me);
     this.drawFishPrompt(me);
     if (this.craftOpen) this.drawCraftPanel(me);
     if (this.shopId) this.drawShopPanel(me);
+    if (this.invOpen) this.drawInventoryPanel(me);
+    if (this.npcOpen) this.drawNpcDialogue(me);
     if (this.mapOpen) this.drawMapOverlay(me);
   }
 
@@ -772,6 +794,233 @@ export class Game {
     ctx.fillText("Press a number to trade 1 • B or Esc to close", px + 18, py + ph - 16);
   }
 
+  // --- inventory bag --------------------------------------------------------
+  private drawInventoryPanel(me?: PlayerState) {
+    const ctx = this.ctx;
+    const cols = 4;
+    const cellW = 84, cellH = 64;
+    const pad = 18;
+    const pw = cols * cellW + pad * 2;
+    const items = me
+      ? (ITEM_IDS as readonly ItemId[]).filter((id) => (me.inventory[id] ?? 0) > 0)
+      : [];
+    const rows = Math.max(1, Math.ceil(items.length / cols));
+    const ph = 56 + rows * cellH + 40;
+    const px = this.canvas.width / 2 - pw / 2;
+    const py = this.canvas.height / 2 - ph / 2;
+
+    ctx.fillStyle = "rgba(7,19,28,0.95)";
+    roundRect(ctx, px, py, pw, ph, 10);
+    ctx.fill();
+    ctx.strokeStyle = "#ffb300";
+    ctx.lineWidth = 2;
+    roundRect(ctx, px, py, pw, ph, 10);
+    ctx.stroke();
+
+    ctx.fillStyle = "#ffe9b0";
+    ctx.font = "bold 16px system-ui";
+    ctx.textAlign = "left";
+    ctx.fillText("INVENTORY", px + pad, py + 30);
+    ctx.fillStyle = "#7fa8c8";
+    ctx.font = "13px system-ui";
+    ctx.textAlign = "right";
+    ctx.fillText("[I] or Esc to close", px + pw - pad, py + 30);
+
+    if (items.length === 0) {
+      ctx.fillStyle = "#5a7f96";
+      ctx.font = "14px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("Your bag is empty — go gather, hunt, or fish.", px + pw / 2, py + ph / 2);
+    }
+
+    items.forEach((id, i) => {
+      const cx = px + pad + (i % cols) * cellW;
+      const cy = py + 48 + Math.floor(i / cols) * cellH;
+      // Item swatch
+      ctx.fillStyle = ITEM_COLORS[id] ?? "#888";
+      roundRect(ctx, cx + 6, cy + 6, cellW - 18, 30, 5);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.4)";
+      ctx.lineWidth = 1;
+      roundRect(ctx, cx + 6, cy + 6, cellW - 18, 30, 5);
+      ctx.stroke();
+      // Quantity badge
+      ctx.fillStyle = "#0b1d2a";
+      ctx.font = "bold 14px system-ui";
+      ctx.textAlign = "right";
+      ctx.fillText(`×${me!.inventory[id] ?? 0}`, cx + cellW - 16, cy + 26);
+      // Label
+      ctx.fillStyle = "#cfe3ef";
+      ctx.font = "11px system-ui";
+      ctx.textAlign = "left";
+      ctx.fillText(ITEM_LABEL[id], cx + 6, cy + 50);
+    });
+
+    ctx.fillStyle = "#9fe6c0";
+    ctx.font = "13px system-ui";
+    ctx.textAlign = "left";
+    ctx.fillText(`Money: $${me?.money ?? 0}`, px + pad, py + ph - 16);
+    ctx.textAlign = "right";
+    ctx.fillStyle = me && me.hunger < me.maxHunger * 0.25 ? "#e57373" : "#cfe3ef";
+    ctx.fillText(`Hunger: ${Math.round(me?.hunger ?? 0)}/${me?.maxHunger ?? 100}`, px + pw - pad, py + ph - 16);
+  }
+
+  // --- NPCs -----------------------------------------------------------------
+  private nearbyNpc(): NpcState | undefined {
+    if (!this.snap) return undefined;
+    const me = this.snap.players.find((p) => p.id === this.myId);
+    if (!me) return undefined;
+    let best: NpcState | undefined;
+    let bestD = 1.8;
+    for (const n of this.snap.npcs ?? []) {
+      const d = Math.hypot(n.x + 0.5 - me.x, n.y + 0.5 - me.y);
+      if (d <= bestD) { bestD = d; best = n; }
+    }
+    return best;
+  }
+
+  private drawNpcs(npcs: NpcState[], me?: PlayerState) {
+    const ctx = this.ctx;
+    for (const n of npcs) {
+      const { sx, sy } = this.toScreen(n.x + 0.5, n.y + 0.5);
+      const R = TILE_SIZE * 0.4;
+      // Shadow
+      ctx.fillStyle = "rgba(0,0,0,0.2)";
+      ctx.beginPath();
+      ctx.ellipse(sx, sy + R * 0.8, R * 0.7, R * 0.28, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Body
+      ctx.fillStyle = NPC_COLORS[n.kind] ?? "#607d8b";
+      ctx.beginPath();
+      ctx.arc(sx, sy, R, 0, Math.PI * 2);
+      ctx.fill();
+      // Head
+      ctx.fillStyle = "#e0ac69";
+      ctx.beginPath();
+      ctx.arc(sx, sy - R * 0.15, R * 0.55, 0, Math.PI * 2);
+      ctx.fill();
+      // Role label
+      ctx.fillStyle = "#eaf2f8";
+      ctx.font = "10px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText(NPC_NAME[n.kind] ?? "Local", sx, sy - TILE_SIZE * 0.7);
+      // "talk" bubble when you're close
+      const close = me && Math.hypot(n.x + 0.5 - me.x, n.y + 0.5 - me.y) <= 1.8;
+      if (close) {
+        ctx.fillStyle = "#fff3cf";
+        ctx.beginPath();
+        ctx.arc(sx + R, sy - R * 1.1, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#15384f";
+        ctx.font = "bold 10px system-ui";
+        ctx.fillText("?", sx + R, sy - R * 1.1 + 3.5);
+      }
+    }
+  }
+
+  private drawNpcPrompt(me?: PlayerState) {
+    if (!me || me.vehicleId || this.npcOpen) return;
+    const npc = this.nearbyNpc();
+    if (!npc) return;
+    const ctx = this.ctx;
+    const text = `Press E or N — talk to ${NPC_NAME[npc.kind] ?? "the local"}`;
+    ctx.font = "15px system-ui";
+    ctx.textAlign = "center";
+    const w = ctx.measureText(text).width + 28;
+    const x = this.canvas.width / 2;
+    const y = this.canvas.height - 146;
+    ctx.fillStyle = "rgba(7,19,28,0.85)";
+    ctx.fillRect(x - w / 2, y - 22, w, 32);
+    ctx.strokeStyle = "#ce93d8";
+    ctx.strokeRect(x - w / 2, y - 22, w, 32);
+    ctx.fillStyle = "#f3e5f5";
+    ctx.fillText(text, x, y);
+  }
+
+  private drawNpcDialogue(_me?: PlayerState) {
+    if (!this.snap || !this.npcOpen) return;
+    const npc = (this.snap.npcs ?? []).find((n) => n.id === this.npcOpen);
+    if (!npc) { this.npcOpen = null; return; }
+    const lines = NPC_DIALOGUE[npc.kind] ?? ["…"];
+    // Rotate the line every 30s so repeat visits feel alive (deterministic).
+    const idx = Math.floor(Date.now() / 30000) % lines.length;
+    const text = lines[idx];
+
+    const ctx = this.ctx;
+    const pw = 440, ph = 170;
+    const px = this.canvas.width / 2 - pw / 2;
+    const py = this.canvas.height - ph - 90;
+
+    ctx.fillStyle = "rgba(10,22,34,0.96)";
+    roundRect(ctx, px, py, pw, ph, 12);
+    ctx.fill();
+    ctx.strokeStyle = NPC_COLORS[npc.kind] ?? "#ce93d8";
+    ctx.lineWidth = 2;
+    roundRect(ctx, px, py, pw, ph, 12);
+    ctx.stroke();
+
+    ctx.fillStyle = NPC_COLORS[npc.kind] ?? "#ce93d8";
+    ctx.font = "bold 17px system-ui";
+    ctx.textAlign = "left";
+    ctx.fillText(NPC_NAME[npc.kind] ?? "Local", px + 20, py + 30);
+
+    // Word-wrapped body.
+    ctx.fillStyle = "#eaf2f8";
+    ctx.font = "15px system-ui";
+    this.wrapText(text, px + 20, py + 60, pw - 40, 22);
+
+    ctx.fillStyle = "#7fa8c8";
+    ctx.font = "13px system-ui";
+    ctx.fillText("Press E, N, or Esc to close", px + 20, py + ph - 16);
+  }
+
+  // Simple canvas word-wrap helper.
+  private wrapText(text: string, x: number, y: number, maxW: number, lineH: number) {
+    const ctx = this.ctx;
+    const words = text.split(" ");
+    let line = "";
+    let cy = y;
+    for (const w of words) {
+      const test = line ? `${line} ${w}` : w;
+      if (ctx.measureText(test).width > maxW && line) {
+        ctx.fillText(line, x, cy);
+        line = w;
+        cy += lineH;
+      } else {
+        line = test;
+      }
+    }
+    if (line) ctx.fillText(line, x, cy);
+  }
+
+  // --- refuel prompt --------------------------------------------------------
+  private drawRefuelPrompt(me?: PlayerState) {
+    if (!me || me.vehicleId || !this.snap) return;
+    const cans = me.inventory.jerryCan ?? 0;
+    if (cans <= 0) return;
+    let target: VehicleState | undefined;
+    let bestD = 1.6;
+    for (const v of this.snap.vehicles) {
+      if (v.fuel >= v.maxFuel) continue;
+      const d = Math.hypot(v.x - me.x, v.y - me.y);
+      if (d <= bestD) { bestD = d; target = v; }
+    }
+    if (!target) return;
+    const ctx = this.ctx;
+    const text = `Press E — refuel the ${target.kind} (⛽ ${Math.round(target.fuel)}/${target.maxFuel})`;
+    ctx.font = "15px system-ui";
+    ctx.textAlign = "center";
+    const w = ctx.measureText(text).width + 28;
+    const x = this.canvas.width / 2;
+    const y = this.canvas.height - 184;
+    ctx.fillStyle = "rgba(7,19,28,0.85)";
+    ctx.fillRect(x - w / 2, y - 22, w, 32);
+    ctx.strokeStyle = "#ff9800";
+    ctx.strokeRect(x - w / 2, y - 22, w, 32);
+    ctx.fillStyle = "#ffd9a0";
+    ctx.fillText(text, x, y);
+  }
+
   private drawFishPrompt(me?: PlayerState) {
     if (!me || !this.snap) return;
     const nearWater = me.swimming || (() => {
@@ -924,6 +1173,26 @@ export class Game {
       ctx.stroke();
     }
 
+    // Legs/feet — two rounded boots below the body, animated while on foot.
+    if (!p.vehicleId && !p.swimming) {
+      const legDir = p.dir + Math.PI; // feet trail behind the facing direction
+      const t = performance.now() / 220;
+      const legSwing = Math.sin(t) * 3; // simple walk cycle
+      for (const [side, swing] of [[-1, legSwing], [1, -legSwing]] as const) {
+        const perpA = legDir + (Math.PI / 2) * side;
+        const lx = sx + Math.cos(legDir) * R * 0.55 + Math.cos(perpA) * R * 0.28;
+        const ly = sy + Math.sin(legDir) * R * 0.55 + Math.sin(perpA) * R * 0.28 + swing;
+        ctx.fillStyle = "#2c1a0a"; // trouser/boot
+        ctx.beginPath();
+        ctx.ellipse(lx, ly, R * 0.17, R * 0.24, legDir, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#1a1008"; // toe of the boot
+        ctx.beginPath();
+        ctx.ellipse(lx + Math.cos(legDir) * 2, ly + Math.sin(legDir) * 2, R * 0.14, R * 0.12, legDir, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     // Arms reaching out to the sides of the facing direction.
     ctx.strokeStyle = p.appearance.skin;
     ctx.lineWidth = 3;
@@ -1071,6 +1340,77 @@ const TRAVEL_COLOR: Record<TravelNode["kind"], string> = {
   sea: "#13b6c4",
 };
 
+// Inventory swatch colours, by item.
+const ITEM_COLORS: Record<string, string> = {
+  wood: "#6b4423", iron: "#8a6040", stone: "#8a8a8a", plank: "#a0783c",
+  scrap: "#607d8b", rod: "#4a6a80", crabmeat: "#d4824a", fish: "#4a9abf",
+  liveFish: "#2eafd4", berry: "#3a59c0", cookedcrab: "#e05c20", cookedfish: "#c8a040",
+  ironBar: "#b0b0c0", shinyLure: "#ffd54f", jerryCan: "#e07020",
+};
+
+// NPC display name + body colour + dialogue, keyed by kind.
+const NPC_NAME: Record<NpcState["kind"], string> = {
+  naturalist: "Naturalist", pirate: "Local Pirate", scientist: "Marine Scientist",
+  westsider: "West Sider", eastsider: "East Sider", huuayaht: "Huu-ay-aht Citizen",
+  mayor: "Unofficial Mayor", historian: "Local Historian", boatdealer: "Boat Dealer",
+  icevendor: "Ice Vendor",
+};
+const NPC_COLORS: Record<NpcState["kind"], string> = {
+  naturalist: "#2e7d32", pirate: "#37474f", scientist: "#1565c0", westsider: "#00695c",
+  eastsider: "#4a148c", huuayaht: "#b71c1c", mayor: "#f57f17", historian: "#6d4c41",
+  boatdealer: "#0277bd", icevendor: "#00838f",
+};
+const NPC_DIALOGUE: Record<NpcState["kind"], string[]> = {
+  naturalist: [
+    "Those Scotch broom patches choke out the native salal. Pull them when they FLOWER — that's the only time it kills the root for good.",
+    "The arbutus trees only grow along the rocky shoreline here. Very rare on the coast — slow to grow back, so don't fell them lightly.",
+    "High tide brings the sixgills in close. Stay out of the deep water when the tide's up.",
+  ],
+  pirate: [
+    "I ain't sayin' where the good crab pots are. Figure it out yourself, landlubber.",
+    "Best fishing's off the drop past Brady's Beach at low tide. Don't tell a soul.",
+    "Got scrap to trade? I know a fella up the inlet who pays fair.",
+  ],
+  scientist: [
+    "We're tagging humpbacks this season. The BMSC pays top dollar for LIVE specimens — get the fish there before it dies!",
+    "The sixgill sharks venturing this shallow is remarkable. They rarely do that elsewhere in the world.",
+    "Find arbutus on the west side? Note the spot. We're mapping their range.",
+  ],
+  historian: [
+    "Bamfield Cable Station was the first trans-Pacific cable landing in Canada — 1902.",
+    "The Huu-ay-aht fished Pachena Bay for thousands of years before any road was built.",
+    "West Bamfield has never had a road. Everything comes by water or along the boardwalk.",
+  ],
+  eastsider: [
+    "Road only reaches the east side. West-siders haul everything by boat, poor souls.",
+    "Ostrom's is the only gas in town. Don't run your tank dry out on the water.",
+    "Breakers is just up the inlet — good food, warm fire.",
+  ],
+  westsider: [
+    "We like it over here. No cars, no through-traffic. Just the boardwalk and the inlet.",
+    "The McKay Bay Lodge is down the end of the boardwalk. Worth the walk.",
+    "You can walk the boardwalk clear around from the wharf. Mind the gaps at high tide.",
+  ],
+  huuayaht: [
+    "Welcome to Anacla. The Huu-ay-aht Nation has been here since time immemorial.",
+    "Pachena Beach runs all the way to Keeha — kilometres of sand at low tide.",
+    "The trail to Cape Beale starts on the east side. Long walk. Pack food.",
+  ],
+  boatdealer: [
+    "Got a couple boats along the river bank. Fair price, fair boat.",
+    "River boats are shallow-draft — good in the inlet, not so much in open water.",
+    "Want to cross Barkley Sound? You'll need a bigger boat than mine.",
+  ],
+  icevendor: [
+    "Fresh ice, straight from the freezer. Essential if you're running live fish to the BMSC.",
+    "Buy ice, keep your catch alive longer on the way over.",
+  ],
+  mayor: [
+    "I'm not the OFFICIAL mayor. There is no official mayor. But somebody's got to keep an eye on things.",
+    "Pull the Himalayan blackberry before it swallows the riverbank — same as broom, get it while it flowers.",
+  ],
+};
+
 const TRAVEL_ICON: Record<TravelNode["kind"], string> = {
   bus: "BUS",
   gate: "GATE",
@@ -1101,7 +1441,31 @@ function drawResourceSprite(ctx: CanvasRenderingContext2D, n: ResourceNode, x: n
     return;
   }
 
-  if (n.kind === "tree") {
+  if (n.kind === "tree" && n.variety === "arbutus") {
+    // Arbutus: distinctive reddish-orange peeling trunk, glossy compact canopy.
+    ctx.fillStyle = "#c4582e";
+    ctx.fillRect(x - 3, y, 6, R * 0.65);
+    // Bark flecks
+    ctx.fillStyle = "#9c3d1e";
+    ctx.fillRect(x - 2, y + 4, 2, 4);
+    ctx.fillRect(x + 1, y + 9, 2, 3);
+    for (const [ox, oy, r, col] of [
+      [0, -R * 0.1, R * 0.75, "#1e5c3a"],
+      [-R * 0.25, -R * 0.15, R * 0.55, "#265e40"],
+      [R * 0.25, -R * 0.1, R * 0.5, "#245c3c"],
+      [0, -R * 0.35, R * 0.6, "#2a7048"],
+    ] as const) {
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Warm sun-glint on the glossy leaves.
+    ctx.fillStyle = "rgba(255,200,100,0.18)";
+    ctx.beginPath();
+    ctx.arc(x - R * 0.2, y - R * 0.4, R * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (n.kind === "tree") {
     // Shadow
     ctx.fillStyle = "rgba(0,0,0,0.18)";
     ctx.beginPath();
@@ -1353,6 +1717,21 @@ function drawVehicleSprite(ctx: CanvasRenderingContext2D, v: VehicleState, x: nu
     ctx.fillRect(x - w / 2, y - TILE_SIZE, w, 3);
     ctx.fillStyle = frac > 0.5 ? "#4caf50" : frac > 0.25 ? "#ffb300" : "#e53935";
     ctx.fillRect(x - w / 2, y - TILE_SIZE, w * frac, 3);
+  }
+
+  // Fuel gauge just below the damage bar (only when it's not a full tank).
+  const ffrac = Math.max(0, v.fuel / v.maxFuel);
+  if (ffrac < 1) {
+    const w = TILE_SIZE * 1.4;
+    const fy = y - TILE_SIZE + 5;
+    ctx.fillStyle = "#222";
+    ctx.fillRect(x - w / 2, fy, w, 3);
+    ctx.fillStyle = ffrac > 0.3 ? "#ff9800" : "#e53935";
+    ctx.fillRect(x - w / 2, fy, w * ffrac, 3);
+    ctx.fillStyle = "#ffd9a0";
+    ctx.font = "8px system-ui";
+    ctx.textAlign = "left";
+    ctx.fillText("⛽", x - w / 2 - 10, fy + 4);
   }
 }
 

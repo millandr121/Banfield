@@ -524,6 +524,7 @@ const SHOP_BMSC: ShopDef = {
   buys: [
     { item: "fish", price: 5 },
     { item: "crabmeat", price: 4 },
+    { item: "liveFish", price: 8 },
   ],
   sells: [
     { item: "rod", price: 15 },
@@ -538,6 +539,7 @@ const SHOP_BREAKERS: ShopDef = {
   sells: [
     { item: "plank", price: 5 },
     { item: "rod", price: 16 },
+    { item: "jerryCan", price: 15 },
   ],
 };
 const SHOP_OSTROMS: ShopDef = {
@@ -549,6 +551,7 @@ const SHOP_OSTROMS: ShopDef = {
   ],
   sells: [
     { item: "plank", price: 5 },
+    { item: "jerryCan", price: 12 },
   ],
 };
 const SHOP_ANACLA_GAS: ShopDef = {
@@ -559,6 +562,7 @@ const SHOP_ANACLA_GAS: ShopDef = {
   ],
   sells: [
     { item: "plank", price: 5 },
+    { item: "jerryCan", price: 12 },
   ],
 };
 const SHOP_ANACLA_HOME: ShopDef = {
@@ -754,6 +758,13 @@ export function buildRegions(): RegionDef[] {
       { id:"bf-b4",  kind:"berryBush", x:235, y: 18, variety:"thimbleberry" },
       { id:"bf-b5",  kind:"berryBush", x:232, y: 85, variety:"trailing blackberry" },
       { id:"bf-b6",  kind:"berryBush", x: 38, y:135, variety:"huckleberry" },
+      // Arbutus trees — rocky coastal west side
+      { id:"bf-arbutus-1", kind:"tree", x:158, y:22, variety:"arbutus" },
+      { id:"bf-arbutus-2", kind:"tree", x:161, y:30, variety:"arbutus" },
+      { id:"bf-arbutus-3", kind:"tree", x:155, y:38, variety:"arbutus" },
+      { id:"bf-arbutus-4", kind:"tree", x:163, y:45, variety:"arbutus" },
+      { id:"bf-arbutus-5", kind:"tree", x:157, y:50, variety:"arbutus" },
+      { id:"bf-arbutus-6", kind:"tree", x:164, y:24, variety:"arbutus" },
     ],
     plants: [
       { id:"bf-inv1", kind:"scotchBroom",         x:230, y: 14 },
@@ -812,6 +823,10 @@ export function buildRegions(): RegionDef[] {
       { id:"an-b3",  kind:"berryBush", x: 48, y: 55, variety:"thimbleberry" },
       { id:"an-b4",  kind:"berryBush", x:248, y: 50, variety:"salal" },
       { id:"an-b5",  kind:"berryBush", x:158, y: 78, variety:"trailing blackberry" },
+      // Arbutus trees — rocky coastal spots
+      { id:"an-arbutus-1", kind:"tree", x:245, y:14, variety:"arbutus" },
+      { id:"an-arbutus-2", kind:"tree", x:252, y:28, variety:"arbutus" },
+      { id:"an-arbutus-3", kind:"tree", x:248, y:40, variety:"arbutus" },
     ],
     plants: [
       { id:"an-inv1", kind:"scotchBroom",         x:230, y: 20 },

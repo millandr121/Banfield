@@ -78,16 +78,16 @@ export function defaultSkills(): Skills {
 // --- Inventory --------------------------------------------------------------
 export const ITEM_IDS = [
   "wood", "iron", "stone", "plank", "scrap", "rod",
-  "crabmeat", "fish", "berry", "cookedcrab", "cookedfish",
-  "ironBar", "shinyLure",
+  "crabmeat", "fish", "liveFish", "berry", "cookedcrab", "cookedfish",
+  "ironBar", "shinyLure", "jerryCan",
 ] as const;
 export type ItemId = (typeof ITEM_IDS)[number];
 export type Inventory = Partial<Record<ItemId, number>>;
 export const ITEM_LABEL: Record<ItemId, string> = {
   wood: "Wood", iron: "Iron ore", stone: "Stone", plank: "Plank", scrap: "Scrap", rod: "Rod",
-  crabmeat: "Crab meat", fish: "Raw fish", berry: "Berries",
+  crabmeat: "Crab meat", fish: "Raw fish", liveFish: "Live fish", berry: "Berries",
   cookedcrab: "Cooked crab", cookedfish: "Cooked fish",
-  ironBar: "Iron Bar", shinyLure: "Shiny Lure",
+  ironBar: "Iron Bar", shinyLure: "Shiny Lure", jerryCan: "Jerry can",
 };
 
 // What eating an item restores. Raw food is weak; cooking over a fire roughly
@@ -95,6 +95,7 @@ export const ITEM_LABEL: Record<ItemId, string> = {
 export const FOOD_VALUE: Partial<Record<ItemId, { hunger: number; hp: number }>> = {
   crabmeat: { hunger: 9, hp: 3 },
   fish: { hunger: 9, hp: 3 },
+  liveFish: { hunger: 9, hp: 3 },
   berry: { hunger: 15, hp: 6 },
   cookedcrab: { hunger: 36, hp: 20 },
   cookedfish: { hunger: 42, hp: 24 },
@@ -258,6 +259,8 @@ export interface VehicleState {
   dir: number; // heading in radians
   hp: number;
   maxHp: number;
+  fuel: number;
+  maxFuel: number;
   driverId: string | null; // player currently driving, else null
 }
 
@@ -288,6 +291,17 @@ export interface BuildingState {
   hp: number;
   maxHp: number;
   shop?: ShopDef; // present if you can trade here
+}
+
+// --- NPCs -------------------------------------------------------------------
+export type NpcKind = "naturalist" | "pirate" | "scientist" | "westsider" | "eastsider" | "huuayaht" | "mayor" | "historian" | "boatdealer" | "icevendor";
+
+export interface NpcState {
+  id: string;
+  kind: NpcKind;
+  region: RegionId;
+  x: number;
+  y: number;
 }
 
 // --- Travel between regions -------------------------------------------------
@@ -331,7 +345,8 @@ export type ClientMessage =
   | { t: "chat"; msg: string } // text; / global, // team, ///name private
   | { t: "repair" }
   | { t: "trade"; buildingId: string; kind: "buy" | "sell"; item: ItemId; qty: number }
-  | { t: "travel" };
+  | { t: "travel" }
+  | { t: "refuel" };
 
 // --- Messages: server -> client --------------------------------------------
 export interface Snapshot {
@@ -347,6 +362,7 @@ export interface Snapshot {
   plants: PlantState[];
   campfires: CampfireState[];
   furnaces: FurnaceState[];
+  npcs: NpcState[];
 }
 
 export type ServerMessage =
