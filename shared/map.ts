@@ -255,6 +255,19 @@ function generateBamfieldMap(): WorldMap {
   // --- NATURAL LANDCOVER ---
   applyLandcover(tiles, W, H);
 
+  // West Bamfield is a long-established boardwalk settlement — explicitly clear
+  // the forest strip along the west bank so houses aren't buried in trees.
+  for (let y = 15; y <= 118; y++)
+    for (let x = 138; x <= 163; x++)
+      if (tiles[y * W + x] === Tile.Forest || tiles[y * W + x] === Tile.Hill)
+        tiles[y * W + x] = Tile.Grass;
+
+  // East Bamfield community along Bamfield Main — clear a wide settled corridor.
+  for (let y = 10; y <= 130; y++)
+    for (let x = 178; x <= 214; x++)
+      if (tiles[y * W + x] === Tile.Forest || tiles[y * W + x] === Tile.Hill)
+        tiles[y * W + x] = Tile.Grass;
+
   // --- ROADS ---
   // Bamfield Main: arrives from the NE (ferry road end), runs S to road-end.
   const ROAD_X = 185;
@@ -272,13 +285,10 @@ function generateBamfieldMap(): WorldMap {
   clearRoadMargins(tiles, 2, W, H);
 
   // --- WEST BAMFIELD BOARDWALK (docks along west bank of inlet) ---
-  // Fingerpier docks jut east from the west bank into the inlet.
-  for (const [px, py] of [
-    [162, 28], [162, 36], [162, 44], [161, 52],
-    [161, 60], [161, 70], [161, 80], [160, 90],
-    [160, 98], [160, 108],
-  ] as [number, number][]) {
-    hLine(tiles, px, px + 7, py, Tile.Dock);
+  // Fingerpiers run from land (x≈152) east into the inlet water.
+  // The inlet meanders ±2 tiles so we extend well into the channel.
+  for (const py of [28, 36, 44, 52, 60, 70, 80, 90, 98, 108]) {
+    hLine(tiles, 152, 172, py, Tile.Dock);
   }
 
   // --- GOVERNMENT WHARF (east bank, car ferry terminal) ---
@@ -308,7 +318,7 @@ function bamfieldBuildings(): BuildingState[] {
     { kind:"house",     x:148, y: 48, w:3, h:2, hp:100 },
     { kind:"boathouse", x:153, y: 48, w:4, h:3, hp:120 },
     // McKay Bay Lodge — west-side marina lodge, sells fuel
-    { kind:"shop",      x:143, y: 58, w:5, h:3, hp:180 },
+    { kind:"shop",      x:145, y: 58, w:5, h:3, hp:180 },
     { kind:"house",     x:148, y: 62, w:3, h:2, hp:100 },
     { kind:"house",     x:148, y: 70, w:3, h:2, hp:100 },
     { kind:"house",     x:152, y: 70, w:3, h:2, hp:100 },
@@ -405,6 +415,13 @@ function generateAnaclaMap(): WorldMap {
   // --- NATURAL LANDCOVER ---
   applyLandcover(tiles, W, H);
 
+  // Anacla village is a settled Huu-ay-aht community — clear the forest
+  // for the village strip along the road so houses aren't in trees.
+  for (let y = 15; y <= 72; y++)
+    for (let x = 168; x <= 244; x++)
+      if (tiles[y * W + x] === Tile.Forest || tiles[y * W + x] === Tile.Hill)
+        tiles[y * W + x] = Tile.Grass;
+
   // --- WIDE SANDY FLAT (Pachena Beach tidal zone) ---
   // The beach is enormous; paint a wide sand band all around the bay shore.
   const dwBay = distanceToWater(tiles, W, H);
@@ -423,7 +440,7 @@ function generateAnaclaMap(): WorldMap {
   vLine(tiles, ROAD_X, 0, 60, Tile.Road);
   // Curves west along the village then south to the campground:
   for (let x = ROAD_X; x >= 165; x--) setTile(tiles, x, 60, Tile.Road);
-  vLine(tiles, 165, 60, 88, Tile.Road);
+  vLine(tiles, 165, 60, 78, Tile.Road); // stop at y=78 (water starts ~y=81 at x=165)
   // Short spur east from village to boat launch:
   hLine(tiles, ROAD_X, ROAD_X + 18, 50, Tile.Road);
 
@@ -455,10 +472,10 @@ function anaclaBuildings(): BuildingState[] {
     { kind:"house",     x:188, y: 60, w:3, h:2, hp:100 },
     { kind:"house",     x:180, y: 62, w:3, h:2, hp:100 },
     { kind:"house",     x:172, y: 63, w:3, h:2, hp:100 },
-    // ---- PACHENA BAY CAMPGROUND (mid-beach, y≈82-95) ----
-    { kind:"house",     x:155, y: 80, w:3, h:2, hp: 80 }, // shelter
-    { kind:"house",     x:162, y: 80, w:3, h:2, hp: 80 },
-    { kind:"boathouse", x:148, y: 82, w:4, h:3, hp:120 }, // boat launch
+    // ---- PACHENA BAY CAMPGROUND (above the high-tide line, y≈72-78) ----
+    { kind:"house",     x:155, y: 74, w:3, h:2, hp: 80 }, // shelter
+    { kind:"house",     x:162, y: 74, w:3, h:2, hp: 80 },
+    { kind:"boathouse", x:148, y: 76, w:4, h:3, hp:120 }, // boat launch
   ]);
 }
 
@@ -625,7 +642,7 @@ export function buildRegions(): RegionDef[] {
     ],
     vehicles: [
       { id: "bf-car-1",  kind: "car",  x: 187, y: 14  }, // north Bamfield Main
-      { id: "bf-car-2",  kind: "car",  x: 187, y: 88  }, // south Bamfield Main
+      { id: "bf-car-2",  kind: "car",  x: 187, y: 82  }, // south Bamfield Main
       { id: "bf-boat-1", kind: "boat", x: 163, y: 74  }, // inlet west bank, near West Bamfield
       { id: "bf-boat-2", kind: "boat", x: 175, y: 55  }, // near gov't wharf
       { id: "bf-boat-3", kind: "boat", x: 232, y: 52  }, // Grappler Inlet, BMSC
