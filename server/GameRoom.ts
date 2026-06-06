@@ -59,6 +59,7 @@ interface Session {
   lastDodge: number; // timestamp of last dodge (for cooldown)
   lastHarvest: number; // debounce resource harvesting
   iframeUntil: number; // dodge i-frames: no damage taken until this time
+  travelCdUntil: number; // brief cooldown after a region change (stops ping-pong)
 }
 
 // Server-side vehicle adds rust tracking (not sent to clients).
@@ -282,11 +283,12 @@ export class GameRoom {
       { id: "npc-historian",  kind: "historian",  region: "bamfield", x: 190, y: 68 },
       { id: "npc-eastsider",  kind: "eastsider",  region: "bamfield", x: 195, y: 55 },
       { id: "npc-westsider",  kind: "westsider",  region: "bamfield", x: 152, y: 60 },
-      // Anacla
-      { id: "npc-huuayaht",   kind: "huuayaht",   region: "anacla",   x: 218, y: 28 },
-      { id: "npc-boatdealer", kind: "boatdealer", region: "anacla",   x: 225, y: 35 },
-      { id: "npc-icevendor",  kind: "icevendor",  region: "anacla",   x: 222, y: 42 },
-      { id: "npc-mayor",      kind: "mayor",      region: "anacla",   x: 230, y: 20 },
+      // Anacla — lower village
+      { id: "npc-boatdealer", kind: "boatdealer", region: "anacla",   x: 172, y: 58 },
+      { id: "npc-icevendor",  kind: "icevendor",  region: "anacla",   x: 180, y: 64 },
+      // Anacla — upper bench (House of Huu-ay-aht & government office)
+      { id: "npc-huuayaht",   kind: "huuayaht",   region: "anacla",   x: 260, y: 48 },
+      { id: "npc-mayor",      kind: "mayor",      region: "anacla",   x: 248, y: 34 },
     ];
   }
 
@@ -334,7 +336,7 @@ export class GameRoom {
   // --- connection lifecycle -------------------------------------------------
   private onConnect(ws: WebSocket) {
     const playerId = `p${this.idCounter++}`;
-    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0, lastDodge: 0, lastHarvest: 0, iframeUntil: 0 });
+    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0, lastDodge: 0, lastHarvest: 0, iframeUntil: 0, travelCdUntil: 0 });
     ws.addEventListener("message", (ev) => {
       try {
         this.onMessage(ws, JSON.parse(ev.data as string) as ClientMessage);
@@ -605,6 +607,9 @@ export class GameRoom {
         p.hp -= SINK_DPS * dt;
         if (p.hp <= 0 && !p.dead) this.killPlayer(p);
       }
+
+      // Walk onto a road gate at the map edge and you cross to the next region.
+      if (moved) this.autoTravelOnFoot(p);
     }
     this.decayKnockback(dt);
   }
@@ -658,12 +663,22 @@ export class GameRoom {
 
         // Sail a boat into an open-water "sea" border and it carries you (and
         // the boat) across to the neighbouring region.
-        if (v.kind === "boat") {
+        const s2 = this.sessionFor(driver.id);
+        const offCd = !s2 || now >= s2.travelCdUntil;
+        if (v.kind === "boat" && offCd) {
           const sea = region.travelNodes.find(
             (n) => n.kind === "sea" &&
               v.x >= n.x && v.x <= n.x + n.w && v.y >= n.y && v.y <= n.y + n.h,
           );
-          if (sea) { this.transferBoat(v, driver, sea.toRegion, sea.toSpawn); continue; }
+          if (sea) { this.transferVehicle(v, driver, sea.toRegion, sea.toSpawn); continue; }
+        }
+        // Drive a car onto a road gate and it carries you across by road.
+        if (v.kind === "car" && offCd) {
+          const gate = region.travelNodes.find(
+            (n) => n.kind === "gate" &&
+              v.x >= n.x - 0.5 && v.x <= n.x + n.w + 0.5 && v.y >= n.y - 0.5 && v.y <= n.y + n.h + 0.5,
+          );
+          if (gate) { this.transferVehicle(v, driver, gate.toRegion, gate.toSpawn); continue; }
         }
       } else {
         // Driverless boats stay put — they're moored, not adrift.
@@ -1444,6 +1459,7 @@ export class GameRoom {
     }
   }
 
+  // Pressing T: catch the bus from anywhere standing on a bus/gate pad.
   private doTravel(ws: WebSocket, playerId: string) {
     const p = this.players.get(playerId);
     if (!p || p.dead || p.vehicleId) return; // vehicles stay behind — travel on foot
@@ -1454,14 +1470,35 @@ export class GameRoom {
         p.x >= n.x - 0.6 && p.x <= n.x + n.w + 0.6 && p.y >= n.y - 0.6 && p.y <= n.y + n.h + 0.6,
     );
     if (!node) return;
+    this.footTravel(ws, p, node);
+  }
+
+  // Shared foot-travel: move the player to the destination region & resync map.
+  private footTravel(ws: WebSocket, p: PlayerState, node: TravelNode) {
     const dest = this.regions.get(node.toRegion);
     if (!dest) return;
     const arrive = this.landSpawn(dest, node.toSpawn.x, node.toSpawn.y);
     p.region = dest.id;
     p.x = arrive.x;
     p.y = arrive.y;
+    const s = this.sessionFor(p.id);
+    if (s) s.travelCdUntil = Date.now() + 1500; // grace so you don't bounce back
     this.sendInit(ws, p);
     this.broadcastLog(`${p.name} arrived in ${dest.name}.`);
+  }
+
+  // Auto-travel on foot: just WALK onto a road gate and you cross over — no key.
+  // (Bus pads stay manual: catching a scheduled bus is a deliberate T press.)
+  private autoTravelOnFoot(p: PlayerState) {
+    const s = this.sessionFor(p.id);
+    if (!s || Date.now() < s.travelCdUntil) return;
+    const region = this.regions.get(p.region);
+    if (!region) return;
+    const node = region.travelNodes.find(
+      (n) => n.kind === "gate" &&
+        p.x >= n.x - 0.2 && p.x <= n.x + n.w + 0.2 && p.y >= n.y - 0.2 && p.y <= n.y + n.h + 0.2,
+    );
+    if (node) this.footTravel(s.ws, p, node);
   }
 
   // --- creatures ------------------------------------------------------------
@@ -1776,11 +1813,14 @@ export class GameRoom {
     return { x: sx, y: sy };
   }
 
-  // Move a driven boat (and its skipper) to another region's water.
-  private transferBoat(v: VehicleRecord, driver: PlayerState, toRegion: RegionId, toSpawn: { x: number; y: number }) {
+  // Move a driven vehicle (and its driver) to another region. Boats land in
+  // water on the far side; cars land on the road/dry ground.
+  private transferVehicle(v: VehicleRecord, driver: PlayerState, toRegion: RegionId, toSpawn: { x: number; y: number }) {
     const dest = this.regions.get(toRegion);
     if (!dest) return;
-    const arrive = this.seaSpawn(dest, toSpawn.x, toSpawn.y);
+    const arrive = v.kind === "boat"
+      ? this.seaSpawn(dest, toSpawn.x, toSpawn.y)
+      : this.landSpawn(dest, toSpawn.x, toSpawn.y);
     v.region = toRegion;
     v.x = arrive.x;
     v.y = arrive.y;
@@ -1788,8 +1828,14 @@ export class GameRoom {
     driver.x = arrive.x;
     driver.y = arrive.y;
     const s = this.sessionFor(driver.id);
-    if (s) this.sendInit(s.ws, driver); // swap their map to the new region
-    this.broadcastLog(`${driver.name} sailed into ${dest.name}.`);
+    if (s) {
+      s.travelCdUntil = Date.now() + 1500; // grace so you don't bounce back
+      this.sendInit(s.ws, driver); // swap their map to the new region
+    }
+    this.broadcastLog(
+      v.kind === "boat" ? `${driver.name} sailed into ${dest.name}.`
+                        : `${driver.name} drove into ${dest.name}.`,
+    );
   }
 
   private nearestBuilding(region: Region, x: number, y: number, range: number): BuildingState | null {
