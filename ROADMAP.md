@@ -49,10 +49,16 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
       really in the inlet (the odd one). Sea otters live in kelp beds.
 - [ ] Shoreline foam, water gradient polish, palette tuning (Eastward tones).
 
-## 3. COMBAT (skill-based, after art)
-- [ ] Rework combat to be skill-based (research top-down combat feel)
-- [ ] Weapons: rifle, hunting knife, bow & arrow, speargun, stick, crossbow
-- [ ] Each weapon: range, windup, ammo, skill scaling
+## 3. COMBAT (skill-based)
+- [x] Weapon system: stick, hunting knife (melee); bow, crossbow, speargun,
+      rifle (ranged, hitscan + ammo). Per-weapon damage/range/cooldown/stamina;
+      combat-skill scaling; charged melee swings; speargun bonus vs marine life.
+      Weapons/ammo sold at Breaker's Marine & Ostrom's. Slots 1-6 + 0 (fists).
+- [x] PvP damage (melee + ranged, respects dodge i-frames) — foundation for the
+      wanted/cops system.
+- [x] Ranged tracer effects + HUD weapon/ammo readout.
+- [ ] Projectile travel (currently hitscan) + arcing arrows, later.
+- [ ] Equip from a proper hotbar UI; weapon sprites in-hand on the character.
 
 ## 4. WILDLIFE & NATURE (technical accuracy)
 - [ ] Rarity tiers (OSRS-style rarity feel):
@@ -64,16 +70,17 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
     public announcement shouted by a local NPC
 - [ ] Seals always sunbathing on **the rock by Diana Island**
 - [ ] Sea lion species accuracy: **California vs Steller**, big bull males
-- [ ] **Inspection tool** — inspect any creature/plant/etc → minimalist,
-      interactive popup: common + scientific name, uses, facts
-- [ ] **Logbook** — free from the BMSC office. Logs every discovery: species,
-      count, location, time of day / date. Track what you've found.
-- [ ] **Discovery radius** — press a button, a radius animates out from you,
-      auto-logs everything in range (so you can ID dangerous/hard-to-reach
-      things at a safe distance) into the logbook.
+- [x] **Inspection tool** (X) — minimalist field-guide card for the nearest
+      creature/plant/resource: common + scientific name, rarity, fact, use.
+- [x] **Logbook** (L) — BMSC field logbook, grouped by type with encounter
+      counts + "X / total logged" tally; persists to D1.
+- [x] **Discovery radius** (R) — animated ring logs every species in range.
+      (Still to add: per-find location + time-of-day stamping.)
 
 ## 5. SYSTEMS / META
-- [ ] **NPCs** — implement the locals properly (dialogue, roles, the orca-shout)
+- [~] **NPCs** — placed at real landmarks (BMSC, Mercantile, Breaker's, gov)
+      with dialogue + talk prompt; orca arrival shout done. Still to do: proper
+      roles (responders/nurse/chief/president), movement, richer dialogue.
 - [x] **Persistence** — Cloudflare D1 (`banfieldthegame`). Players save/load by
       name with a per-device claim secret; autosave every 30s + on disconnect.
       Schema in `server/schema.sql`.

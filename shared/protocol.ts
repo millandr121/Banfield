@@ -106,6 +106,10 @@ export const ITEM_IDS = [
   "berry", "cookedcrab", "cookedfish", "cookedsalmon", "cookedlingcod",
   "cookedvenison", "cookedpoultry",
   "ironBar", "shinyLure", "jerryCan",
+  // weapons
+  "stick", "huntingKnife", "bow", "crossbow", "speargun", "rifle",
+  // ammo
+  "arrow", "bolt", "spear", "bullet",
 ] as const;
 export type ItemId = (typeof ITEM_IDS)[number];
 export type Inventory = Partial<Record<ItemId, number>>;
@@ -120,6 +124,9 @@ export const ITEM_LABEL: Record<ItemId, string> = {
   cookedsalmon: "Cooked salmon", cookedlingcod: "Cooked lingcod",
   cookedvenison: "Roast venison", cookedpoultry: "Roast game bird",
   ironBar: "Iron Bar", shinyLure: "Shiny Lure", jerryCan: "Jerry can",
+  stick: "Stick", huntingKnife: "Hunting Knife", bow: "Bow", crossbow: "Crossbow",
+  speargun: "Speargun", rifle: "Rifle",
+  arrow: "Arrow", bolt: "Bolt", spear: "Spear", bullet: "Bullet",
 };
 
 // What eating an item restores.
@@ -267,6 +274,7 @@ export interface PlayerState {
   sleeping: boolean; // resting by a fire to heal (vulnerable, can't move)
   vehicleId: string | null; // id of the vehicle being driven, else null
   dead: boolean;
+  equipped: ItemId | null; // currently wielded weapon (null = bare hands)
 }
 
 export type CreatureKind =
@@ -395,6 +403,7 @@ export interface LogbookEntry { key: string; count: number; firstAt: number }
 export type ClientMessage =
   | { t: "join"; name: string; appearance: Appearance; secret?: string }
   | { t: "scan" } // fire the discovery radius — log nearby species
+  | { t: "equip"; item: ItemId | null } // wield a weapon (null = bare hands)
   | { t: "input"; dx: number; dy: number; sprint?: boolean } // intended direction, each -1..1
   | { t: "attack"; charge?: number } // charge 0..1 from how long Space was held
   | { t: "dodge" } // quick lunge + i-frames in the current heading
@@ -437,6 +446,8 @@ export type ServerMessage =
   | { t: "chunk"; region: RegionId; cx: number; cy: number; w: number; h: number; tiles: number[]; elevation: number[] }
   | { t: "log"; msg: string }
   | { t: "logbook"; entries: LogbookEntry[] } // your BMSC logbook contents
+  // A transient visual effect (e.g. a ranged-shot tracer) for clients to draw.
+  | { t: "fx"; kind: "tracer"; region: RegionId; x1: number; y1: number; x2: number; y2: number; weapon: string }
   | { t: "chat"; from: string; msg: string; channel: "global" | "team" | "private" };
 
 // Helper shared by both sides: a tile is under water when its (per-tile)

@@ -94,13 +94,32 @@ const THROTTLE_FUEL_MULT = 2.2; // extra fuel burn when throttling
 const PLAYER_MAX_HP = 100;
 
 // Combat is stamina-gated so it rewards timing over button-mashing.
-const ATTACK_RANGE = 1.5; // tiles (light swing); charged swings reach further
-const ATTACK_ARC = Math.PI * 0.6; // must be roughly facing the target
-const ATTACK_DAMAGE = 18; // base (light) damage; scales up with charge
-const ATTACK_COOLDOWN_MS = 380; // skill: you can't just spam swings
-const ATTACK_KNOCKBACK = 5; // impulse applied to a struck creature
-const ATTACK_STAMINA = 18; // stamina a swing costs
+const ATTACK_ARC = Math.PI * 0.6; // melee: must be roughly facing the target
+const ATTACK_KNOCKBACK = 5; // default impulse applied to a struck target
 const CHARGE_BONUS = 1.6; // a full charge adds this fraction to dmg/range/kb
+
+// --- Weapons ----------------------------------------------------------------
+interface WeaponStat {
+  melee: boolean;
+  damage: number;
+  range: number;        // tiles (melee reach / ranged max distance)
+  cooldownMs: number;
+  stamina: number;
+  arc?: number;         // melee swing half-arc (radians)
+  knockback?: number;
+  ammo?: ItemId;        // ranged: item consumed per shot
+  marineBonus?: number; // damage multiplier vs marine creatures (speargun)
+}
+const FIST: WeaponStat = { melee: true, damage: 6, range: 1.3, cooldownMs: 420, stamina: 5, arc: ATTACK_ARC, knockback: 4 };
+const WEAPONS: Partial<Record<ItemId, WeaponStat>> = {
+  stick:        { melee: true,  damage: 9,  range: 1.6, cooldownMs: 360, stamina: 6,  arc: ATTACK_ARC,        knockback: 5 },
+  huntingKnife: { melee: true,  damage: 18, range: 1.3, cooldownMs: 300, stamina: 7,  arc: Math.PI * 0.45,    knockback: 4 },
+  speargun:     { melee: false, damage: 26, range: 7,   cooldownMs: 1100, stamina: 9,  ammo: "spear",  knockback: 6, marineBonus: 1.7 },
+  bow:          { melee: false, damage: 20, range: 9,   cooldownMs: 780,  stamina: 8,  ammo: "arrow",  knockback: 4 },
+  crossbow:     { melee: false, damage: 34, range: 10,  cooldownMs: 1400, stamina: 10, ammo: "bolt",   knockback: 6 },
+  rifle:        { melee: false, damage: 55, range: 16,  cooldownMs: 1600, stamina: 6,  ammo: "bullet", knockback: 8 },
+};
+const WEAPON_ITEMS: ItemId[] = ["stick", "huntingKnife", "bow", "crossbow", "speargun", "rifle"];
 const HIT_KNOCKBACK = 5; // impulse applied to a player who gets hit
 const KB_FRICTION = 6; // how fast knockback decays per second
 const MAX_STAMINA = 100;
@@ -499,6 +518,9 @@ export class GameRoom {
       case "scan":
         this.doScan(ws, s.playerId);
         break;
+      case "equip":
+        this.doEquip(s.playerId, msg.item);
+        break;
     }
   }
 
@@ -570,7 +592,7 @@ export class GameRoom {
       banfielderPts: 0,
       rank: 0,
       isMayor: false,
-      inventory: {},
+      inventory: { stick: 1 }, // everyone starts with a stick to defend themselves
       money: STARTING_MONEY,
       team: null,
       appearance: sanitizeAppearance(msg.appearance),
@@ -580,6 +602,7 @@ export class GameRoom {
       sleeping: false,
       vehicleId: null,
       dead: false,
+      equipped: "stick",
     };
 
     // Restore a saved account if one exists for this name (and the claim
@@ -634,6 +657,10 @@ export class GameRoom {
     p.inventory = json(row.inventory, p.inventory);
     p.appearance = sanitizeAppearance(json(row.appearance, p.appearance));
     this.discoveries.set(p.name, json(row.discoveries, {} as Record<string, { count: number; firstAt: number }>));
+    // Re-equip a weapon they actually still own (saved inventory may differ).
+    if (!p.equipped || (p.inventory[p.equipped] ?? 0) <= 0) {
+      p.equipped = WEAPON_ITEMS.find((w) => (p.inventory[w] ?? 0) > 0) ?? null;
+    }
   }
 
   private async savePlayer(p: PlayerState, secret: string | null) {
@@ -1708,49 +1735,116 @@ export class GameRoom {
     const s = this.sessionFor(p.id);
     if (!s) return;
     const now = Date.now();
-    if (now - s.lastAttack < ATTACK_COOLDOWN_MS) return; // skill: respect cooldown
-    if (p.stamina < ATTACK_STAMINA) return; // too winded to swing
+    const wpn = (p.equipped && WEAPONS[p.equipped]) || FIST;
+    if (now - s.lastAttack < wpn.cooldownMs) return; // weapon-specific cooldown
+    if (p.stamina < wpn.stamina) return;             // too winded
+    const combatBonus = 1 + skillLevel(p.skills.combat) * 0.006;
+    if (wpn.melee) this.meleeAttack(p, s, wpn, charge, combatBonus, now);
+    else this.rangedAttack(p, s, wpn, combatBonus, now);
+  }
+
+  // Apply a hit to a creature: damage, knockback, loot + XP on kill.
+  private hitCreature(p: PlayerState, c: CreatureState, damage: number, knockback: number) {
+    c.hp -= damage;
+    this.applyKnockback(c.id, c.x - p.x, c.y - p.y, knockback);
+    if (c.hp <= 0) {
+      this.giveXP(p, "combat", creatureHp(c.kind) * XP_KILL_PER_HP);
+      for (const drop of rollLoot(c.kind)) this.addItem(p.inventory, drop.item, drop.qty);
+      this.creatures.delete(c.id);
+      this.kb.delete(c.id);
+    }
+  }
+
+  // Apply a hit to another player (PvP), respecting their dodge i-frames.
+  private hitPlayer(attacker: PlayerState, target: PlayerState, damage: number, knockback: number) {
+    if (target.dead) return;
+    const ts = this.sessionFor(target.id);
+    if (ts && Date.now() < ts.iframeUntil) return; // dodged
+    target.hp -= damage;
+    this.applyKnockback(target.id, target.x - attacker.x, target.y - attacker.y, knockback);
+    this.giveXP(attacker, "combat", damage * 0.15);
+    if (target.hp <= 0 && !target.dead) this.killPlayer(target);
+  }
+
+  private meleeAttack(p: PlayerState, s: Session, wpn: WeaponStat, charge: number, combatBonus: number, now: number) {
     s.lastAttack = now;
-    p.stamina -= ATTACK_STAMINA;
-
-    // A held (charged) swing hits harder, reaches further, and knocks back more.
-    // Combat skill adds a passive bonus on top.
+    p.stamina -= wpn.stamina;
     const ch = Math.max(0, Math.min(1, charge));
-    const combatBonus = 1 + skillLevel(p.skills.combat) * 0.005;
     const scale = (1 + CHARGE_BONUS * ch) * combatBonus;
-    const range = ATTACK_RANGE * (1 + 0.4 * ch);
-    const damage = ATTACK_DAMAGE * scale;
-    const knockback = ATTACK_KNOCKBACK * scale;
-
-    // Hit the nearest creature that's in range AND roughly in front of you.
-    let best: CreatureState | null = null;
-    let bestD = range;
-    for (const c of this.creatures.values()) {
-      if (c.region !== p.region) continue;
-      const dx = c.x - p.x;
-      const dy = c.y - p.y;
-      const d = Math.hypot(dx, dy);
-      if (d > bestD) continue;
+    const range = wpn.range * (1 + 0.3 * ch);
+    const damage = wpn.damage * scale;
+    const knockback = (wpn.knockback ?? ATTACK_KNOCKBACK) * scale;
+    const arc = wpn.arc ?? ATTACK_ARC;
+    const inArc = (dx: number, dy: number, d: number) => {
+      if (d > range) return false;
       let diff = Math.abs(Math.atan2(dy, dx) - p.dir);
       if (diff > Math.PI) diff = Math.PI * 2 - diff;
-      if (diff > ATTACK_ARC) continue;
-      bestD = d;
-      best = c;
+      return diff <= arc;
+    };
+    // Nearest creature in the swing arc.
+    let bestC: CreatureState | null = null, bestD = range;
+    for (const c of this.creatures.values()) {
+      if (c.region !== p.region) continue;
+      const dx = c.x - p.x, dy = c.y - p.y, d = Math.hypot(dx, dy);
+      if (inArc(dx, dy, d) && d <= bestD) { bestD = d; bestC = c; }
     }
-    if (best) {
-      best.hp -= damage;
-      this.applyKnockback(best.id, best.x - p.x, best.y - p.y, knockback);
-      if (best.hp <= 0) {
-        // Combat XP proportional to the creature's max HP (harder kills = more XP).
-        this.giveXP(p, "combat", creatureHp(best.kind) * XP_KILL_PER_HP);
-        // Loot drops go straight into inventory.
-        for (const drop of rollLoot(best.kind)) {
-          this.addItem(p.inventory, drop.item, drop.qty);
-        }
-        this.creatures.delete(best.id);
-        this.kb.delete(best.id);
-      }
+    if (bestC) { this.hitCreature(p, bestC, damage, knockback); return; }
+    // Otherwise a player in the arc (PvP).
+    for (const t of this.players.values()) {
+      if (t.id === p.id || t.region !== p.region) continue;
+      const dx = t.x - p.x, dy = t.y - p.y, d = Math.hypot(dx, dy);
+      if (inArc(dx, dy, d)) { this.hitPlayer(p, t, damage, knockback); return; }
     }
+  }
+
+  private rangedAttack(p: PlayerState, s: Session, wpn: WeaponStat, combatBonus: number, now: number) {
+    const ammo = wpn.ammo!;
+    if ((p.inventory[ammo] ?? 0) <= 0) {
+      this.tell(p, `Out of ${ITEM_LABEL[ammo].toLowerCase()}!`);
+      return;
+    }
+    s.lastAttack = now;
+    p.stamina -= wpn.stamina;
+    p.inventory[ammo] = (p.inventory[ammo] ?? 0) - 1;
+
+    // Hitscan along the facing direction, within a narrow corridor.
+    const dirx = Math.cos(p.dir), diry = Math.sin(p.dir);
+    const damage = wpn.damage * combatBonus;
+    const kb = wpn.knockback ?? 5;
+    let endX = p.x + dirx * wpn.range, endY = p.y + diry * wpn.range;
+
+    let hitC: CreatureState | null = null, hitT: PlayerState | null = null, hitDist = wpn.range;
+    const corridor = (ex: number, ey: number): number | null => {
+      const rx = ex - p.x, ry = ey - p.y;
+      const along = rx * dirx + ry * diry;            // distance along the shot
+      if (along < 0 || along > wpn.range) return null;
+      const perp = Math.abs(rx * diry - ry * dirx);   // distance off the line
+      return perp < 0.8 ? along : null;
+    };
+    for (const c of this.creatures.values()) {
+      if (c.region !== p.region) continue;
+      const along = corridor(c.x, c.y);
+      if (along !== null && along < hitDist) { hitDist = along; hitC = c; hitT = null; }
+    }
+    for (const t of this.players.values()) {
+      if (t.id === p.id || t.region !== p.region || t.dead) continue;
+      const along = corridor(t.x, t.y);
+      if (along !== null && along < hitDist) { hitDist = along; hitT = t; hitC = null; }
+    }
+    if (hitC) { endX = hitC.x; endY = hitC.y; const dmg = damage * (wpn.marineBonus && swimmer(hitC.kind) ? wpn.marineBonus : 1); this.hitCreature(p, hitC, dmg, kb); }
+    else if (hitT) { endX = hitT.x; endY = hitT.y; this.hitPlayer(p, hitT, damage, kb); }
+
+    // Tracer for everyone in the region to see.
+    this.broadcastToRegion(p.region, { t: "fx", kind: "tracer", region: p.region, x1: p.x, y1: p.y, x2: endX, y2: endY, weapon: p.equipped ?? "bow" });
+  }
+
+  private doEquip(playerId: string, item: ItemId | null) {
+    const p = this.players.get(playerId);
+    if (!p) return;
+    if (item === null) { p.equipped = null; return; }
+    if (!WEAPONS[item]) return;            // not a weapon
+    if ((p.inventory[item] ?? 0) <= 0) return; // must own it
+    p.equipped = item;
   }
 
   private doDodge(playerId: string) {
@@ -2420,6 +2514,16 @@ export class GameRoom {
 
   private broadcastLog(msg: string) {
     this.broadcast({ t: "log", msg });
+  }
+
+  // Send only to players currently in a given region (for localised fx).
+  private broadcastToRegion(regionId: RegionId, msg: ServerMessage) {
+    const data = JSON.stringify(msg);
+    for (const [ws, s] of this.sessions) {
+      const p = this.players.get(s.playerId);
+      if (!p || p.region !== regionId) continue;
+      try { ws.send(data); } catch { /* ignore */ }
+    }
   }
 }
 

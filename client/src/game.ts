@@ -80,6 +80,7 @@ export class Game {
   private logbookOpen = false;          // is the logbook panel open?
   private inspectKey: string | null = null; // species key of the inspected thing
   private scanAt = 0;                    // perf.now() of last discovery scan (ring anim)
+  private tracers: Array<{ x1: number; y1: number; x2: number; y2: number; at: number; weapon: string }> = [];
 
   // Per-entity walk tracking: last seen tile pos + a phase accumulator, so the
   // oblique character's legs only stride while actually moving.
@@ -187,6 +188,12 @@ export class Game {
           e.preventDefault();
         } else if (k === "x") {
           this.inspectKey = this.inspectKey ? null : this.nearestSpeciesKey();
+          e.preventDefault();
+        } else if (!this.shopId && !this.craftOpen && k >= "1" && k <= "6") {
+          this.selectWeapon(parseInt(k) - 1); // wield weapon slot
+          e.preventDefault();
+        } else if (!this.shopId && !this.craftOpen && k === "0") {
+          this.net.send({ t: "equip", item: null }); // bare hands
           e.preventDefault();
         } else if (k === "q") {
           this.net.send({ t: "eat" });
@@ -312,6 +319,9 @@ export class Game {
       this.snap = m.snapshot;
     } else if (m.t === "logbook") {
       this.logbook = m.entries;
+    } else if (m.t === "fx") {
+      if (m.kind === "tracer") this.tracers.push({ x1: m.x1, y1: m.y1, x2: m.x2, y2: m.y2, at: performance.now(), weapon: m.weapon });
+      if (this.tracers.length > 40) this.tracers.shift();
     } else if (m.t === "log") {
       this.logLines.push(m.msg);
       if (this.logLines.length > 6) this.logLines.shift();
@@ -360,6 +370,7 @@ export class Game {
     //     front correctly overlap things behind them (the oblique illusion). ---
     this.drawSortedEntities(me);
 
+    this.drawTracers();
     if (me) this.drawSelfOverlay(me);
     if (me) this.drawScanRing(me);
     this.drawHud(this.snap, me);
@@ -393,6 +404,30 @@ export class Game {
     for (const pl of this.snap.plants) consider(pl.x + 0.5, pl.y + 0.5, pl.kind);
     for (const n of this.snap.resourceNodes) consider(n.x + 0.5, n.y + 0.5, resourceSpeciesKey(n.kind, n.variety));
     return best;
+  }
+
+  // Wield weapon slot idx (1-6 → WEAPON_ORDER) if you own it.
+  private selectWeapon(idx: number) {
+    const item = WEAPON_ORDER[idx];
+    if (!item) return;
+    const me = this.snap?.players.find((p) => p.id === this.myId);
+    if (me && (me.inventory[item] ?? 0) > 0) this.net.send({ t: "equip", item });
+  }
+
+  // Brief tracer streaks for ranged shots.
+  private drawTracers() {
+    const now = performance.now();
+    this.tracers = this.tracers.filter((t) => now - t.at < 160);
+    const ctx = this.ctx;
+    for (const t of this.tracers) {
+      const a = 1 - (now - t.at) / 160;
+      const s1 = this.toScreen(t.x1, t.y1), s2 = this.toScreen(t.x2, t.y2);
+      ctx.strokeStyle = t.weapon === "rifle" ? `rgba(255,240,180,${a.toFixed(3)})` : `rgba(230,250,255,${(a * 0.9).toFixed(3)})`;
+      ctx.lineWidth = t.weapon === "rifle" ? 2.2 : 1.6;
+      ctx.beginPath(); ctx.moveTo(s1.sx, s1.sy); ctx.lineTo(s2.sx, s2.sy); ctx.stroke();
+      ctx.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(s2.sx, s2.sy, 2.5, 0, Math.PI * 2); ctx.fill();
+    }
   }
 
   // Expanding teal ring when you fire the discovery scan (R).
@@ -1698,11 +1733,20 @@ export class Game {
           : "unranked"
       : "";
     const sleepStr = me?.sleeping ? ` <span style="color:#7ec8a0">💤 resting</span>` : "";
+    let weaponStr = "";
+    if (me) {
+      const eq = me.equipped;
+      const name = eq ? ITEM_LABEL[eq] : "Bare hands";
+      const ammoId = eq ? WEAPON_AMMO[eq] : undefined;
+      const ammoStr = ammoId ? ` <span style="color:${(me.inventory[ammoId] ?? 0) > 0 ? "#cfe3ef" : "#e57373"}">[${ITEM_LABEL[ammoId]}:${me.inventory[ammoId] ?? 0}]</span>` : "";
+      weaponStr = `<b>Weapon:</b> <span style="color:#ffd98a">${name}</span>${ammoStr} <span style="font-size:10px;color:#8aa">(1-6 switch · Space attack)</span><br />`;
+    }
     hud.innerHTML =
       `<b>${this.regionName}</b><br />` +
       `<b>Tide:</b> ${snap.phase} (${tidePct}%)${event}<br />` +
       `<b>HP:</b> ${hp}/${me?.maxHp ?? 100} &nbsp; <b>Stam:</b> ${stam}/${me?.maxStamina ?? 100}${sleepStr}<br />` +
       `<b>Hunger:</b> <span style="color:${hungerLow ? "#e57373" : "#cfe3ef"}">${hunger}/${me?.maxHunger ?? 100}${hungerLow ? " — EAT (Q)!" : ""}</span><br />` +
+      weaponStr +
       `<b>Money:</b> <span style="color:#9fe6c0">$${me?.money ?? 0}</span> &nbsp; <b>Banfielder:</b> ${me?.banfielderPts ?? 0} pts (${rankStr})${teamStr}<br />` +
       (skillsHtml ? `<b>Skills:</b> <span style="font-size:11px">${skillsHtml}</span><br />` : "") +
       (invItems ? `<b>Inv:</b> <span style="font-size:11px">${invItems}</span><br />` : "") +
@@ -2191,6 +2235,12 @@ function roundRect(
 const RARITY_COLOR: Record<string, string> = {
   common: "#9fb3ad", uncommon: "#7ec96b", rare: "#5aa9ff",
   "very rare": "#c98bff", legendary: "#ffd24a",
+};
+
+// Weapon slots 1-6 and the ammo each ranged weapon uses.
+const WEAPON_ORDER: ItemId[] = ["stick", "huntingKnife", "bow", "crossbow", "speargun", "rifle"];
+const WEAPON_AMMO: Partial<Record<ItemId, ItemId>> = {
+  bow: "arrow", crossbow: "bolt", speargun: "spear", rifle: "bullet",
 };
 
 // Word-wrap helper for the info/logbook cards.

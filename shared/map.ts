@@ -564,6 +564,14 @@ const SHOP_BREAKERS: ShopDef = {
     { item: "plank", price: 5 },
     { item: "rod", price: 16 },
     { item: "jerryCan", price: 15 },
+    // Marine & hunting gear.
+    { item: "huntingKnife", price: 40 },
+    { item: "speargun", price: 120 },
+    { item: "spear", price: 4 },
+    { item: "bow", price: 80 },
+    { item: "arrow", price: 2 },
+    { item: "rifle", price: 600 },
+    { item: "bullet", price: 6 },
   ],
 };
 const SHOP_OSTROMS: ShopDef = {
@@ -576,6 +584,8 @@ const SHOP_OSTROMS: ShopDef = {
   sells: [
     { item: "plank", price: 5 },
     { item: "jerryCan", price: 12 },
+    { item: "crossbow", price: 160 },
+    { item: "bolt", price: 5 },
   ],
 };
 const SHOP_ANACLA_GAS: ShopDef = {
