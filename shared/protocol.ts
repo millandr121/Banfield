@@ -330,6 +330,7 @@ export interface BuildingState {
   hp: number;
   maxHp: number;
   shop?: ShopDef; // present if you can trade here
+  name?: string;  // real-world name from OSM (e.g. "Flora's Restaurant")
 }
 
 // --- NPCs -------------------------------------------------------------------

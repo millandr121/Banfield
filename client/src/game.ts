@@ -682,22 +682,29 @@ export class Game {
     ctx.lineTo(sx + w - ridgeInset, roofTop + 1);
     ctx.stroke();
 
-    // Sign label on the roof gable.
-    const label = buildingLabel(b.kind);
+    // Name plaque — real OSM name when we have one, else only label the
+    // tradeable/landmark kinds. Plain houses stay unlabelled to cut clutter.
+    const label = b.name ?? (b.shop ? buildingLabel(b.kind) : "");
     if (label) {
-      ctx.fillStyle = "rgba(255,255,255,0.9)";
-      ctx.font = "8px system-ui";
+      ctx.font = "9px system-ui";
       ctx.textAlign = "center";
-      ctx.fillText(label, sx + w / 2, roofTop + roofH * 0.6);
+      const tw = ctx.measureText(label).width;
+      const px = sx + w / 2, py = roofTop - 4;
+      ctx.fillStyle = "rgba(10,16,22,0.8)";          // sign board
+      roundRect(ctx, px - tw / 2 - 4, py - 11, tw + 8, 13, 3);
+      ctx.fill();
+      ctx.fillStyle = "#ffe9b0";
+      ctx.fillText(label, px, py - 1);
     }
 
-    // HP bar (only when damaged).
+    // HP bar (only when damaged) — sits above the name plaque.
     const frac = Math.max(0, b.hp / b.maxHp);
     if (frac < 1) {
+      const hy = roofTop - (label ? 22 : 6);
       ctx.fillStyle = "#222";
-      ctx.fillRect(sx, roofTop - 6, w, 4);
+      ctx.fillRect(sx, hy, w, 4);
       ctx.fillStyle = frac > 0.5 ? "#4caf50" : frac > 0.25 ? "#ffb300" : "#e53935";
-      ctx.fillRect(sx, roofTop - 6, w * frac, 4);
+      ctx.fillRect(sx, hy, w * frac, 4);
     }
   }
 

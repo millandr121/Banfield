@@ -77,9 +77,16 @@ if (!args.bbox || !args.width || !args.id || !args.out) {
 // ---------------------------------------------------------------------------
 // OSM XML parser (openstreetmap.org export format → same shape as Overpass JSON)
 // ---------------------------------------------------------------------------
+function decodeEntities(s) {
+  return s
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(+d));
+}
+
 function extractAttr(str, name) {
   const m = str.match(new RegExp(`${name}="([^"]*)"`));
-  return m ? m[1] : null;
+  return m ? decodeEntities(m[1]) : null;
 }
 
 function parseOsmXml(xml) {
@@ -581,10 +588,11 @@ async function main() {
     if (tag(e,"leisure")==="campsite" || tag(e,"leisure")==="campground")
       fillPolygon(g, geom(e), T.Grass); // stays grass, spawn players here
 
-  // 5. Coastline as a sand shoreline barrier
+  // 5. Coastline as a sand shoreline barrier (2px so the flood can't leak
+  //    through diagonal gaps between segments).
   for (const e of ways)
     if (tag(e,"natural")==="coastline")
-      drawLine(g, geom(e), T.Sand, 1);
+      drawLine(g, geom(e), T.Sand, 2);
 
   // 6. Waterways as water lines (rivers, streams, the main inlet as a way)
   for (const e of ways) {
@@ -595,7 +603,20 @@ async function main() {
     }
   }
 
-  // 7. Flood open ocean from the sea seed (flood-fill from the seed tile).
+  // 7. Flood the open ocean INWARD from every map edge. In a coastal bbox the
+  //    border is almost all sea; the coastline drawn above is the barrier, so
+  //    any grass the flood can't reach from the border stays as inland ground.
+  //    (A single interior seed left huge bays unfilled — see issue with the NW
+  //    and SW corners reading as land.)
+  for (let x = 0; x < gridW; x++) {
+    floodFill(g, x, 0, T.Grass, T.Water);
+    floodFill(g, x, gridH - 1, T.Grass, T.Water);
+  }
+  for (let y = 0; y < gridH; y++) {
+    floodFill(g, 0, y, T.Grass, T.Water);
+    floodFill(g, gridW - 1, y, T.Grass, T.Water);
+  }
+  // Optional explicit seed too, for an interior basin the border can't reach.
   if (args["sea-seed"]) {
     const [sx, sy] = args["sea-seed"].split(",").map(Number);
     floodFill(g, sx, sy, T.Grass, T.Water);
@@ -642,10 +663,12 @@ async function main() {
   const buildings = [];
   const usedIds = new Set(); // prevent duplicate stable IDs
   let bi = 0;
-  const addBuilding = (id, kind, x, y, w, h) => {
+  const addBuilding = (id, kind, x, y, w, h, name) => {
     if (usedIds.has(id)) id = `${args.id}-b${bi++}`; // fallback if stable ID already taken
     usedIds.add(id);
-    buildings.push({ id, kind, x, y, w, h, hp: 100, maxHp: 100 });
+    const b = { id, kind, x, y, w, h, hp: 100, maxHp: 100 };
+    if (name) b.name = name;           // real OSM name, shown on the building
+    buildings.push(b);
   };
 
   // a. Way-based building footprints
@@ -660,12 +683,17 @@ async function main() {
     }
     const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
     if (cx < 0 || cx >= gridW || cy < 0 || cy >= gridH) continue;
-    const bx = Math.max(0, Math.round(minX));
-    const by = Math.max(0, Math.round(minY));
-    const bw = Math.max(1, Math.min(gridW - bx, Math.round(maxX - minX) || 1));
-    const bh = Math.max(1, Math.min(gridH - by, Math.round(maxY - minY) || 1));
+    // Clamp footprint size — some OSM polygons are whole campuses/boundaries
+    // (e.g. the BMSC grounds). Anything bigger than a real building gets
+    // centred on its centroid at a sane size instead of a giant box.
+    const MAXD = 6;
+    let rw = Math.round(maxX - minX) || 1;
+    let rh = Math.round(maxY - minY) || 1;
+    rw = Math.min(rw, MAXD); rh = Math.min(rh, MAXD);
+    const bx = Math.max(0, Math.min(gridW - rw, Math.round(cx - rw / 2)));
+    const by = Math.max(0, Math.min(gridH - rh, Math.round(cy - rh / 2)));
     const tags = e.tags || {};
-    addBuilding(stableId(args.id, tags) ?? `${args.id}-b${bi++}`, buildingKind(tags), bx, by, bw, bh);
+    addBuilding(stableId(args.id, tags) ?? `${args.id}-b${bi++}`, buildingKind(tags), bx, by, rw, rh, tags.name);
   }
 
   // b. Amenity/shop/tourism/office NODES — POI pins with no footprint polygon.
@@ -677,7 +705,7 @@ async function main() {
     const p = toTile(n.lon, n.lat);
     const bx = Math.round(p.x), by = Math.round(p.y);
     if (bx < 0 || bx >= gridW || by < 0 || by >= gridH) continue;
-    addBuilding(stableId(args.id, tags) ?? `${args.id}-poi${bi++}`, buildingKind(tags), bx, by, 1, 1);
+    addBuilding(stableId(args.id, tags) ?? `${args.id}-poi${bi++}`, buildingKind(tags), bx, by, 1, 1, tags.name);
   }
 
   // --- Spawn ---------------------------------------------------------------
