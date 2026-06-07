@@ -613,6 +613,16 @@ const SHOP_ANACLA_GOV: ShopDef = {
     { item: "rod", price: 15 },
   ],
 };
+const SHOP_FLORAS: ShopDef = {
+  name: "Flora's Restaurant",
+  buys: [],
+  sells: [
+    { item: "cookedfish",   price: 10 },
+    { item: "cookedsalmon", price: 18 },
+    { item: "cookedcrab",   price: 14 },
+    { item: "berry",        price:  5 },
+  ],
+};
 
 // Shape produced by the OSM importer (tools/import-osm.mjs).
 export interface RegionData {
@@ -660,6 +670,7 @@ const SHOP_BY_BUILDING: Record<string, ShopDef> = {
   "bf-shop-bmsc":     SHOP_BMSC,
   "bf-shop-ostroms":  SHOP_OSTROMS,
   "bf-shop-breakers": SHOP_BREAKERS,
+  "bf-shop-floras":   SHOP_FLORAS,
   "an-shop-gas":      SHOP_ANACLA_GAS,
   "an-house-food":    SHOP_ANACLA_HOME,
   "an-shop-gov":      SHOP_ANACLA_GOV,

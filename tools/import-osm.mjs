@@ -482,13 +482,20 @@ function buildingKind(tags) {
 function stableId(regionId, tags) {
   const name = (tags.name || "").toLowerCase();
   const am   = (tags.amenity || "").toLowerCase();
-  // Gas bar lives on the Bamfield→Anacla road — it shows up in whichever region's bbox it falls in.
+  // Gas bar lives on the Bamfield→Anacla road — it shows up in whichever bbox it falls in.
   if (am === "fuel" || name.includes("gas bar") || name.includes("gas station")) return "an-shop-gas";
   if (regionId === "bamfield") {
-    if (name.includes("breakers"))                                  return "bf-shop-breakers";
-    if (name.includes("marine sciences") || name.includes("bmsc")) return "bf-shop-bmsc";
-    if (name.includes("ostrom"))                                    return "bf-shop-ostroms";
-    if (name.includes("general store") || name.includes("general market")) return "bf-shop-market";
+    if (name.includes("breakers"))                                       return "bf-shop-breakers";
+    if (name.includes("marine sciences") || name.includes("bmsc"))      return "bf-shop-bmsc";
+    if (name.includes("ostrom") || name.includes("tides") || name.includes("trails market")) return "bf-shop-ostroms";
+    if (name.includes("mercantile") || name.includes("general"))        return "bf-shop-market";
+    if (name.includes("flora") && tags.amenity === "restaurant") return "bf-shop-floras";
+    if (am === "clinic" || am === "hospital")                           return "bf-shop-health";
+    if (am === "post_office")                                            return "bf-shop-post";
+    if (am === "fire_station")                                           return "bf-poi-firehall";
+    if (am === "ferry_terminal" && name.includes("west"))               return "bf-dock-west";
+    if (am === "ferry_terminal" && name.includes("east"))               return "bf-dock-east";
+    if (am === "ferry_terminal")                                         return "bf-dock-ferry";
   }
   if (regionId === "anacla") {
     if ((tags.office === "government") || name.includes("huu-ay-aht")) return "an-shop-gov";
@@ -626,9 +633,22 @@ async function main() {
     }
   }
 
+  // 12. Reef polygons → Rock tiles (drawn after flood fill so they appear in water).
+  for (const e of ways)
+    if (tag(e, "natural") === "reef")
+      fillPolygon(g, geom(e), T.Rock);
+
   // --- Buildings -----------------------------------------------------------
   const buildings = [];
+  const usedIds = new Set(); // prevent duplicate stable IDs
   let bi = 0;
+  const addBuilding = (id, kind, x, y, w, h) => {
+    if (usedIds.has(id)) id = `${args.id}-b${bi++}`; // fallback if stable ID already taken
+    usedIds.add(id);
+    buildings.push({ id, kind, x, y, w, h, hp: 100, maxHp: 100 });
+  };
+
+  // a. Way-based building footprints
   for (const e of ways) {
     if (!isBuilding(e.tags || {})) continue;
     const pts = geom(e);
@@ -638,7 +658,6 @@ async function main() {
       minX = Math.min(minX,p.x); minY = Math.min(minY,p.y);
       maxX = Math.max(maxX,p.x); maxY = Math.max(maxY,p.y);
     }
-    // Skip buildings whose centroid falls outside this region's grid.
     const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
     if (cx < 0 || cx >= gridW || cy < 0 || cy >= gridH) continue;
     const bx = Math.max(0, Math.round(minX));
@@ -646,11 +665,19 @@ async function main() {
     const bw = Math.max(1, Math.min(gridW - bx, Math.round(maxX - minX) || 1));
     const bh = Math.max(1, Math.min(gridH - by, Math.round(maxY - minY) || 1));
     const tags = e.tags || {};
-    buildings.push({
-      id: stableId(args.id, tags) ?? `${args.id}-b${bi++}`,
-      kind: buildingKind(tags),
-      x: bx, y: by, w: bw, h: bh, hp: 100, maxHp: 100,
-    });
+    addBuilding(stableId(args.id, tags) ?? `${args.id}-b${bi++}`, buildingKind(tags), bx, by, bw, bh);
+  }
+
+  // b. Amenity/shop/tourism/office NODES — POI pins with no footprint polygon.
+  for (const n of nodes_osm) {
+    const tags = n.tags || {};
+    if (!(tags.amenity || tags.shop || tags.tourism || tags.office)) continue;
+    const skip = ["parking", "bench", "waste_basket", "recycling", "vending_machine", "atm", "toilets"];
+    if (skip.includes(tags.amenity)) continue;
+    const p = toTile(n.lon, n.lat);
+    const bx = Math.round(p.x), by = Math.round(p.y);
+    if (bx < 0 || bx >= gridW || by < 0 || by >= gridH) continue;
+    addBuilding(stableId(args.id, tags) ?? `${args.id}-poi${bi++}`, buildingKind(tags), bx, by, 1, 1);
   }
 
   // --- Spawn ---------------------------------------------------------------
