@@ -112,8 +112,13 @@ const REPAIR_RATE = 25; // hp per second
 const CREATURE_CAP_PER_REGION = 10; // sparse — wildlife is rare, sightings are special
 const SPAWN_INTERVAL_MS = 8000; // slower fill so the world feels alive but not crowded
 const SPAWN_BATCH = 1; // one creature per pass — keeps density low
-const SINK_DEPTH = 7; // how far under the waterline counts as "deep"
-const SINK_DPS = 12; // hp/sec lost while standing still in deep water
+
+// Swimming & drowning --------------------------------------------------------
+const SWIM_STAMINA_DRAIN = 9;   // stamina/sec while actively swimming in deep water
+const SWIM_TIRED_MULT = 0.55;   // speed multiplier once stamina is gone
+const FLOAT_GRACE_MS = 60_000;  // you can float in deep water this long before drowning
+const DROWN_DPS = 7;            // hp/sec lost once you've floated past the grace period
+const DROWN_DPS_TIRED = 12;     // faster if you're also out of stamina
 
 // Vehicles -------------------------------------------------------------------
 const CAR_SPEED = 7.5; // tiles/sec on a road
@@ -188,7 +193,8 @@ const XP_SWIM_PER_SEC = 0.4;
 const XP_BOAT_PER_SEC = 0.6;
 const XP_DRIVE_PER_SEC = 0.5;
 const XP_FISH = 30; // per successful catch
-const DEATH_XP_LOSS = 0.25; // fraction of raw XP lost on death
+const DEATH_XP_LOSS = 0.25; // base fraction of raw XP lost on death (randomized per skill)
+const DEATH_PTS_LOSS = 0.35; // fraction of Banfielder points lost on death
 
 // Fishing --------------------------------------------------------------------
 const FISHING_TIME_MS = 5000; // base wait time; reduced by fishing level
@@ -262,6 +268,8 @@ export class GameRoom {
   private lastFuelWarn = new Map<string, number>();
   // Transient knockback impulses by entity id (players + creatures).
   private kb = new Map<string, { x: number; y: number }>();
+  // playerId → epoch ms they entered deep water (for the float/drown timer).
+  private deepSince = new Map<string, number>();
 
   private startedAt = Date.now();
   private loop: ReturnType<typeof setInterval> | null = null;
@@ -393,6 +401,7 @@ export class GameRoom {
       this.savedNames.delete(s.playerId);
       this.players.delete(s.playerId);
       this.kb.delete(s.playerId);
+      this.deepSince.delete(s.playerId);
       this.fishingStates.delete(s.playerId);
       this.liveFishTimer.delete(s.playerId);
     }
@@ -764,27 +773,32 @@ export class GameRoom {
       const region = this.regions.get(p.region);
       if (!s || !region) continue;
 
-      // Stamina trickles back when you're not spending it.
-      p.stamina = Math.min(p.maxStamina, p.stamina + STAMINA_REGEN * dt);
       p.dodging = now < s.iframeUntil;
 
       // While driving, the vehicle carries you — moveVehicles set our position.
       if (p.vehicleId) {
         p.swimming = false;
+        this.deepSince.delete(p.id);
+        p.stamina = Math.min(p.maxStamina, p.stamina + STAMINA_REGEN * dt);
         continue;
       }
 
-      // You can now swim, but the water is slower than dry land.
-      p.swimming = this.depthAt(region.map, p.x, p.y, waterline) > 0;
-      if (p.swimming && (s.dx !== 0 || s.dy !== 0)) {
-        this.giveXP(p, "swimming", XP_SWIM_PER_SEC * dt);
-      }
+      const movingInput = s.dx !== 0 || s.dy !== 0;
+      const depth0 = this.depthAt(region.map, p.x, p.y, waterline);
+      p.swimming = depth0 >= DEPTH_SWIM;            // deep water = swimming; shallow = wading
       const swimBonus = 1 + skillLevel(p.skills.swimming) * 0.003;
-      const sprinting = s.sprint && !p.swimming && p.stamina > 0 && (s.dx !== 0 || s.dy !== 0);
-      if (sprinting) {
-        p.stamina = Math.max(0, p.stamina - SPRINT_STAMINA_DRAIN * dt);
-      }
-      const speed = p.swimming ? SWIM_SPEED * swimBonus
+      const sprinting = s.sprint && !p.swimming && p.stamina > 0 && movingInput;
+      const swimStroke = p.swimming && movingInput;
+
+      // Spend stamina sprinting on land or stroking in deep water; otherwise it
+      // recovers. (Swimming now tires you out, just like running.)
+      if (sprinting)       p.stamina = Math.max(0, p.stamina - SPRINT_STAMINA_DRAIN * dt);
+      else if (swimStroke) p.stamina = Math.max(0, p.stamina - SWIM_STAMINA_DRAIN * dt);
+      else                 p.stamina = Math.min(p.maxStamina, p.stamina + STAMINA_REGEN * dt);
+      if (swimStroke) this.giveXP(p, "swimming", XP_SWIM_PER_SEC * dt);
+
+      const tired = p.swimming && p.stamina <= 0;
+      const speed = p.swimming ? SWIM_SPEED * swimBonus * (tired ? SWIM_TIRED_MULT : 1)
                                : sprinting ? PLAYER_SPEED * SPRINT_MULT : PLAYER_SPEED;
       const imp = this.kb.get(p.id);
       const nx = p.x + (s.dx * speed + (imp?.x ?? 0)) * dt;
@@ -799,13 +813,19 @@ export class GameRoom {
         p.y = ny;
       }
 
-      // Tides: caught in DEEP water and standing still -> you sink. Keep moving
-      // (toward land) to stay afloat.
-      const depth = this.depthAt(region.map, p.x, p.y, waterline);
-      const movingInput = s.dx !== 0 || s.dy !== 0;
-      if (depth > SINK_DEPTH && !movingInput && !moved) {
-        p.hp -= SINK_DPS * dt;
-        if (p.hp <= 0 && !p.dead) this.killPlayer(p);
+      // Drowning: you float fine in deep water for about a minute, but if you
+      // don't reach the shallows in time you start to go under — faster if your
+      // stamina is spent. Not easy to drown, but you must swim for shore.
+      if (p.swimming) {
+        if (!this.deepSince.has(p.id)) this.deepSince.set(p.id, now);
+        const floated = now - (this.deepSince.get(p.id) ?? now);
+        if (floated > FLOAT_GRACE_MS) {
+          if (floated - dt * 1000 <= FLOAT_GRACE_MS) this.tell(p, "You're going under — swim to shore!");
+          p.hp -= (p.stamina <= 0 ? DROWN_DPS_TIRED : DROWN_DPS) * dt;
+          if (p.hp <= 0 && !p.dead) this.killPlayer(p);
+        }
+      } else {
+        this.deepSince.delete(p.id); // reached the shallows — catch your breath
       }
 
       // Walk onto a road gate at the map edge and you cross to the next region.
@@ -1759,15 +1779,19 @@ export class GameRoom {
         count++;
 
         // Orca spawn in pods (2-5 individuals spread close together).
-        if (kind === "orca" && Math.random() < 0.65) {
-          const podSize = 1 + Math.floor(Math.random() * 3); // 1-3 more
-          for (let p = 0; p < podSize && count < CREATURE_CAP_PER_REGION; p++) {
-            const ox = spot.x + (Math.random() - 0.5) * 8;
-            const oy = spot.y + (Math.random() - 0.5) * 8;
-            const pid = `c${this.idCounter++}`;
-            this.creatures.set(pid, { id: pid, kind, region: regionId, x: ox, y: oy, hp: creatureHp(kind) });
-            count++;
+        if (kind === "orca") {
+          if (Math.random() < 0.65) {
+            const podSize = 1 + Math.floor(Math.random() * 3); // 1-3 more
+            for (let p = 0; p < podSize && count < CREATURE_CAP_PER_REGION; p++) {
+              const ox = spot.x + (Math.random() - 0.5) * 8;
+              const oy = spot.y + (Math.random() - 0.5) * 8;
+              const pid = `c${this.idCounter++}`;
+              this.creatures.set(pid, { id: pid, kind, region: regionId, x: ox, y: oy, hp: creatureHp(kind) });
+              count++;
+            }
           }
+          // A spectacle — a local shouts it across the whole region.
+          this.broadcastLog("📣 ORCAS in the inlet! A pod's come through — get to the water!");
         }
       }
     }
@@ -1783,6 +1807,29 @@ export class GameRoom {
         this.creatures.delete(c.id);
         continue;
       }
+
+      // Cougars are elusive — they never hunt players. If anyone comes near they
+      // slink off and melt into the forest. A real, fleeting sighting.
+      if (c.kind === "cougar") {
+        let nearest = Infinity, fx = 0, fy = 0;
+        for (const p of this.players.values()) {
+          if (p.dead || p.region !== region.id) continue;
+          const d = Math.hypot(p.x - c.x, p.y - c.y);
+          if (d < nearest) { nearest = d; fx = c.x - p.x; fy = c.y - p.y; }
+        }
+        if (nearest < 11) {
+          const l = Math.hypot(fx, fy) || 1;
+          const sp = creatureSpeed("cougar") * 1.3;
+          if (this.walkable(region.map, c.x + (fx / l) * sp * dt, c.y, waterline, false)) c.x += (fx / l) * sp * dt;
+          if (this.walkable(region.map, c.x, c.y + (fy / l) * sp * dt, waterline, false)) c.y += (fy / l) * sp * dt;
+          if (nearest > 5 && this.tileAt(region.map, c.x, c.y) === Tile.Forest) this.creatures.delete(c.id);
+          continue;
+        }
+        c.x += Math.sin(c.y * 0.5 + now * 0.0005) * 0.5 * dt; // lurk, watching
+        c.y += Math.cos(c.x * 0.5 + now * 0.0005) * 0.5 * dt;
+        continue;
+      }
+
       if (isNeutral(c.kind)) {
         // Sea otter: shy. Dive and vanish if a player gets too close.
         if (c.kind === "seaOtter") {
@@ -2035,16 +2082,20 @@ export class GameRoom {
     }
     p.fishing = false;
     this.fishingStates.delete(p.id);
-    // Death penalty: lose 25% of raw XP in every skill. You can slide back
-    // but never to zero — keeps the stakes real without being punishing.
+    this.deepSince.delete(p.id);
+    // Death penalty. Lose a big chunk of Banfielder standing, and take a
+    // randomized XP hit per skill (some skills bruise worse than others) so
+    // death actually sets you back — but never wipes you to zero.
+    p.banfielderPts = Math.max(0, Math.round(p.banfielderPts * (1 - DEATH_PTS_LOSS)));
     for (const sk of Object.keys(p.skills) as SkillName[]) {
-      p.skills[sk] = Math.max(0, p.skills[sk] * (1 - DEATH_XP_LOSS));
+      const hit = DEATH_XP_LOSS * (0.6 + Math.random() * 0.9); // ~0.6×–1.5× the base
+      p.skills[sk] = Math.max(0, p.skills[sk] * (1 - Math.min(0.6, hit)));
     }
     // Drop half your inventory on death (items just vanish for now — future: loot crate).
     for (const item of Object.keys(p.inventory) as ItemId[]) {
       p.inventory[item] = Math.floor((p.inventory[item] ?? 0) / 2);
     }
-    this.broadcastLog(`${p.name} was dragged under. Skills took a hit.`);
+    this.broadcastLog(`${p.name} was dragged under. Skills and standing took a hit.`);
     setTimeout(() => {
       const region = this.regions.get(p.region);
       p.dead = false;
@@ -2310,39 +2361,40 @@ function pickKind(
   // 30% of spawns are always land creatures (tide-independent).
   if (r < 0.30) {
     const lr = Math.random();
-    if (lr < 0.28) return "deer";
-    if (lr < 0.50) return "grouse";
-    if (lr < 0.66) return "elk";
-    if (lr < 0.78) return "wolf";
-    if (lr < 0.92) return "bear";
-    return "cougar"; // rarest land predator
+    if (lr < 0.30) return "deer";   // black-tailed deer — genuinely common here
+    if (lr < 0.52) return "grouse";
+    if (lr < 0.70) return "elk";
+    if (lr < 0.84) return "wolf";
+    if (lr < 0.985) return "bear";
+    return "cougar"; // ~1.5% — a very rare, fleeting sighting
   }
   const w = Math.random(); // water creature pick
+  // Sea otters are SUPER rare here (kelp beds, out in the ocean) — gate hard.
   if (phase === "low") {
     if (w < 0.48) return "crab";
-    if (w < 0.66) return "octopus";
-    if (w < 0.80) return "seal";
-    if (w < 0.90) return "sealLion";
-    if (w < 0.97) return "seaOtter";
+    if (w < 0.68) return "octopus";
+    if (w < 0.85) return "seal";
+    if (w < 0.97) return "sealLion";
+    if (w < 0.975) return "seaOtter"; // ~0.5%
     return null;
   }
   if (phase === "high") {
-    if (w < 0.26) return "seal";
-    if (w < 0.42) return "dogfish";
-    if (w < 0.53) return "octopus";
-    if (w < 0.61) return "sealLion";
-    if (w < 0.68) return "seaOtter";
-    if (w < 0.74) return "sixgill";
-    if (w < 0.82) return "humpback";
-    if (w < 0.89) return "greywhale";
-    if (w < 0.97) return null;
-    return "orca"; // ~3% — a real event
+    if (w < 0.27) return "seal";
+    if (w < 0.43) return "dogfish";
+    if (w < 0.54) return "octopus";
+    if (w < 0.63) return "sealLion";
+    if (w < 0.70) return "sixgill";
+    if (w < 0.79) return "humpback";
+    if (w < 0.88) return "greywhale";
+    if (w < 0.883) return "seaOtter"; // ~0.3%
+    if (w < 0.905) return "orca";     // ~2% — a real event
+    return null;
   }
   if (w < 0.38) return "crab";
-  if (w < 0.56) return "seal";
-  if (w < 0.70) return "octopus";
-  if (w < 0.82) return "sealLion";
-  if (w < 0.92) return "seaOtter";
+  if (w < 0.60) return "seal";
+  if (w < 0.76) return "octopus";
+  if (w < 0.92) return "sealLion";
+  if (w < 0.925) return "seaOtter"; // ~0.5%
   return null;
 }
 
