@@ -74,18 +74,45 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
 
 ## 5. SYSTEMS / META
 - [ ] **NPCs** — implement the locals properly (dialogue, roles, the orca-shout)
-- [ ] **Persistence** — everyone's data must save. Plan: **Cloudflare D1**
-      (SQL, native to the Worker we already run). Store players, discoveries,
-      house claims, inventory, skills.
-- [ ] **Login screen** at start, with **recovery emails** (so accounts recover).
+- [x] **Persistence** — Cloudflare D1 (`banfieldthegame`). Players save/load by
+      name with a per-device claim secret; autosave every 30s + on disconnect.
+      Schema in `server/schema.sql`.
+- [ ] **Login screen** + **recovery emails** (needs an email provider). The
+      `secret`/`email` columns + claim flow are already in place to build on.
 - [ ] **Intro / character creation** — pick a unique (untaken) name + design
       your look. Change name every 30 days; change look at your own house.
 - [ ] **OSRS-style UI**: visible backpack/inventory, skill progression & stats,
       a menu/tab bar, a controls helper you can toggle on/off.
+- [ ] **Community leaderboard** menu — current unofficial mayor, BMSC President
+      (most species logged), fire chief, top first responders, etc.
 - [ ] Diving skill — **scuba + snorkeling** mechanics (later).
 - [ ] **Claim-a-house** — claim any residential house as your own; enter it,
       redesign your look, store items, decorate the interior (later).
 - [ ] **Interior spaces** — market, BMSC, houses you can walk into (later).
+
+## 6. ECONOMY, VEHICLES & ROLES (later — captured from notes)
+- [ ] **Scrapyard** (up Bamfield Main Rd) — buy **vehicles/cars** here.
+- [ ] **Breaker's Marine** — buy **boats** here.
+- [ ] **Sell/trade big items** (cars, boats) between players via "pinkslips";
+      ownership transfers and the vehicle keeps its new owner wherever it sits.
+- [ ] **Vehicle locking** so they don't get stolen.
+- [ ] **GTA-style theft** — if someone drives your car/boat you can report it
+      stolen; they become **wanted**.
+- [ ] **Cops** — NPCs that come from Port Alberni to town to catch wanted
+      players.
+- [ ] **Roles & ranks** (like the unofficial mayor system):
+  - **First responders** (max 6) — earned by healing people (heal via food /
+    bandaid option we add). Highest-ranked first responder becomes the **Nurse**.
+  - **Fire Chief** — highest-ranked person who repairs buildings / puts out
+    fires. (Needs wildfires + fire-fighting first.)
+  - **BMSC President** — whoever has logged the most species.
+  - Mayor / chief / responders can tag players **wanted** without cause.
+  - Demotion works like the mayor: someone higher can rank you out.
+- [ ] **Healing** — heal others via food or bandaid (feeds the responder rank).
+- [ ] **Natural disaster system** — wildfires (+ fighting them), expand beyond
+      tsunami / king tides.
+- [ ] **Death rework** — dying should cost a lot of Banfielder pts **and** some
+      skill XP (randomized reduction across skills?). (Currently: -25% raw XP.)
 
 ---
 
@@ -93,3 +120,7 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
 - OSM import pipeline (XML), reefs, POI nodes, stable shop IDs, entity decode
 - Oblique character/world renderer + Y-sort
 - Orca curious (not aggressive), plants can't be submerged, sea-spawn fixes
+- Water/land flood fix, 2.4× scale, real building names, 2-lane roads
+- Art bug fixes: L/R facing, fish double-render, water-depth body height
+- Chunked map streaming (32×32 chunks + downsampled overview minimap)
+- Cloudflare D1 persistence (accounts/skills/money/inventory autosave)

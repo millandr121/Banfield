@@ -91,7 +91,17 @@ export class Game {
 
   start(name: string, appearance: Appearance) {
     this.net.connect();
-    this.net.send({ t: "join", name, appearance });
+    // A per-device claim token so your saved account loads back to you. Stored
+    // locally; becomes the basis of the real login/recovery flow later.
+    let secret = "";
+    try {
+      secret = localStorage.getItem("banfield-secret") ?? "";
+      if (!secret) {
+        secret = (crypto.randomUUID?.() ?? String(Math.random()).slice(2)) + Date.now().toString(36);
+        localStorage.setItem("banfield-secret", secret);
+      }
+    } catch { /* private mode — play unclaimed */ }
+    this.net.send({ t: "join", name, appearance, secret });
     requestAnimationFrame(() => this.frame());
 
     // Chat input box — wired up once.

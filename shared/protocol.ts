@@ -390,7 +390,7 @@ export interface RegionInfo {
 
 // --- Messages: client -> server --------------------------------------------
 export type ClientMessage =
-  | { t: "join"; name: string; appearance: Appearance }
+  | { t: "join"; name: string; appearance: Appearance; secret?: string }
   | { t: "input"; dx: number; dy: number; sprint?: boolean } // intended direction, each -1..1
   | { t: "attack"; charge?: number } // charge 0..1 from how long Space was held
   | { t: "dodge" } // quick lunge + i-frames in the current heading

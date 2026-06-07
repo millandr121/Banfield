@@ -15,3 +15,9 @@ class_name = "GameRoom"
 [[migrations]]
 tag = "v1"
 new_classes = ["GameRoom"]
+
+# Persistent storage for accounts, skills, money, discoveries, etc.
+[[d1_databases]]
+binding = "DB"
+database_name = "banfieldthegame"
+database_id = "9b591d2f-8916-472f-a004-80c3dbcb5b90"

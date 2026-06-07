@@ -50,6 +50,7 @@ import { DEFAULT_REGION, PlantDef, RegionDef, ResourceNodeDef, buildRegions } fr
 interface Env {
   GAME_ROOM: DurableObjectNamespace;
   ASSETS: Fetcher;
+  DB?: D1Database; // optional so the game still runs where D1 isn't bound
 }
 
 interface Session {
@@ -274,7 +275,12 @@ export class GameRoom {
   private nextRankCheck = 0;
   private mayorId: string | null = null;
 
-  constructor(_state: DurableObjectState, _env: Env) {
+  private env: Env;
+  private nextSave = 0;                       // periodic autosave timer
+  private savedNames = new Map<string, string>(); // playerId → db name (claimed account)
+
+  constructor(_state: DurableObjectState, env: Env) {
+    this.env = env;
     const now = Date.now();
     for (const def of buildRegions()) {
       this.regions.set(def.id, this.toRegion(def));
@@ -383,6 +389,8 @@ export class GameRoom {
         const v = this.vehicles.get(p.vehicleId);
         if (v) v.driverId = null;
       }
+      if (p) void this.savePlayer(p, null); // persist final state on leave
+      this.savedNames.delete(s.playerId);
       this.players.delete(s.playerId);
       this.kb.delete(s.playerId);
       this.fishingStates.delete(s.playerId);
@@ -400,39 +408,7 @@ export class GameRoom {
     if (!s) return;
     switch (msg.t) {
       case "join": {
-        const region = this.regions.get(DEFAULT_REGION)!;
-        const spawn = this.landSpawn(region, region.spawn.x, region.spawn.y);
-        const player: PlayerState = {
-          id: s.playerId,
-          name: (msg.name || "Settler").slice(0, 16),
-          region: region.id,
-          x: spawn.x,
-          y: spawn.y,
-          dir: 0,
-          hp: PLAYER_MAX_HP,
-          maxHp: PLAYER_MAX_HP,
-          stamina: MAX_STAMINA,
-          maxStamina: MAX_STAMINA,
-          hunger: MAX_HUNGER,
-          maxHunger: MAX_HUNGER,
-          skills: defaultSkills(),
-          banfielderPts: 0,
-          rank: 0,
-          isMayor: false,
-          inventory: {},
-          money: STARTING_MONEY,
-          team: null,
-          appearance: sanitizeAppearance(msg.appearance),
-          swimming: false,
-          dodging: false,
-          fishing: false,
-          sleeping: false,
-          vehicleId: null,
-          dead: false,
-        };
-        this.players.set(s.playerId, player);
-        this.sendInit(ws, player);
-        this.broadcastLog(`${player.name} washed ashore in ${region.name}.`);
+        void this.handleJoin(ws, s, msg);
         break;
       }
       case "input": {
@@ -490,6 +466,127 @@ export class GameRoom {
       case "travel":
         this.doTravel(ws, s.playerId);
         break;
+    }
+  }
+
+  // Join = create a fresh settler, then overlay any saved D1 account on top.
+  private async handleJoin(ws: WebSocket, s: Session, msg: Extract<ClientMessage, { t: "join" }>) {
+    const region = this.regions.get(DEFAULT_REGION)!;
+    const spawn = this.landSpawn(region, region.spawn.x, region.spawn.y);
+    const name = (msg.name || "Settler").slice(0, 16);
+    const player: PlayerState = {
+      id: s.playerId,
+      name,
+      region: region.id,
+      x: spawn.x,
+      y: spawn.y,
+      dir: 0,
+      hp: PLAYER_MAX_HP,
+      maxHp: PLAYER_MAX_HP,
+      stamina: MAX_STAMINA,
+      maxStamina: MAX_STAMINA,
+      hunger: MAX_HUNGER,
+      maxHunger: MAX_HUNGER,
+      skills: defaultSkills(),
+      banfielderPts: 0,
+      rank: 0,
+      isMayor: false,
+      inventory: {},
+      money: STARTING_MONEY,
+      team: null,
+      appearance: sanitizeAppearance(msg.appearance),
+      swimming: false,
+      dodging: false,
+      fishing: false,
+      sleeping: false,
+      vehicleId: null,
+      dead: false,
+    };
+
+    // Restore a saved account if one exists for this name (and the claim
+    // secret matches, once claimed). Best-effort — never block joining on DB.
+    let restored = false;
+    try {
+      const row = await this.loadPlayer(name);
+      if (row) {
+        const claimed = row.secret as string | null;
+        const ok = !claimed || !msg.secret || claimed === msg.secret;
+        if (ok) {
+          this.applySave(player, row);
+          this.savedNames.set(s.playerId, name);
+          restored = true;
+        } else {
+          // Name taken by another device — let them in under a guest variant.
+          player.name = (name + "~" + s.playerId.slice(-2)).slice(0, 16);
+        }
+      } else {
+        this.savedNames.set(s.playerId, name);
+        await this.savePlayer(player, msg.secret ?? null); // claim the name now
+      }
+    } catch { /* DB unavailable — play in-memory only */ }
+
+    this.players.set(s.playerId, player);
+    this.sendInit(ws, player);
+    this.broadcastLog(
+      restored ? `${player.name} returned to ${region.name}.`
+               : `${player.name} washed ashore in ${region.name}.`,
+    );
+  }
+
+  // --- D1 persistence -------------------------------------------------------
+  private async loadPlayer(name: string): Promise<Record<string, unknown> | null> {
+    if (!this.env.DB) return null;
+    return await this.env.DB.prepare("SELECT * FROM players WHERE name = ?").bind(name).first();
+  }
+
+  private applySave(p: PlayerState, row: Record<string, unknown>) {
+    const num = (v: unknown, d: number) => (typeof v === "number" ? v : d);
+    const json = <T,>(v: unknown, d: T): T => {
+      try { return v ? JSON.parse(v as string) as T : d; } catch { return d; }
+    };
+    if (typeof row.region === "string" && this.regions.has(row.region)) p.region = row.region;
+    p.x = num(row.x, p.x); p.y = num(row.y, p.y);
+    p.money = num(row.money, p.money);
+    p.banfielderPts = num(row.banfielder_pts, p.banfielderPts);
+    p.maxHp = num(row.max_hp, p.maxHp);
+    p.hp = Math.min(p.maxHp, num(row.hp, p.hp));
+    p.hunger = num(row.hunger, p.hunger);
+    p.skills = { ...p.skills, ...json(row.skills, {}) };
+    p.inventory = json(row.inventory, p.inventory);
+    p.appearance = sanitizeAppearance(json(row.appearance, p.appearance));
+  }
+
+  private async savePlayer(p: PlayerState, secret: string | null) {
+    if (!this.env.DB) return;
+    const now = Date.now();
+    try {
+      await this.env.DB.prepare(
+        `INSERT INTO players
+           (name, secret, region, x, y, money, banfielder_pts, hp, max_hp, hunger,
+            skills, inventory, appearance, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(name) DO UPDATE SET
+           secret=COALESCE(players.secret, excluded.secret),
+           region=excluded.region, x=excluded.x, y=excluded.y,
+           money=excluded.money, banfielder_pts=excluded.banfielder_pts,
+           hp=excluded.hp, max_hp=excluded.max_hp, hunger=excluded.hunger,
+           skills=excluded.skills, inventory=excluded.inventory,
+           appearance=excluded.appearance, updated_at=excluded.updated_at`,
+      ).bind(
+        p.name, secret, p.region, p.x, p.y, p.money, p.banfielderPts,
+        p.hp, p.maxHp, p.hunger,
+        JSON.stringify(p.skills), JSON.stringify(p.inventory), JSON.stringify(p.appearance),
+        now, now,
+      ).run();
+    } catch { /* swallow — never crash the tick on a write */ }
+  }
+
+  // Persist everyone currently connected (autosave + on shutdown).
+  private saveAll() {
+    if (!this.env.DB) return;
+    for (const [pid, name] of this.savedNames) {
+      const p = this.players.get(pid);
+      if (p) { p.name = p.name || name; void this.savePlayer(p, null); }
     }
   }
 
@@ -603,6 +700,9 @@ export class GameRoom {
     this.updateCampfires(now);
     this.recomputeRanks(now);
     this.maybeSpawn(now, waterline);
+
+    // Autosave every 30s so progress survives a Durable Object eviction.
+    if (now > this.nextSave) { this.nextSave = now + 30_000; this.saveAll(); }
 
     // Each player only sees their own region; cache one snapshot per region.
     const cache = new Map<RegionId, Snapshot>();
