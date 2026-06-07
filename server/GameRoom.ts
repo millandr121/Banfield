@@ -132,6 +132,7 @@ const REPAIR_RATE = 25; // hp per second
 const CREATURE_CAP_PER_REGION = 10; // sparse — wildlife is rare, sightings are special
 const SPAWN_INTERVAL_MS = 8000; // slower fill so the world feels alive but not crowded
 const SPAWN_BATCH = 1; // one creature per pass — keeps density low
+const VIEW_RADIUS = 55; // tiles: interest-management radius for dense entities
 
 // Swimming & drowning --------------------------------------------------------
 const SWIM_STAMINA_DRAIN = 9;   // stamina/sec while actively swimming in deep water
@@ -714,7 +715,7 @@ export class GameRoom {
         overview: this.overviewFor(region.id),
         travelNodes: region.travelNodes,
       },
-      snapshot: this.snapshot(region.id),
+      snapshot: this.snapshot(region.id, player),
     });
     if (s) this.streamChunks(ws, s, player); // push the spawn-area chunks now
     this.sendLogbook(ws, player);            // and their discovery logbook
@@ -814,17 +815,11 @@ export class GameRoom {
     // Autosave every 30s so progress survives a Durable Object eviction.
     if (now > this.nextSave) { this.nextSave = now + 30_000; this.saveAll(); }
 
-    // Each player only sees their own region; cache one snapshot per region.
-    const cache = new Map<RegionId, Snapshot>();
+    // Each player gets a snapshot culled to what's near them (interest mgmt).
     for (const s of this.sessions.values()) {
       const p = this.players.get(s.playerId);
       if (!p) continue;
-      let snap = cache.get(p.region);
-      if (!snap) {
-        snap = this.snapshot(p.region);
-        cache.set(p.region, snap);
-      }
-      this.send(s.ws, { t: "snapshot", snapshot: snap });
+      this.send(s.ws, { t: "snapshot", snapshot: this.snapshot(p.region, p) });
       this.streamChunks(s.ws, s, p); // feed in map chunks as they walk/sail
     }
   }
@@ -2466,20 +2461,26 @@ export class GameRoom {
     return undefined;
   }
 
-  private snapshot(regionId: RegionId): Snapshot {
+  // Interest management: on big maps we only send the dense, frequently-changing
+  // entities (resource nodes, creatures) that are near the viewer. Buildings,
+  // NPCs, vehicles, plants and fires are few, so they're always sent.
+  private snapshot(regionId: RegionId, viewer?: PlayerState): Snapshot {
     const now = Date.now();
     const tide = this.tideLevel(now);
     const region = this.regions.get(regionId)!;
+    const R2 = VIEW_RADIUS * VIEW_RADIUS;
+    const near = (x: number, y: number) =>
+      !viewer || (x - viewer.x) ** 2 + (y - viewer.y) ** 2 <= R2;
     return {
       tide,
       waterline: this.currentWaterline(now),
       phase: phaseForTide(tide),
       event: this.event,
       players: [...this.players.values()].filter((p) => p.region === regionId),
-      creatures: [...this.creatures.values()].filter((c) => c.region === regionId),
+      creatures: [...this.creatures.values()].filter((c) => c.region === regionId && near(c.x, c.y)),
       buildings: region.buildings,
       vehicles: [...this.vehicles.values()].filter((v) => v.region === regionId),
-      resourceNodes: [...this.resourceNodes.values()].filter((n) => n.region === regionId),
+      resourceNodes: [...this.resourceNodes.values()].filter((n) => n.region === regionId && near(n.x, n.y)),
       plants: [...this.plants.values()].filter((pl) => pl.region === regionId && pl.dormantUntil === null),
       campfires: [...this.campfires.values()].filter((f) => f.region === regionId),
       furnaces:  [...this.furnaces.values()].filter((f) => f.region === regionId),
