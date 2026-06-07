@@ -71,6 +71,10 @@ export class Game {
   private invOpen = false;   // is the inventory bag panel open?
   private npcOpen: string | null = null; // id of the NPC whose dialogue is showing
 
+  // Per-entity walk tracking: last seen tile pos + a phase accumulator, so the
+  // oblique character's legs only stride while actually moving.
+  private gait = new Map<string, { x: number; y: number; phase: number; moving: number }>();
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d")!;
@@ -1017,36 +1021,34 @@ export class Game {
     for (const n of npcs) {
       const { sx, sy } = this.toScreen(n.x + 0.5, n.y + 0.5);
       const R = TILE_SIZE * 0.4;
-      // Shadow
-      ctx.fillStyle = "rgba(0,0,0,0.2)";
-      ctx.beginPath();
-      ctx.ellipse(sx, sy + R * 0.8, R * 0.7, R * 0.28, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // Body
-      ctx.fillStyle = NPC_COLORS[n.kind] ?? "#607d8b";
-      ctx.beginPath();
-      ctx.arc(sx, sy, R, 0, Math.PI * 2);
-      ctx.fill();
-      // Head
-      ctx.fillStyle = "#e0ac69";
-      ctx.beginPath();
-      ctx.arc(sx, sy - R * 0.15, R * 0.55, 0, Math.PI * 2);
-      ctx.fill();
+      // Face toward the nearby player so locals "notice" you; else face down.
+      let facing: Facing = "down";
+      if (me) {
+        const dx = me.x - (n.x + 0.5), dy = me.y - (n.y + 0.5);
+        if (Math.hypot(dx, dy) < 4) facing = facingFromDir(Math.atan2(dy, dx));
+      }
+      const gait = this.gaitFor("npc-" + n.id, n.x, n.y);
+      drawCharacter(ctx, sx, sy, {
+        skin: "#e0ac69",
+        hair: "#3a2a18",
+        shirt: NPC_COLORS[n.kind] ?? "#607d8b",
+      }, { facing, phase: gait.phase, moving: gait.moving });
+
       // Role label
       ctx.fillStyle = "#eaf2f8";
       ctx.font = "10px system-ui";
       ctx.textAlign = "center";
-      ctx.fillText(NPC_NAME[n.kind] ?? "Local", sx, sy - TILE_SIZE * 0.7);
+      ctx.fillText(NPC_NAME[n.kind] ?? "Local", sx, sy - TILE_SIZE * 1.15);
       // "talk" bubble when you're close
       const close = me && Math.hypot(n.x + 0.5 - me.x, n.y + 0.5 - me.y) <= 1.8;
       if (close) {
         ctx.fillStyle = "#fff3cf";
         ctx.beginPath();
-        ctx.arc(sx + R, sy - R * 1.1, 7, 0, Math.PI * 2);
+        ctx.arc(sx + R, sy - TILE_SIZE * 1.0, 7, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = "#15384f";
         ctx.font = "bold 10px system-ui";
-        ctx.fillText("?", sx + R, sy - R * 1.1 + 3.5);
+        ctx.fillText("?", sx + R, sy - TILE_SIZE * 1.0 + 3.5);
       }
     }
   }
@@ -1260,6 +1262,21 @@ export class Game {
     }
   }
 
+  // Track whether an entity is moving and advance its walk-cycle phase. Returns
+  // the current phase (radians) and a moving flag for the oblique leg stride.
+  private gaitFor(id: string, x: number, y: number): { phase: number; moving: boolean } {
+    const dt = 1 / 60;
+    let g = this.gait.get(id);
+    if (!g) { g = { x, y, phase: 0, moving: 0 }; this.gait.set(id, g); }
+    const moved = Math.hypot(x - g.x, y - g.y);
+    // Smooth a 0..1 "moving" weight so the stride eases in/out, not flickers.
+    const target = moved > 0.002 ? 1 : 0;
+    g.moving += (target - g.moving) * 0.25;
+    if (g.moving > 0.05) g.phase += dt * 9; // stride speed
+    g.x = x; g.y = y;
+    return { phase: g.phase, moving: g.moving > 0.15 };
+  }
+
   private drawPlayer(p: PlayerState, isMe: boolean) {
     const ctx = this.ctx;
     const { sx, sy } = this.toScreen(p.x, p.y);
@@ -1316,91 +1333,48 @@ export class Game {
       ctx.stroke();
     }
 
-    // Legs/feet — two rounded boots below the body, animated while on foot.
-    if (!p.vehicleId && !p.swimming) {
-      const legDir = p.dir + Math.PI; // feet trail behind the facing direction
-      const t = performance.now() / 220;
-      const legSwing = Math.sin(t) * 3; // simple walk cycle
-      for (const [side, swing] of [[-1, legSwing], [1, -legSwing]] as const) {
-        const perpA = legDir + (Math.PI / 2) * side;
-        const lx = sx + Math.cos(legDir) * R * 0.55 + Math.cos(perpA) * R * 0.28;
-        const ly = sy + Math.sin(legDir) * R * 0.55 + Math.sin(perpA) * R * 0.28 + swing;
-        ctx.fillStyle = "#2c1a0a"; // trouser/boot
-        ctx.beginPath();
-        ctx.ellipse(lx, ly, R * 0.17, R * 0.24, legDir, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "#1a1008"; // toe of the boot
-        ctx.beginPath();
-        ctx.ellipse(lx + Math.cos(legDir) * 2, ly + Math.sin(legDir) * 2, R * 0.14, R * 0.12, legDir, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    // Arms reaching out to the sides of the facing direction.
-    ctx.strokeStyle = p.appearance.skin;
-    ctx.lineWidth = 3;
-    ctx.lineCap = "round";
-    for (const off of [-1.1, 1.1]) {
-      const a = p.dir + off;
-      const hx = sx + Math.cos(a) * R * 1.15;
-      const hy = sy + Math.sin(a) * R * 1.15;
+    // --- The character body (oblique 3/4 view) ---
+    if (p.swimming) {
+      // Only the head + shoulders show above the waterline while swimming.
+      ctx.fillStyle = "rgba(220,240,255,0.4)";
       ctx.beginPath();
-      ctx.moveTo(sx + Math.cos(a) * R * 0.4, sy + Math.sin(a) * R * 0.4);
-      ctx.lineTo(hx, hy);
-      ctx.stroke();
+      ctx.ellipse(sx, sy, R * 1.1, R * 0.6, 0, 0, Math.PI * 2);
+      ctx.fill();
       ctx.fillStyle = p.appearance.skin;
       ctx.beginPath();
-      ctx.arc(hx, hy, R * 0.16, 0, Math.PI * 2);
+      ctx.arc(sx, sy - R * 0.2, R * 0.55, 0, Math.PI * 2);
       ctx.fill();
+      ctx.fillStyle = p.appearance.hair;
+      ctx.beginPath();
+      ctx.arc(sx, sy - R * 0.2, R * 0.55, Math.PI, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const gait = this.gaitFor(p.id, p.x, p.y);
+      drawCharacter(ctx, sx, sy, p.appearance, {
+        facing: facingFromDir(p.dir),
+        phase: gait.phase,
+        moving: gait.moving,
+      });
     }
 
-    // Body (shirt).
-    ctx.fillStyle = p.appearance.shirt;
-    ctx.beginPath();
-    ctx.arc(sx, sy, R, 0, Math.PI * 2);
-    ctx.fill();
-    // Head (skin) + hair cap on the back (away from facing).
-    ctx.fillStyle = p.appearance.skin;
-    ctx.beginPath();
-    ctx.arc(sx, sy, R * 0.62, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = p.appearance.hair;
-    ctx.beginPath();
-    ctx.arc(sx, sy, R * 0.62, p.dir + Math.PI / 2, p.dir + (Math.PI * 3) / 2);
-    ctx.fill();
-
-    // HP ring (green -> red), starting at the top and going clockwise.
+    // HP / stamina bar floating above the head (oblique-friendly, not a ring).
     const frac = Math.max(0, Math.min(1, p.hp / p.maxHp));
-    ctx.strokeStyle = "rgba(0,0,0,0.35)";
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(sx, sy, R + 4, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.strokeStyle = hpColor(frac);
-    ctx.beginPath();
-    ctx.arc(sx, sy, R + 4, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2);
-    ctx.stroke();
-
+    const barW = TILE_SIZE * 0.9, barH = 3;
+    const barX = sx - barW / 2, barY = sy - TILE_SIZE * 0.95;
+    if (frac < 1 || isMe) {
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+      ctx.fillStyle = hpColor(frac);
+      ctx.fillRect(barX, barY, barW * frac, barH);
+    }
     if (isMe) {
-      ctx.strokeStyle = "rgba(255,255,255,0.8)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(sx, sy, R + 7, 0, Math.PI * 2);
-      ctx.stroke();
-      // Stamina arc just outside the HP ring (your own gauge only).
       const sfrac = Math.max(0, Math.min(1, p.stamina / p.maxStamina));
       if (sfrac < 1) {
-        ctx.strokeStyle = "rgba(0,0,0,0.3)";
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.arc(sx, sy, R + 9, 0, Math.PI * 2);
-        ctx.stroke();
+        ctx.fillStyle = "rgba(0,0,0,0.4)";
+        ctx.fillRect(barX - 1, barY + barH + 1, barW + 2, 2 + 2);
+        ctx.fillStyle = "#42c0ff";
+        ctx.fillRect(barX, barY + barH + 2, barW * sfrac, 2);
       }
-      ctx.strokeStyle = "#42c0ff";
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.arc(sx, sy, R + 9, -Math.PI / 2, -Math.PI / 2 + sfrac * Math.PI * 2);
-      ctx.stroke();
     }
     ctx.globalAlpha = 1;
 
@@ -1417,11 +1391,11 @@ export class Game {
     ctx.fillStyle = "#eaf2f8";
     ctx.font = "11px system-ui";
     ctx.textAlign = "center";
-    ctx.fillText(p.name, sx, sy - TILE_SIZE * 0.7);
+    ctx.fillText(p.name, sx, sy - TILE_SIZE * 1.15);
     if (p.isMayor) {
       ctx.fillStyle = "#ffd54f";
       ctx.font = "13px system-ui";
-      ctx.fillText("♔", sx, sy - TILE_SIZE * 0.95);
+      ctx.fillText("♔", sx, sy - TILE_SIZE * 1.4);
     }
   }
 
@@ -1941,6 +1915,151 @@ function roundRect(
   ctx.arcTo(x, y + h, x, y, r);
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
+}
+
+// ---------------------------------------------------------------------------
+// Oblique 3/4-view humanoid — the shared body for players and NPCs.
+//
+// Drawn in the style of Eastward / Stardew: the camera looks down, but every
+// character is rendered standing UP so you read head, torso, arms and legs.
+// Anchored near the feet at (sx, sy); the body rises above so taller things
+// naturally overlap shorter ones in a Y-sorted scene.
+// ---------------------------------------------------------------------------
+type Facing = "down" | "up" | "left" | "right";
+
+function facingFromDir(dir: number): Facing {
+  const dx = Math.cos(dir), dy = Math.sin(dir);
+  if (Math.abs(dx) >= Math.abs(dy)) return dx > 0 ? "right" : "left";
+  return dy > 0 ? "down" : "up";
+}
+
+interface CharLook { skin: string; hair: string; shirt: string; pants?: string }
+
+function drawCharacter(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number,
+  look: CharLook,
+  o: { facing: Facing; phase: number; moving: boolean },
+) {
+  const u = TILE_SIZE / 24;                    // scale unit (1 at 24px tiles)
+  const face = o.facing;
+  const pants = look.pants ?? "#39507a";        // denim
+  const swing = o.moving ? Math.sin(o.phase) : 0;
+
+  const feetY  = sy + 9 * u;
+  const hipY   = sy + 3 * u;
+  const shoY   = sy - 5 * u;                     // shoulder line
+  const headCY = sy - 11 * u;
+  const headR  = 5.2 * u;
+  const bodyW  = 11 * u;
+
+  // darker shade of a hex colour, for simple shadowing
+  const shade = (hex: string, f: number) => {
+    const n = parseInt(hex.slice(1), 16);
+    const r = Math.max(0, ((n >> 16) & 255) * f) | 0;
+    const g = Math.max(0, ((n >> 8) & 255) * f) | 0;
+    const b = Math.max(0, (n & 255) * f) | 0;
+    return `rgb(${r},${g},${b})`;
+  };
+
+  // ---- ground shadow ----
+  ctx.fillStyle = "rgba(0,0,0,0.22)";
+  ctx.beginPath();
+  ctx.ellipse(sx, feetY + 1.5 * u, 8 * u, 2.8 * u, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ---- legs (stride only while moving) ----
+  const legSpread = 2.8 * u;
+  for (const side of [-1, 1] as const) {
+    const sw = (side === -1 ? swing : -swing) * 2.2 * u;
+    const lx = sx + side * legSpread + sw;
+    const ly = feetY;
+    ctx.strokeStyle = pants;
+    ctx.lineWidth = 3.6 * u;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(sx + side * legSpread * 0.7, hipY);
+    ctx.lineTo(lx, ly);
+    ctx.stroke();
+    // boot
+    ctx.fillStyle = "#241809";
+    ctx.beginPath();
+    ctx.ellipse(lx + (face === "left" ? -1 : face === "right" ? 1 : 0) * u, ly + 1 * u, 2.5 * u, 1.6 * u, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ---- back arm (drawn behind torso so it sits naturally) ----
+  const armPhase = o.moving ? Math.sin(o.phase + Math.PI) * 2.2 * u : 0;
+  const drawArm = (side: -1 | 1) => {
+    const ax = sx + side * (bodyW / 2 - 0.5 * u);
+    const handY = hipY + (side === -1 ? armPhase : -armPhase);
+    ctx.strokeStyle = shade(look.shirt, 0.82);
+    ctx.lineWidth = 2.9 * u;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(ax, shoY + 1.5 * u);
+    ctx.lineTo(ax + side * 1.5 * u, handY);
+    ctx.stroke();
+    ctx.fillStyle = look.skin;            // hand
+    ctx.beginPath();
+    ctx.arc(ax + side * 1.5 * u, handY, 1.9 * u, 0, Math.PI * 2);
+    ctx.fill();
+  };
+  drawArm(face === "right" ? 1 : -1);     // far arm first
+
+  // ---- torso ----
+  ctx.fillStyle = look.shirt;
+  roundRect(ctx, sx - bodyW / 2, shoY, bodyW, hipY - shoY + 2.5 * u, 3 * u);
+  ctx.fill();
+  ctx.fillStyle = shade(look.shirt, 0.8); // lower-torso shading
+  roundRect(ctx, sx - bodyW / 2, hipY - 1 * u, bodyW, 4 * u, 2.5 * u);
+  ctx.fill();
+
+  // ---- front arm ----
+  drawArm(face === "right" ? -1 : 1);
+
+  // ---- head ----
+  ctx.fillStyle = look.skin;
+  ctx.beginPath();
+  ctx.arc(sx, headCY, headR, 0, Math.PI * 2);
+  ctx.fill();
+  // jaw shading low on the face
+  ctx.fillStyle = shade(look.skin, 0.92);
+  ctx.beginPath();
+  ctx.ellipse(sx, headCY + headR * 0.45, headR * 0.85, headR * 0.5, 0, 0, Math.PI);
+  ctx.fill();
+
+  // ---- hair ----
+  ctx.fillStyle = look.hair;
+  if (face === "up") {
+    ctx.beginPath();                       // full back of head
+    ctx.arc(sx, headCY, headR, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (face === "down") {
+    ctx.beginPath();                       // top fringe + sideburns
+    ctx.arc(sx, headCY, headR, Math.PI * 0.92, Math.PI * 2.08);
+    ctx.fill();
+  } else {
+    const back = face === "left" ? 1 : -1; // hair piles toward the back of the head
+    ctx.beginPath();
+    ctx.arc(sx, headCY, headR, Math.PI * 0.5 + (back > 0 ? 0 : Math.PI),
+                                Math.PI * 1.5 + (back > 0 ? 0 : Math.PI));
+    ctx.fill();
+    ctx.beginPath();                       // little top sweep
+    ctx.arc(sx, headCY, headR, Math.PI, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ---- eyes ----
+  ctx.fillStyle = "#1a1a1a";
+  const eye = (ex: number) => {
+    ctx.beginPath();
+    ctx.arc(sx + ex, headCY + 0.5 * u, 0.9 * u, 0, Math.PI * 2);
+    ctx.fill();
+  };
+  if (face === "down") { eye(-2 * u); eye(2 * u); }
+  else if (face === "left")  eye(-2.2 * u);
+  else if (face === "right") eye(2.2 * u);
 }
 
 // --- creature sprites (top-down, recognizable silhouettes) ------------------
