@@ -653,6 +653,25 @@ export function regionFromData(data: RegionData): RegionDef {
 // ---------------------------------------------------------------------------
 // Real-geography overlay (from tools/import-osm.mjs)
 // ---------------------------------------------------------------------------
+// Imported maps reference shops by a stable building id (the TS ShopDefs can't
+// be embedded in JSON). Re-attach the real ShopDef to each named building here.
+const SHOP_BY_BUILDING: Record<string, ShopDef> = {
+  "bf-shop-market":   SHOP_MARKET,
+  "bf-shop-bmsc":     SHOP_BMSC,
+  "bf-shop-ostroms":  SHOP_OSTROMS,
+  "bf-shop-breakers": SHOP_BREAKERS,
+  "an-shop-gas":      SHOP_ANACLA_GAS,
+  "an-house-food":    SHOP_ANACLA_HOME,
+  "an-shop-gov":      SHOP_ANACLA_GOV,
+};
+
+function attachShops(buildings: BuildingState[]): BuildingState[] {
+  return buildings.map((b) => {
+    const shop = SHOP_BY_BUILDING[b.id];
+    return shop ? { ...b, shop } : b;
+  });
+}
+
 function applyImported(handcrafted: RegionDef[]): RegionDef[] {
   if (!IMPORTED_REGIONS.length) return handcrafted;
   const byId = new Map(handcrafted.map((r) => [r.id, r]));
@@ -661,6 +680,7 @@ function applyImported(handcrafted: RegionDef[]): RegionDef[] {
     const base = byId.get(data.id);
     byId.set(data.id, {
       ...imported,
+      buildings:     attachShops(imported.buildings),
       vehicles:      imported.vehicles.length      ? imported.vehicles      : base?.vehicles      ?? [],
       resourceNodes: imported.resourceNodes.length ? imported.resourceNodes : base?.resourceNodes ?? [],
       plants:        imported.plants.length        ? imported.plants        : base?.plants        ?? [],
