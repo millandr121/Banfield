@@ -622,13 +622,16 @@ async function main() {
     floodFill(g, sx, sy, T.Grass, T.Water);
   }
 
-  // 8. Roads (on top of everything — they're authoritative).
+  // 8. Roads (on top of everything — they're authoritative). Drawn wide so the
+  //    main roads read as real two-lane traffic, tracks/trails a touch narrower.
   for (const e of ways) {
     const hw = tag(e, "highway");
     if (!hw) continue;
-    // Skip footpaths and cycleway only; keep everything motorised.
-    if (hw === "footway" || hw === "path" || hw === "cycleway" || hw === "steps") continue;
-    const thickness = hw === "primary" || hw === "secondary" ? 2 : 1;
+    // Keep footways/trails too (Bamfield is full of boardwalk), just thinner.
+    const trail = hw === "footway" || hw === "path" || hw === "cycleway" || hw === "steps";
+    const major = hw === "primary" || hw === "secondary" || hw === "tertiary"
+               || hw === "residential" || hw === "unclassified";
+    const thickness = trail ? 1 : major ? 3 : 2; // 3 = two-lane, 2 = service/track
     drawLine(g, geom(e), T.Road, thickness);
   }
 
@@ -709,8 +712,15 @@ async function main() {
   }
 
   // --- Spawn ---------------------------------------------------------------
-  // Default: find a road tile near the middle of the map (= town centre).
+  // --spawn-near "name" anchors the spawn at a named building (e.g. the market,
+  // so the West Coast Trail bus stop ends up right out front). Falls back to the
+  // map centre, then walks outward to the nearest road/grass tile.
   let spawnX = Math.floor(gridW / 2), spawnY = Math.floor(gridH / 2);
+  if (args["spawn-near"]) {
+    const want = String(args["spawn-near"]).toLowerCase();
+    const hit = buildings.find((b) => (b.name || "").toLowerCase().includes(want));
+    if (hit) { spawnX = hit.x; spawnY = hit.y + hit.h + 1; } // just south of it (street side)
+  }
   for (let r = 0; r < Math.max(gridW, gridH); r++) {
     let found = false;
     for (let dy = -r; dy <= r && !found; dy++) {

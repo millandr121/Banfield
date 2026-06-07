@@ -1435,38 +1435,21 @@ export class Game {
       ctx.stroke();
     }
 
-    // A faint wake ring when swimming.
-    if (p.swimming) {
-      ctx.strokeStyle = "rgba(220,240,255,0.45)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(sx, sy, R * 1.25, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    // --- The character body (oblique 3/4 view) ---
-    if (p.swimming) {
-      // Only the head + shoulders show above the waterline while swimming.
-      ctx.fillStyle = "rgba(220,240,255,0.4)";
-      ctx.beginPath();
-      ctx.ellipse(sx, sy, R * 1.1, R * 0.6, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = p.appearance.skin;
-      ctx.beginPath();
-      ctx.arc(sx, sy - R * 0.2, R * 0.55, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = p.appearance.hair;
-      ctx.beginPath();
-      ctx.arc(sx, sy - R * 0.2, R * 0.55, Math.PI, Math.PI * 2);
-      ctx.fill();
-    } else {
-      const gait = this.gaitFor(p.id, p.x, p.y);
-      drawCharacter(ctx, sx, sy, p.appearance, {
-        facing: facingFromDir(p.dir),
-        phase: gait.phase,
-        moving: gait.moving,
-      });
-    }
+    // --- The character body (oblique 3/4 view), sunk by real water depth ---
+    // ankle-deep in shallow → waist-deep mid → head-only when swimming/deep.
+    const depth = this.clientDepthAt(p.x, p.y);
+    let submerge = 0;
+    if (p.swimming) submerge = 0.82;             // deep: head & shoulders only
+    else if (depth >= DEPTH_SWIM) submerge = 0.82;
+    else if (depth >= DEPTH_ANKLE) submerge = 0.46; // waist-deep
+    else if (depth > 0) submerge = 0.16;            // ankle-deep
+    const gait = this.gaitFor(p.id, p.x, p.y);
+    drawCharacter(ctx, sx, sy, p.appearance, {
+      facing: facingFromDir(p.dir),
+      phase: gait.phase,
+      moving: gait.moving,
+      submerge,
+    });
 
     // HP / stamina bar floating above the head (oblique-friendly, not a ring).
     const frac = Math.max(0, Math.min(1, p.hp / p.maxHp));
@@ -2056,7 +2039,7 @@ function drawCharacter(
   ctx: CanvasRenderingContext2D,
   sx: number, sy: number,
   look: CharLook,
-  o: { facing: Facing; phase: number; moving: boolean },
+  o: { facing: Facing; phase: number; moving: boolean; submerge?: number },
 ) {
   const u = TILE_SIZE / 24;                    // scale unit (1 at 24px tiles)
   const face = o.facing;
@@ -2070,6 +2053,14 @@ function drawCharacter(
   const headR  = 5.2 * u;
   const bodyW  = 11 * u;
 
+  // Water submersion 0..1 (fraction of the body the water covers). Drives how
+  // much of the body shows: ankle-deep → ~0.12, waist → ~0.45, head-only → ~0.8.
+  const sub = o.submerge ?? 0;
+  const bodyTop = headCY - headR, bodyBot = feetY;
+  const waterY = sub > 0 ? bodyBot - sub * (bodyBot - bodyTop) : Infinity;
+  const showLegs  = waterY >= hipY - 1 * u;      // water still below the hips
+  const showTorso = waterY >= shoY + 1 * u;      // water below the shoulders
+
   // darker shade of a hex colour, for simple shadowing
   const shade = (hex: string, f: number) => {
     const n = parseInt(hex.slice(1), 16);
@@ -2079,33 +2070,37 @@ function drawCharacter(
     return `rgb(${r},${g},${b})`;
   };
 
-  // ---- ground shadow ----
-  ctx.fillStyle = "rgba(0,0,0,0.22)";
-  ctx.beginPath();
-  ctx.ellipse(sx, feetY + 1.5 * u, 8 * u, 2.8 * u, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ---- legs (stride only while moving) ----
-  const legSpread = 2.8 * u;
-  for (const side of [-1, 1] as const) {
-    const sw = (side === -1 ? swing : -swing) * 2.2 * u;
-    const lx = sx + side * legSpread + sw;
-    const ly = feetY;
-    ctx.strokeStyle = pants;
-    ctx.lineWidth = 3.6 * u;
-    ctx.lineCap = "round";
+  // ---- ground shadow (only on land) ----
+  if (sub <= 0) {
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
     ctx.beginPath();
-    ctx.moveTo(sx + side * legSpread * 0.7, hipY);
-    ctx.lineTo(lx, ly);
-    ctx.stroke();
-    // boot
-    ctx.fillStyle = "#241809";
-    ctx.beginPath();
-    ctx.ellipse(lx + (face === "left" ? -1 : face === "right" ? 1 : 0) * u, ly + 1 * u, 2.5 * u, 1.6 * u, 0, 0, Math.PI * 2);
+    ctx.ellipse(sx, feetY + 1.5 * u, 8 * u, 2.8 * u, 0, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // ---- back arm (drawn behind torso so it sits naturally) ----
+  // ---- legs (stride only while moving; hidden once waist-deep) ----
+  if (showLegs) {
+    const legSpread = 2.8 * u;
+    for (const side of [-1, 1] as const) {
+      const sw = (side === -1 ? swing : -swing) * 2.2 * u;
+      const lx = sx + side * legSpread + sw;
+      const ly = feetY;
+      ctx.strokeStyle = pants;
+      ctx.lineWidth = 3.6 * u;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(sx + side * legSpread * 0.7, hipY);
+      ctx.lineTo(lx, ly);
+      ctx.stroke();
+      // boot
+      ctx.fillStyle = "#241809";
+      ctx.beginPath();
+      ctx.ellipse(lx + (face === "left" ? -1 : face === "right" ? 1 : 0) * u, ly + 1 * u, 2.5 * u, 1.6 * u, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // ---- arms + torso (hidden once head-deep) ----
   const armPhase = o.moving ? Math.sin(o.phase + Math.PI) * 2.2 * u : 0;
   const drawArm = (side: -1 | 1) => {
     const ax = sx + side * (bodyW / 2 - 0.5 * u);
@@ -2122,61 +2117,75 @@ function drawCharacter(
     ctx.arc(ax + side * 1.5 * u, handY, 1.9 * u, 0, Math.PI * 2);
     ctx.fill();
   };
-  drawArm(face === "right" ? 1 : -1);     // far arm first
 
-  // ---- torso ----
-  ctx.fillStyle = look.shirt;
-  roundRect(ctx, sx - bodyW / 2, shoY, bodyW, hipY - shoY + 2.5 * u, 3 * u);
-  ctx.fill();
-  ctx.fillStyle = shade(look.shirt, 0.8); // lower-torso shading
-  roundRect(ctx, sx - bodyW / 2, hipY - 1 * u, bodyW, 4 * u, 2.5 * u);
-  ctx.fill();
+  if (showTorso) {
+    drawArm(face === "right" ? 1 : -1);     // far arm first
+    ctx.fillStyle = look.shirt;             // torso
+    roundRect(ctx, sx - bodyW / 2, shoY, bodyW, hipY - shoY + 2.5 * u, 3 * u);
+    ctx.fill();
+    ctx.fillStyle = shade(look.shirt, 0.8); // lower-torso shading
+    roundRect(ctx, sx - bodyW / 2, hipY - 1 * u, bodyW, 4 * u, 2.5 * u);
+    ctx.fill();
+    drawArm(face === "right" ? -1 : 1);     // front arm
+  }
 
-  // ---- front arm ----
-  drawArm(face === "right" ? -1 : 1);
-
-  // ---- head ----
+  // ---- head (shifts slightly toward the facing side for a clearer profile) ----
+  const headDX = face === "left" ? -1.2 * u : face === "right" ? 1.2 * u : 0;
+  const hx = sx + headDX;
   ctx.fillStyle = look.skin;
   ctx.beginPath();
-  ctx.arc(sx, headCY, headR, 0, Math.PI * 2);
+  ctx.arc(hx, headCY, headR, 0, Math.PI * 2);
   ctx.fill();
-  // jaw shading low on the face
-  ctx.fillStyle = shade(look.skin, 0.92);
+  ctx.fillStyle = shade(look.skin, 0.92);   // jaw shading
   ctx.beginPath();
-  ctx.ellipse(sx, headCY + headR * 0.45, headR * 0.85, headR * 0.5, 0, 0, Math.PI);
+  ctx.ellipse(hx, headCY + headR * 0.45, headR * 0.85, headR * 0.5, 0, 0, Math.PI);
   ctx.fill();
 
-  // ---- hair ----
+  // ---- hair (covers the BACK of the head — opposite the facing side) ----
   ctx.fillStyle = look.hair;
   if (face === "up") {
-    ctx.beginPath();                       // full back of head
-    ctx.arc(sx, headCY, headR, 0, Math.PI * 2);
+    ctx.beginPath();                        // facing away → full hair
+    ctx.arc(hx, headCY, headR, 0, Math.PI * 2);
     ctx.fill();
   } else if (face === "down") {
-    ctx.beginPath();                       // top fringe + sideburns
-    ctx.arc(sx, headCY, headR, Math.PI * 0.92, Math.PI * 2.08);
+    ctx.beginPath();                        // facing camera → top fringe only
+    ctx.arc(hx, headCY, headR, Math.PI * 0.92, Math.PI * 2.08);
     ctx.fill();
   } else {
-    const back = face === "left" ? 1 : -1; // hair piles toward the back of the head
+    // Profile: hair on the back half (right half when facing left, vice-versa).
+    const a0 = face === "left" ? -Math.PI / 2 : Math.PI / 2;
     ctx.beginPath();
-    ctx.arc(sx, headCY, headR, Math.PI * 0.5 + (back > 0 ? 0 : Math.PI),
-                                Math.PI * 1.5 + (back > 0 ? 0 : Math.PI));
+    ctx.arc(hx, headCY, headR, a0, a0 + Math.PI);
     ctx.fill();
-    ctx.beginPath();                       // little top sweep
-    ctx.arc(sx, headCY, headR, Math.PI, Math.PI * 2);
+    ctx.beginPath();                        // top sweep
+    ctx.arc(hx, headCY, headR, Math.PI, Math.PI * 2);
     ctx.fill();
   }
 
-  // ---- eyes ----
+  // ---- eyes (on the facing side) ----
   ctx.fillStyle = "#1a1a1a";
   const eye = (ex: number) => {
     ctx.beginPath();
-    ctx.arc(sx + ex, headCY + 0.5 * u, 0.9 * u, 0, Math.PI * 2);
+    ctx.arc(hx + ex, headCY + 0.5 * u, 0.9 * u, 0, Math.PI * 2);
     ctx.fill();
   };
   if (face === "down") { eye(-2 * u); eye(2 * u); }
   else if (face === "left")  eye(-2.2 * u);
   else if (face === "right") eye(2.2 * u);
+
+  // ---- waterline: a bright ellipse + soft wake where the body meets the water ----
+  if (sub > 0 && Number.isFinite(waterY)) {
+    const wlW = (showLegs ? 7 : showTorso ? 8 : 6) * u;
+    ctx.fillStyle = "rgba(210,235,255,0.45)";
+    ctx.beginPath();
+    ctx.ellipse(sx, waterY, wlW, 2.2 * u, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.3)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.ellipse(sx, waterY + 1.5 * u, wlW * 1.25, 3 * u, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
 }
 
 // --- creature sprites (top-down, recognizable silhouettes) ------------------
@@ -2231,33 +2240,30 @@ function drawCreatureSprite(
   const bigPredator = kind === "dogfish" || kind === "sixgill" || kind === "orca";
   const whale = kind === "humpback" || kind === "greywhale";
 
-  // Submersion 0..1: shallow (ankle) → 0, deep → 1. Drives body opacity.
+  // Submersion 0..1: shallow (ankle) → 0, deep → 1.
   const sub = clamp01((depth - DEPTH_ANKLE) / (DEPTH_DEEP - DEPTH_ANKLE));
 
-  // Beyond ~13 tiles you only get telltales — a ripple, a far fin, a blow.
-  if (distToPlayer > 13) {
-    if (bigPredator && distToPlayer < 24) drawDorsalFin(ctx, x, y, kind === "orca");
+  // The single thing that breaks the surface — fin, blow, or just a ripple.
+  const surface = () => {
+    if (bigPredator) drawDorsalFin(ctx, x, y, kind === "orca");
     else if (whale) drawWhaleBlow(ctx, x, y);
     else drawRipple(ctx, x, y);
+  };
+
+  // Far away OR in deep water: ONLY the surface telltale, never the full body.
+  // (Fixes the "fin plus a ghost of the whole body" double-render.)
+  if (distToPlayer > 13 || sub > 0.55) {
+    surface();
     return;
   }
 
-  // The submerged body: full sprite, faded + water-tinted by how deep it sits.
-  const bodyAlpha = 0.9 - sub * 0.68; // 0.9 in the shallows → ~0.22 in the deep
+  // Close + shallow/clear water: you can see the body gliding under the surface,
+  // fading as it gets deeper, with the surface telltale drawn solid on top.
   ctx.save();
-  ctx.globalAlpha = bodyAlpha;
+  ctx.globalAlpha = 0.85 - sub * 0.5; // 0.85 in the shallows → ~0.55 at the cutoff
   drawFullCreature(ctx, kind, x, y);
-  // Cool blue wash over the underwater body so it reads as "below the surface".
-  ctx.globalCompositeOperation = "source-atop";
-  ctx.globalAlpha = 0.18 + sub * 0.4;
-  ctx.fillStyle = "#0f4e74";
-  ctx.fillRect(x - TILE_SIZE, y - TILE_SIZE, TILE_SIZE * 2, TILE_SIZE * 2);
   ctx.restore();
-
-  // The part that breaks the surface, drawn solid on top.
-  if (bigPredator) drawDorsalFin(ctx, x, y, kind === "orca");
-  else if (whale) drawWhaleBlow(ctx, x, y);
-  else drawRipple(ctx, x, y); // small fry: just the surface disturbance
+  surface();
 }
 
 // Expanding ring ripple — creature beneath the surface.
