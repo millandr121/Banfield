@@ -275,6 +275,7 @@ export interface PlayerState {
   vehicleId: string | null; // id of the vehicle being driven, else null
   dead: boolean;
   equipped: ItemId | null; // currently wielded weapon (null = bare hands)
+  titles: string[]; // earned community roles (Mayor, BMSC President, Nurse, ...)
 }
 
 export type CreatureKind =
@@ -400,10 +401,21 @@ export interface RegionInfo {
 // One logged species in a player's BMSC logbook.
 export interface LogbookEntry { key: string; count: number; firstAt: number }
 
+// Town leaderboard / current title holders.
+export interface LeaderboardData {
+  mayor: string | null;       // unofficial mayor (top Banfielder points)
+  president: string | null;   // BMSC President (most species logged)
+  chief: string | null;       // Fire Chief (most building repairs)
+  nurse: string | null;       // Nurse (top first responder)
+  responders: string[];       // other first responders (max 5)
+  topBanfielders: Array<{ name: string; pts: number }>;
+}
+
 export type ClientMessage =
   | { t: "join"; name: string; appearance: Appearance; secret?: string }
   | { t: "scan" } // fire the discovery radius — log nearby species
   | { t: "equip"; item: ItemId | null } // wield a weapon (null = bare hands)
+  | { t: "heal" } // patch up the nearest hurt player (uses cooked food)
   | { t: "input"; dx: number; dy: number; sprint?: boolean } // intended direction, each -1..1
   | { t: "attack"; charge?: number } // charge 0..1 from how long Space was held
   | { t: "dodge" } // quick lunge + i-frames in the current heading
@@ -446,6 +458,7 @@ export type ServerMessage =
   | { t: "chunk"; region: RegionId; cx: number; cy: number; w: number; h: number; tiles: number[]; elevation: number[] }
   | { t: "log"; msg: string }
   | { t: "logbook"; entries: LogbookEntry[] } // your BMSC logbook contents
+  | { t: "leaderboard"; data: LeaderboardData } // current town title holders
   // A transient visual effect (e.g. a ranged-shot tracer) for clients to draw.
   | { t: "fx"; kind: "tracer"; region: RegionId; x1: number; y1: number; x2: number; y2: number; weapon: string }
   | { t: "chat"; from: string; msg: string; channel: "global" | "team" | "private" };

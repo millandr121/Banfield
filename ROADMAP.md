@@ -23,10 +23,10 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
 - [ ] **Roads two tiles wide** (two-lane, realistic)
 - [ ] **Bus stop on the road right in front of the market** (real West Coast
       Trail bus pickup spot). Catching the bus = instant travel to Anacla.
-- [ ] **Whole-area map**: use the full OSM bbox — open ocean + islands
-      (Diana, Helby — both have houses), seal rocks, reefs out to sea.
-- [ ] **Chunked / buffered loading** so the big map works in HTML5 (load the
-      map in tiles/zones around the player; stream as you move/sail).
+- [x] **Whole-area map**: Bamfield now covers the islands (Diana, Helby, Edward
+      King, Dixon, Seppings, Wizard, Bordelais) + open ocean you can sail.
+- [x] **Chunked / buffered loading** + interest management so the 480k-tile map
+      runs in HTML5 (chunks stream around the player; far entities aren't sent).
 - [ ] Better building footprints — rasterize the actual OSM polygon shape, not
       just a bounding box, for more detailed/accurate buildings.
 - [ ] Travel: walk/sail the ocean to Anacla, or catch the bus (instant).
@@ -97,29 +97,24 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
       redesign your look, store items, decorate the interior (later).
 - [ ] **Interior spaces** — market, BMSC, houses you can walk into (later).
 
-## 6. ECONOMY, VEHICLES & ROLES (later — captured from notes)
-- [ ] **Scrapyard** (up Bamfield Main Rd) — buy **vehicles/cars** here.
-- [ ] **Breaker's Marine** — buy **boats** here.
-- [ ] **Sell/trade big items** (cars, boats) between players via "pinkslips";
-      ownership transfers and the vehicle keeps its new owner wherever it sits.
-- [ ] **Vehicle locking** so they don't get stolen.
-- [ ] **GTA-style theft** — if someone drives your car/boat you can report it
-      stolen; they become **wanted**.
-- [ ] **Cops** — NPCs that come from Port Alberni to town to catch wanted
-      players.
-- [ ] **Roles & ranks** (like the unofficial mayor system):
-  - **First responders** (max 6) — earned by healing people (heal via food /
-    bandaid option we add). Highest-ranked first responder becomes the **Nurse**.
-  - **Fire Chief** — highest-ranked person who repairs buildings / puts out
-    fires. (Needs wildfires + fire-fighting first.)
-  - **BMSC President** — whoever has logged the most species.
-  - Mayor / chief / responders can tag players **wanted** without cause.
-  - Demotion works like the mayor: someone higher can rank you out.
-- [ ] **Healing** — heal others via food or bandaid (feeds the responder rank).
-- [ ] **Natural disaster system** — wildfires (+ fighting them), expand beyond
-      tsunami / king tides.
-- [ ] **Death rework** — dying should cost a lot of Banfielder pts **and** some
-      skill XP (randomized reduction across skills?). (Currently: -25% raw XP.)
+## 6. ECONOMY, VEHICLES & ROLES
+- [x] **Roles & ranks** (live, recomputed like the mayor system):
+  - **Mayor** (top Banfielder pts), **BMSC President** (most species logged),
+    **Fire Chief** (most building repairs), **Nurse** (top first responder),
+    **First Responders** (next 5 by heals given). Titles shown on the HUD and
+    above the player; unseated by whoever tops the metric.
+- [x] **Healing** (H) — patch up the nearest hurt player using cooked food;
+      earns Banfielder pts and feeds the responder rank.
+- [x] **Community leaderboard** (K) — all current title-holders + top Banfielders.
+- [x] **Death rework** — now costs 35% Banfielder pts + randomized skill XP.
+- [ ] **Scrapyard** (up Bamfield Main Rd) — buy **vehicles/cars**.
+- [ ] **Breaker's Marine** — buy **boats**.
+- [ ] **Vehicle ownership** + sell/trade via "pinkslips"; **locking**.
+- [ ] **GTA-style theft** → report stolen → driver becomes **wanted**.
+- [ ] **Cops** — NPCs from Port Alberni that hunt wanted players.
+- [ ] Mayor / chief / responders can tag players **wanted** without cause.
+- [ ] **Wildfires** + fire-fighting (feeds the Fire Chief role) — part of the
+      natural-disaster system alongside tsunami / king tides.
 
 ---
 

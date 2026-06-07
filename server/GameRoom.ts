@@ -24,6 +24,7 @@ import {
   ServerMessage,
   SkillName,
   Snapshot,
+  LeaderboardData,
   Tile,
   TravelNode,
   VehicleState,
@@ -293,6 +294,12 @@ export class GameRoom {
   private deepSince = new Map<string, number>();
   // accountName → logbook: speciesKey → { count (encounters), firstAt }.
   private discoveries = new Map<string, Record<string, { count: number; firstAt: number }>>();
+  // Role tallies, keyed by player name (live this session).
+  private repairsBy = new Map<string, number>(); // building repairs → Fire Chief
+  private healsBy = new Map<string, number>();    // heals given → Nurse / responders
+  private chiefId: string | null = null;
+  private presidentId: string | null = null;
+  private nurseId: string | null = null;
 
   private startedAt = Date.now();
   private loop: ReturnType<typeof setInterval> | null = null;
@@ -522,7 +529,34 @@ export class GameRoom {
       case "equip":
         this.doEquip(s.playerId, msg.item);
         break;
+      case "heal":
+        this.doHeal(s.playerId);
+        break;
     }
+  }
+
+  // First-responder action: patch up the nearest hurt player using cooked food.
+  private doHeal(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead) return;
+    const COOKED: ItemId[] = ["cookedcrab", "cookedfish", "cookedsalmon", "cookedlingcod", "cookedvenison", "cookedpoultry"];
+    const food = COOKED.find((f) => (p.inventory[f] ?? 0) > 0);
+    if (!food) { this.tell(p, "You need cooked food to patch someone up."); return; }
+    // Nearest other living, hurt player within reach.
+    let target: PlayerState | null = null, best = 2.6;
+    for (const t of this.players.values()) {
+      if (t.id === p.id || t.region !== p.region || t.dead || t.hp >= t.maxHp) continue;
+      const d = Math.hypot(t.x - p.x, t.y - p.y);
+      if (d < best) { best = d; target = t; }
+    }
+    if (!target) { this.tell(p, "No one nearby needs first aid."); return; }
+    p.inventory[food] = (p.inventory[food] ?? 0) - 1;
+    target.hp = Math.min(target.maxHp, target.hp + 35);
+    const n = (this.healsBy.get(p.name) ?? 0) + 1;
+    this.healsBy.set(p.name, n);
+    p.banfielderPts += 3; // community service
+    this.tell(p, `You patched up ${target.name}. (+3 Banfielder)`);
+    this.tell(target, `${p.name} gave you first aid.`);
   }
 
   // --- discovery logbook ----------------------------------------------------
@@ -604,6 +638,7 @@ export class GameRoom {
       vehicleId: null,
       dead: false,
       equipped: "stick",
+      titles: [],
     };
 
     // Restore a saved account if one exists for this name (and the claim
@@ -1320,6 +1355,60 @@ export class GameRoom {
       this.mayorId = null;
     }
     for (const p of this.players.values()) this.recomputeMaxHp(p);
+    this.recomputeTitles();
+  }
+
+  // Award community roles and broadcast the leaderboard. A title can be unseated
+  // by anyone who tops the relevant metric, just like the unofficial mayor.
+  private recomputeTitles() {
+    const players = [...this.players.values()];
+    const best = (score: (p: PlayerState) => number) => {
+      let top: PlayerState | null = null, s = 0;
+      for (const p of players) { const v = score(p); if (v > s) { s = v; top = p; } }
+      return top;
+    };
+    const speciesCount = (p: PlayerState) => Object.keys(this.discoveries.get(p.name) ?? {}).length;
+    const president = best(speciesCount);
+    const chief = best((p) => this.repairsBy.get(p.name) ?? 0);
+    const responders = players
+      .filter((p) => (this.healsBy.get(p.name) ?? 0) > 0)
+      .sort((a, b) => (this.healsBy.get(b.name) ?? 0) - (this.healsBy.get(a.name) ?? 0))
+      .slice(0, 6);
+    const nurse = responders[0] ?? null;
+
+    const announce = (role: string, who: PlayerState | null, prevId: string | null, set: (id: string | null) => void) => {
+      const id = who?.id ?? null;
+      if (id && id !== prevId) this.broadcastLog(`📣 ${who!.name} is now ${role}!`);
+      set(id);
+    };
+    announce("BMSC President", president, this.presidentId, (id) => (this.presidentId = id));
+    announce("Fire Chief", chief, this.chiefId, (id) => (this.chiefId = id));
+    announce("the Nurse", nurse, this.nurseId, (id) => (this.nurseId = id));
+
+    // Stamp titles onto each player for the HUD/leaderboard.
+    for (const p of players) {
+      const titles: string[] = [];
+      if (p.isMayor) titles.push("Mayor");
+      if (p.id === this.presidentId) titles.push("BMSC President");
+      if (p.id === this.chiefId) titles.push("Fire Chief");
+      if (nurse && p.id === nurse.id) titles.push("Nurse");
+      else if (responders.some((r) => r.id === p.id)) titles.push("First Responder");
+      p.titles = titles;
+    }
+
+    const data: LeaderboardData = {
+      mayor: this.mayorId ? this.players.get(this.mayorId)?.name ?? null : null,
+      president: president?.name ?? null,
+      chief: chief?.name ?? null,
+      nurse: nurse?.name ?? null,
+      responders: responders.slice(1).map((r) => r.name),
+      topBanfielders: players
+        .filter((p) => p.banfielderPts > 0)
+        .sort((a, b) => b.banfielderPts - a.banfielderPts)
+        .slice(0, 8)
+        .map((p) => ({ name: p.name, pts: p.banfielderPts })),
+    };
+    this.broadcast({ t: "leaderboard", data });
   }
 
   private doCraft(playerId: string, recipeId: CraftRecipeId) {
@@ -1870,8 +1959,9 @@ export class GameRoom {
     const region = this.regions.get(p.region);
     if (!region) return;
     const b = this.nearestBuilding(region, p.x, p.y, 1.6);
-    if (!b) return;
+    if (!b || b.hp >= b.maxHp) return;
     b.hp = Math.min(b.maxHp, b.hp + REPAIR_RATE * (TICK_MS / 1000) * 4);
+    this.repairsBy.set(p.name, (this.repairsBy.get(p.name) ?? 0) + 1); // → Fire Chief
     if (b.kind === "rubble" && b.hp > b.maxHp * 0.5) {
       b.kind = (b as any).originalKind ?? "house";
     }

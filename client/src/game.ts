@@ -32,7 +32,7 @@ import {
   DEPTH_OCEAN,
   skillLevel,
 } from "../../shared/protocol";
-import { LogbookEntry } from "../../shared/protocol";
+import { LogbookEntry, LeaderboardData } from "../../shared/protocol";
 import { SPECIES, resourceSpeciesKey } from "../../shared/species";
 import { Net } from "./net";
 
@@ -81,6 +81,8 @@ export class Game {
   private inspectKey: string | null = null; // species key of the inspected thing
   private scanAt = 0;                    // perf.now() of last discovery scan (ring anim)
   private tracers: Array<{ x1: number; y1: number; x2: number; y2: number; at: number; weapon: string }> = [];
+  private leaderboard: LeaderboardData | null = null;
+  private leaderboardOpen = false;
 
   // Per-entity walk tracking: last seen tile pos + a phase accumulator, so the
   // oblique character's legs only stride while actually moving.
@@ -182,6 +184,12 @@ export class Game {
         } else if (k === "l") {
           this.logbookOpen = !this.logbookOpen;
           e.preventDefault();
+        } else if (k === "k") {
+          this.leaderboardOpen = !this.leaderboardOpen;
+          e.preventDefault();
+        } else if (k === "h") {
+          this.net.send({ t: "heal" }); // first aid to nearest hurt player
+          e.preventDefault();
         } else if (k === "r") {
           this.net.send({ t: "scan" });        // discovery radius
           this.scanAt = performance.now();
@@ -213,6 +221,7 @@ export class Game {
           this.invOpen = false;
           this.npcOpen = null;
           this.logbookOpen = false;
+          this.leaderboardOpen = false;
           this.inspectKey = null;
           e.preventDefault();
         } else if (k === "b") {
@@ -319,6 +328,8 @@ export class Game {
       this.snap = m.snapshot;
     } else if (m.t === "logbook") {
       this.logbook = m.entries;
+    } else if (m.t === "leaderboard") {
+      this.leaderboard = m.data;
     } else if (m.t === "fx") {
       if (m.kind === "tracer") this.tracers.push({ x1: m.x1, y1: m.y1, x2: m.x2, y2: m.y2, at: performance.now(), weapon: m.weapon });
       if (this.tracers.length > 40) this.tracers.shift();
@@ -388,6 +399,50 @@ export class Game {
     if (this.mapOpen) this.drawMapOverlay(me);
     if (this.inspectKey) this.drawInspectCard();
     if (this.logbookOpen) this.drawLogbook();
+    if (this.leaderboardOpen) this.drawLeaderboard();
+  }
+
+  // Town leaderboard / current title holders (K).
+  private drawLeaderboard() {
+    const ctx = this.ctx;
+    const W = Math.min(440, this.canvas.width - 60);
+    const H = Math.min(440, this.canvas.height - 60);
+    const x = (this.canvas.width - W) / 2, y = (this.canvas.height - H) / 2;
+    ctx.fillStyle = "rgba(6,16,24,0.95)";
+    roundRect(ctx, x, y, W, H, 12); ctx.fill();
+    ctx.strokeStyle = "#ffd54f"; ctx.lineWidth = 2;
+    roundRect(ctx, x, y, W, H, 12); ctx.stroke();
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#fff4d6"; ctx.font = "bold 18px system-ui";
+    ctx.fillText("Bamfield Standings", x + 18, y + 30);
+    const lb = this.leaderboard;
+    let ry = y + 58;
+    const row = (label: string, who: string | null, col = "#eafff7") => {
+      ctx.fillStyle = "#9fd9cd"; ctx.font = "12px system-ui";
+      ctx.fillText(label, x + 18, ry);
+      ctx.fillStyle = who ? col : "rgba(150,170,175,0.5)"; ctx.font = "bold 13px system-ui";
+      ctx.fillText(who ?? "—", x + 170, ry);
+      ry += 24;
+    };
+    if (!lb) { ctx.fillStyle = "#9fd9cd"; ctx.font = "13px system-ui"; ctx.fillText("Loading…", x + 18, ry); return; }
+    row("★ Unofficial Mayor", lb.mayor, "#ffd54f");
+    row("BMSC President", lb.president, "#7fd0ff");
+    row("Fire Chief", lb.chief, "#ff9d6b");
+    row("Nurse", lb.nurse, "#9affc0");
+    if (lb.responders.length) row("First Responders", lb.responders.join(", "));
+    ry += 6;
+    ctx.fillStyle = "#7fd0c2"; ctx.font = "bold 13px system-ui";
+    ctx.fillText("Top Banfielders", x + 18, ry); ry += 20;
+    ctx.font = "12px system-ui";
+    lb.topBanfielders.forEach((e, i) => {
+      ctx.fillStyle = "#eafff7";
+      ctx.fillText(`${i + 1}. ${e.name}`, x + 28, ry);
+      ctx.textAlign = "right"; ctx.fillStyle = "#9fe6c0";
+      ctx.fillText(`${e.pts} pts`, x + W - 22, ry); ctx.textAlign = "left";
+      ry += 17;
+    });
+    ctx.fillStyle = "#8aa"; ctx.font = "10px system-ui";
+    ctx.fillText("K close · H first aid · R scan · L logbook · X inspect", x + 18, y + H - 12);
   }
 
   // Nearest inspectable thing (creature / plant / resource) to the player.
@@ -1687,15 +1742,15 @@ export class Game {
       ctx.fillText("z".repeat(zt + 1), sx + R, sy - R);
     }
 
-    // Name (with a crown for the unofficial mayor).
+    // Name (with a title tag for role-holders).
     ctx.fillStyle = "#eaf2f8";
     ctx.font = "11px system-ui";
     ctx.textAlign = "center";
     ctx.fillText(p.name, sx, sy - TILE_SIZE * 1.15);
-    if (p.isMayor) {
+    if (p.titles && p.titles.length) {
       ctx.fillStyle = "#ffd54f";
-      ctx.font = "13px system-ui";
-      ctx.fillText("♔", sx, sy - TILE_SIZE * 1.4);
+      ctx.font = "9px system-ui";
+      ctx.fillText(p.titles[0], sx, sy - TILE_SIZE * 1.4);
     }
   }
 
@@ -1733,6 +1788,8 @@ export class Game {
           : "unranked"
       : "";
     const sleepStr = me?.sleeping ? ` <span style="color:#7ec8a0">💤 resting</span>` : "";
+    const titleStr = me && me.titles && me.titles.length
+      ? `<span style="color:#ffd54f">${me.titles.join(" · ")}</span><br />` : "";
     let weaponStr = "";
     if (me) {
       const eq = me.equipped;
@@ -1743,6 +1800,7 @@ export class Game {
     }
     hud.innerHTML =
       `<b>${this.regionName}</b><br />` +
+      titleStr +
       `<b>Tide:</b> ${snap.phase} (${tidePct}%)${event}<br />` +
       `<b>HP:</b> ${hp}/${me?.maxHp ?? 100} &nbsp; <b>Stam:</b> ${stam}/${me?.maxStamina ?? 100}${sleepStr}<br />` +
       `<b>Hunger:</b> <span style="color:${hungerLow ? "#e57373" : "#cfe3ef"}">${hunger}/${me?.maxHunger ?? 100}${hungerLow ? " — EAT (Q)!" : ""}</span><br />` +
