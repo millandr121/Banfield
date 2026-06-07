@@ -69,9 +69,59 @@ if (args["dump-query"] && args.bbox) {
 if (!args.bbox || !args.width || !args.id || !args.out) {
   console.error(
     "Usage: --bbox S,W,N,E --width N --id <id> --name <name> --out <json>\n" +
-    "       [--osm-json <file>] [--sea-seed X,Y] [--no-dem] [--dump-query]"
+    "       [--osm-json <file>] [--osm-xml <file>] [--sea-seed X,Y] [--no-dem] [--dump-query]"
   );
   process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// OSM XML parser (openstreetmap.org export format → same shape as Overpass JSON)
+// ---------------------------------------------------------------------------
+function extractAttr(str, name) {
+  const m = str.match(new RegExp(`${name}="([^"]*)"`));
+  return m ? m[1] : null;
+}
+
+function parseOsmXml(xml) {
+  const nodeMap = new Map(); // id → {lat, lon}
+  const elements = [];
+  let current = null;
+
+  for (const rawLine of xml.split("\n")) {
+    const line = rawLine.trim();
+
+    if (line.startsWith("<node ")) {
+      const id  = extractAttr(line, "id");
+      const lat = parseFloat(extractAttr(line, "lat") ?? "NaN");
+      const lon = parseFloat(extractAttr(line, "lon") ?? "NaN");
+      if (id && !isNaN(lat) && !isNaN(lon)) {
+        nodeMap.set(id, { lat, lon });
+        current = { type: "node", id: +id, lat, lon, tags: {} };
+        if (line.includes("/>")) { elements.push(current); current = null; }
+      }
+    } else if (line === "</node>") {
+      if (current?.type === "node") { elements.push(current); current = null; }
+    } else if (line.startsWith("<way ")) {
+      const id = extractAttr(line, "id");
+      if (id) current = { type: "way", id: +id, _refs: [], geometry: [], tags: {} };
+    } else if (line === "</way>") {
+      if (current?.type === "way") {
+        current.geometry = current._refs.map(r => nodeMap.get(r)).filter(Boolean);
+        delete current._refs;
+        elements.push(current);
+      }
+      current = null;
+    } else if (line.startsWith("<nd ")) {
+      const ref = extractAttr(line, "ref");
+      if (ref && current?._refs) current._refs.push(ref);
+    } else if (line.startsWith("<tag ")) {
+      const k = extractAttr(line, "k");
+      const v = extractAttr(line, "v");
+      if (k != null && v != null && current) current.tags[k] = v;
+    }
+  }
+
+  return { elements };
 }
 
 // ---------------------------------------------------------------------------
@@ -418,11 +468,38 @@ function autoPlaceResources(g, regionId) {
 function buildingKind(tags) {
   const name = (tags.name || "").toLowerCase();
   const use  = (tags.building || tags["building:use"] || "").toLowerCase();
-  if (name.includes("marine") || name.includes("research") || name.includes("science")) return "shop";
-  if (use === "commercial" || name.includes("shop") || name.includes("store") || name.includes("market")) return "shop";
+  const am   = (tags.amenity  || "").toLowerCase();
+  if (name.includes("marine") || name.includes("research") || name.includes("science") || am === "research_institute") return "shop";
+  if (use === "commercial" || am === "fuel" || am === "marketplace" || name.includes("shop") || name.includes("store") || name.includes("market") || name.includes("gas") || tags.shop) return "shop";
+  if (am === "school" || am === "community_centre" || am === "social_facility") return "shop";
   if (name.includes("boat") || name.includes("marina") || use === "boathouse") return "boathouse";
   if (name.includes("dock") || name.includes("ferry")) return "dock";
   return "house";
+}
+
+// Assign a stable shop ID for known landmark buildings so shared/map.ts can
+// re-attach ShopDef objects after JSON round-trip.
+function stableId(regionId, tags) {
+  const name = (tags.name || "").toLowerCase();
+  const am   = (tags.amenity || "").toLowerCase();
+  // Gas bar lives on the Bamfield→Anacla road — it shows up in whichever region's bbox it falls in.
+  if (am === "fuel" || name.includes("gas bar") || name.includes("gas station")) return "an-shop-gas";
+  if (regionId === "bamfield") {
+    if (name.includes("breakers"))                                  return "bf-shop-breakers";
+    if (name.includes("marine sciences") || name.includes("bmsc")) return "bf-shop-bmsc";
+    if (name.includes("ostrom"))                                    return "bf-shop-ostroms";
+    if (name.includes("general store") || name.includes("general market")) return "bf-shop-market";
+  }
+  if (regionId === "anacla") {
+    if ((tags.office === "government") || name.includes("huu-ay-aht")) return "an-shop-gov";
+    if (name.includes("hacas") || name.includes("inn") || name.includes("lodge")) return "an-house-food";
+  }
+  return null;
+}
+
+// Returns true for ways that represent a building footprint (has polygon + is a structure).
+function isBuilding(tags) {
+  return !!(tags.building || tags.amenity || tags.shop || tags.office);
 }
 
 // ---------------------------------------------------------------------------
@@ -443,12 +520,16 @@ async function main() {
   console.log(`Grid: ${gridW} × ${gridH} tiles  bbox: ${S},${W_lon} → ${N},${E}`);
 
   // --- OSM -------------------------------------------------------------------
-  console.log(args["osm-json"]
-    ? `  Loading OSM from ${args["osm-json"]}`
-    : "  Fetching OSM from Overpass…");
-  const osm = args["osm-json"]
-    ? JSON.parse(readFileSync(args["osm-json"], "utf8"))
-    : await fetchOsm(S, W_lon, N, E);
+  let osmSource = "Overpass API";
+  if (args["osm-json"])  osmSource = args["osm-json"];
+  if (args["osm-xml"])   osmSource = args["osm-xml"] + " (XML)";
+  console.log(`  Loading OSM from ${osmSource}`);
+
+  const osm = args["osm-xml"]
+    ? parseOsmXml(readFileSync(args["osm-xml"], "utf8"))
+    : args["osm-json"]
+      ? JSON.parse(readFileSync(args["osm-json"], "utf8"))
+      : await fetchOsm(S, W_lon, N, E);
   const ways  = (osm.elements || []).filter(e => e.type === "way");
   const nodes_osm = (osm.elements || []).filter(e => e.type === "node");
   console.log(`  ✓ ${ways.length} ways, ${nodes_osm.length} nodes`);
@@ -549,7 +630,7 @@ async function main() {
   const buildings = [];
   let bi = 0;
   for (const e of ways) {
-    if (!tag(e, "building")) continue;
+    if (!isBuilding(e.tags || {})) continue;
     const pts = geom(e);
     if (pts.length < 3) continue;
     let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
@@ -557,13 +638,17 @@ async function main() {
       minX = Math.min(minX,p.x); minY = Math.min(minY,p.y);
       maxX = Math.max(maxX,p.x); maxY = Math.max(maxY,p.y);
     }
+    // Skip buildings whose centroid falls outside this region's grid.
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    if (cx < 0 || cx >= gridW || cy < 0 || cy >= gridH) continue;
     const bx = Math.max(0, Math.round(minX));
     const by = Math.max(0, Math.round(minY));
     const bw = Math.max(1, Math.min(gridW - bx, Math.round(maxX - minX) || 1));
     const bh = Math.max(1, Math.min(gridH - by, Math.round(maxY - minY) || 1));
+    const tags = e.tags || {};
     buildings.push({
-      id: `${args.id}-b${bi++}`,
-      kind: buildingKind(e.tags || {}),
+      id: stableId(args.id, tags) ?? `${args.id}-b${bi++}`,
+      kind: buildingKind(tags),
       x: bx, y: by, w: bw, h: bh, hp: 100, maxHp: 100,
     });
   }
@@ -645,7 +730,7 @@ function updateRegionIndex(outPath, id, _name) {
     "",
     ...present.map(f => {
       const rid = f.replace(".json","");
-      return `import ${rid}Data from "./${f}" assert { type: "json" };`;
+      return `import ${rid}Data from "./${f}.json";`;
     }),
     "",
     "export const IMPORTED_REGIONS: RegionData[] = [",
