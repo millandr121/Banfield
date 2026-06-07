@@ -32,6 +32,8 @@ import {
   DEPTH_OCEAN,
   skillLevel,
 } from "../../shared/protocol";
+import { LogbookEntry } from "../../shared/protocol";
+import { SPECIES, resourceSpeciesKey } from "../../shared/species";
 import { Net } from "./net";
 
 const CHARGE_MAX_MS = 600; // hold Space this long for a full-power swing
@@ -74,6 +76,10 @@ export class Game {
   private shopId: string | null = null; // building id of the open shop, else null
   private invOpen = false;   // is the inventory bag panel open?
   private npcOpen: string | null = null; // id of the NPC whose dialogue is showing
+  private logbook: LogbookEntry[] = []; // BMSC discovery logbook (from server)
+  private logbookOpen = false;          // is the logbook panel open?
+  private inspectKey: string | null = null; // species key of the inspected thing
+  private scanAt = 0;                    // perf.now() of last discovery scan (ring anim)
 
   // Per-entity walk tracking: last seen tile pos + a phase accumulator, so the
   // oblique character's legs only stride while actually moving.
@@ -172,6 +178,16 @@ export class Game {
         } else if (k === "i") {
           this.invOpen = !this.invOpen;
           e.preventDefault();
+        } else if (k === "l") {
+          this.logbookOpen = !this.logbookOpen;
+          e.preventDefault();
+        } else if (k === "r") {
+          this.net.send({ t: "scan" });        // discovery radius
+          this.scanAt = performance.now();
+          e.preventDefault();
+        } else if (k === "x") {
+          this.inspectKey = this.inspectKey ? null : this.nearestSpeciesKey();
+          e.preventDefault();
         } else if (k === "q") {
           this.net.send({ t: "eat" });
         } else if (k === "g") {
@@ -189,6 +205,8 @@ export class Game {
           this.shopId = null;
           this.invOpen = false;
           this.npcOpen = null;
+          this.logbookOpen = false;
+          this.inspectKey = null;
           e.preventDefault();
         } else if (k === "b") {
           // Toggle the shop panel for the nearest shop building.
@@ -292,6 +310,8 @@ export class Game {
       }
     } else if (m.t === "snapshot") {
       this.snap = m.snapshot;
+    } else if (m.t === "logbook") {
+      this.logbook = m.entries;
     } else if (m.t === "log") {
       this.logLines.push(m.msg);
       if (this.logLines.length > 6) this.logLines.shift();
@@ -341,6 +361,7 @@ export class Game {
     this.drawSortedEntities(me);
 
     if (me) this.drawSelfOverlay(me);
+    if (me) this.drawScanRing(me);
     this.drawHud(this.snap, me);
     this.drawTravelPrompt(me);
     this.drawBoardPrompt(me);
@@ -354,6 +375,121 @@ export class Game {
     if (this.invOpen) this.drawInventoryPanel(me);
     if (this.npcOpen) this.drawNpcDialogue(me);
     if (this.mapOpen) this.drawMapOverlay(me);
+    if (this.inspectKey) this.drawInspectCard();
+    if (this.logbookOpen) this.drawLogbook();
+  }
+
+  // Nearest inspectable thing (creature / plant / resource) to the player.
+  private nearestSpeciesKey(): string | null {
+    if (!this.snap) return null;
+    const me = this.snap.players.find((p) => p.id === this.myId);
+    if (!me) return null;
+    let best: string | null = null, bestD = 6;
+    const consider = (x: number, y: number, key: string) => {
+      const d = Math.hypot(x - me.x, y - me.y);
+      if (d < bestD && SPECIES[key]) { bestD = d; best = key; }
+    };
+    for (const c of this.snap.creatures) consider(c.x, c.y, c.kind);
+    for (const pl of this.snap.plants) consider(pl.x + 0.5, pl.y + 0.5, pl.kind);
+    for (const n of this.snap.resourceNodes) consider(n.x + 0.5, n.y + 0.5, resourceSpeciesKey(n.kind, n.variety));
+    return best;
+  }
+
+  // Expanding teal ring when you fire the discovery scan (R).
+  private drawScanRing(me: PlayerState) {
+    const t = (performance.now() - this.scanAt) / 900;
+    if (t < 0 || t > 1) return;
+    const { sx, sy } = this.toScreen(me.x, me.y);
+    const ctx = this.ctx;
+    ctx.strokeStyle = `rgba(120,230,200,${((1 - t) * 0.7).toFixed(3)})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(sx, sy, t * 9 * TILE_SIZE, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Minimalist field-guide card for the inspected species (X).
+  private drawInspectCard() {
+    const info = this.inspectKey ? SPECIES[this.inspectKey] : null;
+    const ctx = this.ctx;
+    if (!info) {
+      // Nothing nearby to inspect — brief hint.
+      ctx.fillStyle = "rgba(7,19,28,0.85)";
+      const msg = "Nothing close to inspect — get nearer.";
+      ctx.font = "13px system-ui"; ctx.textAlign = "center";
+      const w = ctx.measureText(msg).width + 24;
+      const x = this.canvas.width / 2, y = this.canvas.height - 150;
+      ctx.fillRect(x - w / 2, y - 20, w, 28);
+      ctx.fillStyle = "#cfe"; ctx.fillText(msg, x, y);
+      return;
+    }
+    const W = 340, H = 116;
+    const x = this.canvas.width / 2 - W / 2;
+    const y = this.canvas.height - H - 96;
+    ctx.fillStyle = "rgba(7,19,28,0.92)";
+    roundRect(ctx, x, y, W, H, 10); ctx.fill();
+    ctx.strokeStyle = "#2bb9a6"; ctx.lineWidth = 2;
+    roundRect(ctx, x, y, W, H, 10); ctx.stroke();
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#eafff7"; ctx.font = "bold 16px system-ui";
+    ctx.fillText(info.common, x + 14, y + 26);
+    ctx.fillStyle = "#9fd9cd"; ctx.font = "italic 12px system-ui";
+    ctx.fillText(info.scientific, x + 14, y + 43);
+    if (info.rarity) {
+      ctx.fillStyle = RARITY_COLOR[info.rarity] ?? "#cfe";
+      ctx.font = "11px system-ui"; ctx.textAlign = "right";
+      ctx.fillText(info.rarity.toUpperCase(), x + W - 14, y + 26);
+      ctx.textAlign = "left";
+    }
+    ctx.fillStyle = "#d8e6e2"; ctx.font = "12px system-ui";
+    wrapText(ctx, info.blurb, x + 14, y + 62, W - 28, 15);
+    if (info.uses) {
+      ctx.fillStyle = "#ffd98a"; ctx.font = "11px system-ui";
+      wrapText(ctx, "▸ " + info.uses, x + 14, y + H - 16, W - 28, 14);
+    }
+  }
+
+  // The BMSC logbook panel (L) — everything you've scanned, grouped.
+  private drawLogbook() {
+    const ctx = this.ctx;
+    const W = Math.min(560, this.canvas.width - 60);
+    const H = Math.min(520, this.canvas.height - 60);
+    const x = (this.canvas.width - W) / 2, y = (this.canvas.height - H) / 2;
+    ctx.fillStyle = "rgba(6,16,24,0.95)";
+    roundRect(ctx, x, y, W, H, 12); ctx.fill();
+    ctx.strokeStyle = "#2bb9a6"; ctx.lineWidth = 2;
+    roundRect(ctx, x, y, W, H, 12); ctx.stroke();
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#eafff7"; ctx.font = "bold 18px system-ui";
+    ctx.fillText("BMSC Field Logbook", x + 18, y + 30);
+    const total = Object.keys(SPECIES).length;
+    ctx.fillStyle = "#9fd9cd"; ctx.font = "12px system-ui";
+    ctx.fillText(`${this.logbook.length} / ${total} species logged   ·   press R to scan, X to inspect, L to close`, x + 18, y + 50);
+
+    const byKey = new Map(this.logbook.map((e) => [e.key, e]));
+    let ry = y + 74;
+    const groups: Array<[string, string]> = [
+      ["marine", "Marine"], ["land", "Land mammals"], ["bird", "Birds"],
+      ["plant", "Plants"], ["tree", "Trees"], ["mineral", "Minerals"],
+    ];
+    ctx.font = "13px system-ui";
+    for (const [g, label] of groups) {
+      const keys = Object.keys(SPECIES).filter((k) => SPECIES[k].group === g);
+      if (!keys.length) continue;
+      ctx.fillStyle = "#7fd0c2"; ctx.font = "bold 13px system-ui";
+      ctx.fillText(label, x + 18, ry); ry += 18;
+      ctx.font = "12px system-ui";
+      for (const k of keys) {
+        const found = byKey.get(k);
+        const info = SPECIES[k];
+        ctx.fillStyle = found ? "#eafff7" : "rgba(150,170,175,0.5)";
+        const tag = found ? `  ×${found.count}` : "  — not yet seen";
+        ctx.fillText("• " + info.common + tag, x + 28, ry);
+        ry += 16;
+        if (ry > y + H - 18) return;
+      }
+      ry += 4;
+    }
   }
 
   // Collect every "standing" object, sort by its ground-contact Y, then paint
@@ -2050,6 +2186,30 @@ function roundRect(
   ctx.arcTo(x, y + h, x, y, r);
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
+}
+
+const RARITY_COLOR: Record<string, string> = {
+  common: "#9fb3ad", uncommon: "#7ec96b", rare: "#5aa9ff",
+  "very rare": "#c98bff", legendary: "#ffd24a",
+};
+
+// Word-wrap helper for the info/logbook cards.
+function wrapText(
+  ctx: CanvasRenderingContext2D,
+  text: string, x: number, y: number, maxW: number, lineH: number,
+) {
+  const words = text.split(" ");
+  let line = "";
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (ctx.measureText(test).width > maxW && line) {
+      ctx.fillText(line, x, y);
+      line = w; y += lineH;
+    } else {
+      line = test;
+    }
+  }
+  if (line) ctx.fillText(line, x, y);
 }
 
 // ---------------------------------------------------------------------------

@@ -46,6 +46,7 @@ import {
   phaseForTide,
 } from "../shared/protocol";
 import { DEFAULT_REGION, PlantDef, RegionDef, ResourceNodeDef, buildRegions } from "../shared/map";
+import { SPECIES, resourceSpeciesKey } from "../shared/species";
 
 interface Env {
   GAME_ROOM: DurableObjectNamespace;
@@ -270,6 +271,8 @@ export class GameRoom {
   private kb = new Map<string, { x: number; y: number }>();
   // playerId → epoch ms they entered deep water (for the float/drown timer).
   private deepSince = new Map<string, number>();
+  // accountName → logbook: speciesKey → { count (encounters), firstAt }.
+  private discoveries = new Map<string, Record<string, { count: number; firstAt: number }>>();
 
   private startedAt = Date.now();
   private loop: ReturnType<typeof setInterval> | null = null;
@@ -314,21 +317,39 @@ export class GameRoom {
     this.furnaces.set("forge-anacla",  { id: "forge-anacla",  region: "anacla",   x: 223, y: 52 });
 
     // Static townsfolk — flavour, lore, and local hints. They don't move.
-    this.npcs = [
-      // Bamfield
-      { id: "npc-naturalist", kind: "naturalist", region: "bamfield", x: 168, y: 50 },
-      { id: "npc-pirate",     kind: "pirate",     region: "bamfield", x: 175, y: 72 },
-      { id: "npc-scientist",  kind: "scientist",  region: "bamfield", x: 183, y: 65 },
-      { id: "npc-historian",  kind: "historian",  region: "bamfield", x: 190, y: 68 },
-      { id: "npc-eastsider",  kind: "eastsider",  region: "bamfield", x: 195, y: 55 },
-      { id: "npc-westsider",  kind: "westsider",  region: "bamfield", x: 152, y: 60 },
-      // Anacla — lower village
-      { id: "npc-boatdealer", kind: "boatdealer", region: "anacla",   x: 172, y: 58 },
-      { id: "npc-icevendor",  kind: "icevendor",  region: "anacla",   x: 180, y: 64 },
-      // Anacla — upper bench (House of Huu-ay-aht & government office)
-      { id: "npc-huuayaht",   kind: "huuayaht",   region: "anacla",   x: 260, y: 48 },
-      { id: "npc-mayor",      kind: "mayor",      region: "anacla",   x: 248, y: 34 },
+    this.placeNpcs();
+  }
+
+  // Place locals next to the real landmarks they belong to, so they land in the
+  // populated town no matter how the imported map is shaped (positions are
+  // looked up from building names, with a fall-back to the region spawn).
+  private placeNpcs() {
+    const cfg: Array<{ id: string; kind: NpcState["kind"]; region: RegionId; near: string }> = [
+      { id: "npc-naturalist", kind: "naturalist", region: "bamfield", near: "Marine Sciences" },
+      { id: "npc-scientist",  kind: "scientist",  region: "bamfield", near: "Whale Lab" },
+      { id: "npc-historian",  kind: "historian",  region: "bamfield", near: "Mercantile" },
+      { id: "npc-pirate",     kind: "pirate",     region: "bamfield", near: "Breakers" },
+      { id: "npc-boatdealer", kind: "boatdealer", region: "bamfield", near: "Breakers" },
+      { id: "npc-eastsider",  kind: "eastsider",  region: "bamfield", near: "East Dock" },
+      { id: "npc-westsider",  kind: "westsider",  region: "bamfield", near: "West Dock" },
+      { id: "npc-mayor",      kind: "mayor",      region: "anacla",   near: "Gas Bar" },
+      { id: "npc-huuayaht",   kind: "huuayaht",   region: "anacla",   near: "Huu-ay-aht" },
+      { id: "npc-icevendor",  kind: "icevendor",  region: "anacla",   near: "Gas Bar" },
     ];
+    this.npcs = [];
+    for (let i = 0; i < cfg.length; i++) {
+      const c = cfg[i];
+      const region = this.regions.get(c.region);
+      if (!region) continue;
+      let tx = region.spawn.x, ty = region.spawn.y;
+      const key = c.near.toLowerCase();
+      const b = region.buildings.find(
+        (b) => (b.name || "").toLowerCase().includes(key) || b.id.toLowerCase().includes(key),
+      );
+      if (b) { tx = b.x + Math.floor(b.w / 2); ty = b.y + b.h + 1; }
+      const spot = this.landSpawn(region, tx + ((i % 3) - 1), ty + (i % 2));
+      this.npcs.push({ id: c.id, kind: c.kind, region: c.region, x: Math.floor(spot.x), y: Math.floor(spot.y) });
+    }
   }
 
   private mkNode(def: ResourceNodeDef, regionId: string): ResourceNode {
@@ -475,7 +496,56 @@ export class GameRoom {
       case "travel":
         this.doTravel(ws, s.playerId);
         break;
+      case "scan":
+        this.doScan(ws, s.playerId);
+        break;
     }
+  }
+
+  // --- discovery logbook ----------------------------------------------------
+  private doScan(ws: WebSocket, playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead) return;
+    const RAD = 9; // tiles
+    const now = Date.now();
+    const log = this.discoveries.get(p.name) ?? {};
+    this.discoveries.set(p.name, log);
+
+    // Collect distinct species within the radius this scan.
+    const seen = new Set<string>();
+    const inRange = (x: number, y: number) => Math.hypot(x - p.x, y - p.y) <= RAD;
+    for (const c of this.creatures.values())
+      if (c.region === p.region && inRange(c.x, c.y) && SPECIES[c.kind]) seen.add(c.kind);
+    for (const pl of this.plants.values())
+      if (pl.region === p.region && inRange(pl.x, pl.y) && SPECIES[pl.kind]) seen.add(pl.kind);
+    for (const n of this.resourceNodes.values()) {
+      if (n.region !== p.region || n.depleted || !inRange(n.x, n.y)) continue;
+      const k = resourceSpeciesKey(n.kind, n.variety);
+      if (SPECIES[k]) seen.add(k);
+    }
+
+    const fresh: string[] = [];
+    for (const key of seen) {
+      const e = log[key] ?? { count: 0, firstAt: now };
+      if (e.count === 0) fresh.push(SPECIES[key].common);
+      e.count++;
+      log[key] = e;
+    }
+    if (fresh.length) {
+      this.tell(p, `🔬 Logbook — new: ${fresh.join(", ")}`);
+      this.giveXP(p, "fishing", fresh.length * 4); // naturalist effort rewards a little XP
+    } else if (seen.size) {
+      this.tell(p, "Scan complete — all already logged.");
+    } else {
+      this.tell(p, "Scan complete — nothing in range.");
+    }
+    this.sendLogbook(ws, p);
+  }
+
+  private sendLogbook(ws: WebSocket, p: PlayerState) {
+    const log = this.discoveries.get(p.name) ?? {};
+    const entries = Object.entries(log).map(([key, v]) => ({ key, count: v.count, firstAt: v.firstAt }));
+    this.send(ws, { t: "logbook", entries });
   }
 
   // Join = create a fresh settler, then overlay any saved D1 account on top.
@@ -563,29 +633,32 @@ export class GameRoom {
     p.skills = { ...p.skills, ...json(row.skills, {}) };
     p.inventory = json(row.inventory, p.inventory);
     p.appearance = sanitizeAppearance(json(row.appearance, p.appearance));
+    this.discoveries.set(p.name, json(row.discoveries, {} as Record<string, { count: number; firstAt: number }>));
   }
 
   private async savePlayer(p: PlayerState, secret: string | null) {
     if (!this.env.DB) return;
     const now = Date.now();
     try {
+      const discoveries = JSON.stringify(this.discoveries.get(p.name) ?? {});
       await this.env.DB.prepare(
         `INSERT INTO players
            (name, secret, region, x, y, money, banfielder_pts, hp, max_hp, hunger,
-            skills, inventory, appearance, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            skills, inventory, appearance, discoveries, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(name) DO UPDATE SET
            secret=COALESCE(players.secret, excluded.secret),
            region=excluded.region, x=excluded.x, y=excluded.y,
            money=excluded.money, banfielder_pts=excluded.banfielder_pts,
            hp=excluded.hp, max_hp=excluded.max_hp, hunger=excluded.hunger,
            skills=excluded.skills, inventory=excluded.inventory,
-           appearance=excluded.appearance, updated_at=excluded.updated_at`,
+           appearance=excluded.appearance, discoveries=excluded.discoveries,
+           updated_at=excluded.updated_at`,
       ).bind(
         p.name, secret, p.region, p.x, p.y, p.money, p.banfielderPts,
         p.hp, p.maxHp, p.hunger,
         JSON.stringify(p.skills), JSON.stringify(p.inventory), JSON.stringify(p.appearance),
-        now, now,
+        discoveries, now, now,
       ).run();
     } catch { /* swallow — never crash the tick on a write */ }
   }
@@ -617,6 +690,7 @@ export class GameRoom {
       snapshot: this.snapshot(region.id),
     });
     if (s) this.streamChunks(ws, s, player); // push the spawn-area chunks now
+    this.sendLogbook(ws, player);            // and their discovery logbook
   }
 
   // --- Chunked map streaming ------------------------------------------------

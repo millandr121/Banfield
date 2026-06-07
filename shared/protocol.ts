@@ -389,8 +389,12 @@ export interface RegionInfo {
 }
 
 // --- Messages: client -> server --------------------------------------------
+// One logged species in a player's BMSC logbook.
+export interface LogbookEntry { key: string; count: number; firstAt: number }
+
 export type ClientMessage =
   | { t: "join"; name: string; appearance: Appearance; secret?: string }
+  | { t: "scan" } // fire the discovery radius — log nearby species
   | { t: "input"; dx: number; dy: number; sprint?: boolean } // intended direction, each -1..1
   | { t: "attack"; charge?: number } // charge 0..1 from how long Space was held
   | { t: "dodge" } // quick lunge + i-frames in the current heading
@@ -432,6 +436,7 @@ export type ServerMessage =
   // chunks that arrive after a region change.
   | { t: "chunk"; region: RegionId; cx: number; cy: number; w: number; h: number; tiles: number[]; elevation: number[] }
   | { t: "log"; msg: string }
+  | { t: "logbook"; entries: LogbookEntry[] } // your BMSC logbook contents
   | { t: "chat"; from: string; msg: string; channel: "global" | "team" | "private" };
 
 // Helper shared by both sides: a tile is under water when its (per-tile)
