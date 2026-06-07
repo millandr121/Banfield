@@ -290,19 +290,20 @@ export class Game {
       this.cam.y += (me.y * TILE_SIZE - this.canvas.height / 2 - this.cam.y) * 0.15;
     }
 
+    // --- Ground layer (flat, always beneath the standing world) ---
     this.drawTiles();
     this.drawKelpBeds();
     this.drawTerrainWalls();
     this.drawTravelNodes();
     this.drawCampfires(this.snap.campfires);
     this.drawFurnaces(this.snap.furnaces);
-    this.drawResourceNodes(this.snap.resourceNodes, me);
     this.drawPlants(this.snap.plants);
-    this.drawBuildings(this.snap.buildings);
-    this.drawNpcs(this.snap.npcs ?? [], me);
-    this.drawVehicles(this.snap.vehicles);
-    this.drawCreatures(this.snap.creatures);
-    for (const p of this.snap.players) this.drawPlayer(p, p.id === this.myId);
+    this.drawMarineCreatures(this.snap.creatures, me);
+
+    // --- Upright layer, painted back-to-front by ground Y so taller things in
+    //     front correctly overlap things behind them (the oblique illusion). ---
+    this.drawSortedEntities(me);
+
     if (me) this.drawSelfOverlay(me);
     this.drawHud(this.snap, me);
     this.drawTravelPrompt(me);
@@ -317,6 +318,43 @@ export class Game {
     if (this.invOpen) this.drawInventoryPanel(me);
     if (this.npcOpen) this.drawNpcDialogue(me);
     if (this.mapOpen) this.drawMapOverlay(me);
+  }
+
+  // Collect every "standing" object, sort by its ground-contact Y, then paint
+  // back-to-front. This is the heart of the oblique look: a player south of a
+  // tree (larger Y) draws over its trunk; north of it, behind the canopy.
+  private drawSortedEntities(me?: PlayerState) {
+    if (!this.snap) return;
+    type Item = { baseY: number; z: number; draw: () => void };
+    const items: Item[] = [];
+
+    for (const b of this.snap.buildings)
+      items.push({ baseY: b.y + b.h, z: 0, draw: () => this.drawBuilding(b) });
+
+    for (const n of this.snap.resourceNodes) {
+      const { sx, sy } = this.toScreen(n.x + 0.5, n.y + 0.5);
+      const tall = n.kind === "tree";
+      items.push({ baseY: n.y + (tall ? 0.8 : 0.6), z: 1, draw: () => drawResourceSprite(this.ctx, n, sx, sy) });
+    }
+
+    for (const v of this.snap.vehicles) {
+      const { sx, sy } = this.toScreen(v.x, v.y);
+      items.push({ baseY: v.y + 0.5, z: 1, draw: () => drawVehicleSprite(this.ctx, v, sx, sy) });
+    }
+
+    for (const c of this.snap.creatures) {
+      if (MARINE_KINDS.has(c.kind)) continue; // marine handled in the ground pass
+      items.push({ baseY: c.y + 0.5, z: 1, draw: () => this.drawLandCreature(c, me) });
+    }
+
+    for (const n of this.snap.npcs ?? [])
+      items.push({ baseY: n.y + 0.875, z: 2, draw: () => this.drawNpc(n, me) });
+
+    for (const p of this.snap.players)
+      items.push({ baseY: p.y + 0.375, z: 3, draw: () => this.drawPlayer(p, p.id === this.myId) });
+
+    items.sort((a, b) => a.baseY - b.baseY || a.z - b.z);
+    for (const it of items) it.draw();
   }
 
   // Charge meter under your feet while you wind up a swing.
@@ -547,53 +585,119 @@ export class Game {
     ctx.fillText(text, x, y);
   }
 
-  private drawBuildings(buildings: BuildingState[]) {
+  // One oblique building: a wall facade with a pitched, overhanging roof so it
+  // reads as a structure standing up off the ground (Eastward/Stardew style).
+  private drawBuilding(b: BuildingState) {
     const ctx = this.ctx;
-    for (const b of buildings) {
-      const { sx, sy } = this.toScreen(b.x, b.y);
-      const w = b.w * TILE_SIZE;
-      const h = b.h * TILE_SIZE;
-      if (b.kind === "rubble") {
-        ctx.fillStyle = "#4a4038";
-        ctx.fillRect(sx, sy, w, h);
-        // scattered debris
-        ctx.fillStyle = "#5e5347";
-        for (let i = 0; i < 5; i++) {
-          ctx.fillRect(sx + ((i * 7) % w), sy + ((i * 11) % h), 4, 4);
-        }
-        continue;
-      }
+    const { sx, sy } = this.toScreen(b.x, b.y);
+    const w = b.w * TILE_SIZE;
+    const h = b.h * TILE_SIZE;
 
-      // Walls + a darker pitched-roof band along the top, plus a door.
-      ctx.fillStyle = buildingColor(b.kind);
+    if (b.kind === "rubble") {
+      ctx.fillStyle = "#4a4038";
       ctx.fillRect(sx, sy, w, h);
-      ctx.fillStyle = "rgba(0,0,0,0.28)";
-      ctx.fillRect(sx, sy, w, Math.max(5, h * 0.34)); // roof
-      ctx.strokeStyle = "#15110d";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(sx, sy, w, h);
-      // door
-      ctx.fillStyle = "#2c2018";
-      ctx.fillRect(sx + w / 2 - 3, sy + h - 9, 6, 9);
-      // a small sign marking what it is
-      ctx.fillStyle = "rgba(255,255,255,0.85)";
-      ctx.font = "9px system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText(buildingLabel(b.kind), sx + w / 2, sy + h * 0.34 + 9);
-
-      // HP bar.
-      const frac = Math.max(0, b.hp / b.maxHp);
-      ctx.fillStyle = "#222";
-      ctx.fillRect(sx, sy - 6, w, 4);
-      ctx.fillStyle = frac > 0.5 ? "#4caf50" : frac > 0.25 ? "#ffb300" : "#e53935";
-      ctx.fillRect(sx, sy - 6, w * frac, 4);
+      ctx.fillStyle = "#5e5347";
+      for (let i = 0; i < 5; i++) ctx.fillRect(sx + ((i * 7) % w), sy + ((i * 11) % h), 4, 4);
+      return;
     }
-  }
 
-  private drawVehicles(vehicles: VehicleState[]) {
-    for (const v of vehicles) {
-      const { sx, sy } = this.toScreen(v.x, v.y);
-      drawVehicleSprite(this.ctx, v, sx, sy);
+    if (b.kind === "dock") {
+      // Flat wooden deck — planks running across, no roof.
+      ctx.fillStyle = "#7a5a36";
+      ctx.fillRect(sx, sy, w, h);
+      ctx.strokeStyle = "rgba(0,0,0,0.25)";
+      ctx.lineWidth = 1;
+      for (let px = sx; px < sx + w; px += 6) {
+        ctx.beginPath(); ctx.moveTo(px, sy); ctx.lineTo(px, sy + h); ctx.stroke();
+      }
+      return;
+    }
+
+    const wall = buildingColor(b.kind);
+    const dark = (hex: string, f: number) => {
+      const n = parseInt(hex.slice(1), 16);
+      return `rgb(${(((n >> 16) & 255) * f) | 0},${(((n >> 8) & 255) * f) | 0},${((n & 255) * f) | 0})`;
+    };
+    const roofH = Math.min(TILE_SIZE * 1.6, h * 0.6 + 12);
+    const eave = 3;
+
+    // Ground shadow cast to the SE.
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    ctx.beginPath();
+    ctx.ellipse(sx + w / 2 + 4, sy + h, w * 0.55, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // --- Wall facade ---
+    ctx.fillStyle = wall;
+    ctx.fillRect(sx, sy, w, h);
+    // Horizontal siding lines.
+    ctx.strokeStyle = dark(wall, 0.82);
+    ctx.lineWidth = 1;
+    for (let ly = sy + 5; ly < sy + h - 2; ly += 5) {
+      ctx.beginPath(); ctx.moveTo(sx, ly); ctx.lineTo(sx + w, ly); ctx.stroke();
+    }
+    // Right-side shading for form.
+    ctx.fillStyle = "rgba(0,0,0,0.16)";
+    ctx.fillRect(sx + w * 0.72, sy, w * 0.28, h);
+
+    // --- Windows (warm lit) ---
+    const winCols = Math.max(1, Math.floor(b.w));
+    const winY = sy + h * 0.42;
+    const winW = 6, winH = 6;
+    ctx.fillStyle = "#ffd98a";
+    for (let c = 0; c < winCols; c++) {
+      const cxw = sx + (c + 0.5) * (w / winCols) - winW / 2;
+      if (Math.abs(cxw + winW / 2 - (sx + w / 2)) < 7) continue; // leave room for the door
+      ctx.fillRect(cxw, winY, winW, winH);
+      ctx.strokeStyle = dark(wall, 0.5);
+      ctx.strokeRect(cxw, winY, winW, winH);
+    }
+
+    // --- Door ---
+    ctx.fillStyle = "#2c2018";
+    ctx.fillRect(sx + w / 2 - 4, sy + h - 11, 8, 11);
+    ctx.fillStyle = "#c9a24b"; // knob
+    ctx.fillRect(sx + w / 2 + 1, sy + h - 6, 1.5, 1.5);
+
+    // --- Pitched roof, overhanging the walls ---
+    const roofCol = ROOF_COLORS[b.kind] ?? "#6b4a39";
+    const ridgeInset = Math.min(w * 0.28, 14);
+    const roofTop = sy - roofH;
+    ctx.fillStyle = roofCol;
+    ctx.beginPath();
+    ctx.moveTo(sx - eave, sy + 2);
+    ctx.lineTo(sx + w + eave, sy + 2);
+    ctx.lineTo(sx + w - ridgeInset, roofTop);
+    ctx.lineTo(sx + ridgeInset, roofTop);
+    ctx.closePath();
+    ctx.fill();
+    // Eave shadow under the overhang.
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.fillRect(sx - eave, sy + 1, w + eave * 2, 2);
+    // Ridge highlight.
+    ctx.strokeStyle = dark(roofCol, 1.25);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(sx + ridgeInset, roofTop + 1);
+    ctx.lineTo(sx + w - ridgeInset, roofTop + 1);
+    ctx.stroke();
+
+    // Sign label on the roof gable.
+    const label = buildingLabel(b.kind);
+    if (label) {
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.font = "8px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText(label, sx + w / 2, roofTop + roofH * 0.6);
+    }
+
+    // HP bar (only when damaged).
+    const frac = Math.max(0, b.hp / b.maxHp);
+    if (frac < 1) {
+      ctx.fillStyle = "#222";
+      ctx.fillRect(sx, roofTop - 6, w, 4);
+      ctx.fillStyle = frac > 0.5 ? "#4caf50" : frac > 0.25 ? "#ffb300" : "#e53935";
+      ctx.fillRect(sx, roofTop - 6, w * frac, 4);
     }
   }
 
@@ -634,13 +738,6 @@ export class Game {
     ctx.strokeRect(x - w / 2, y - 22, w, 32);
     ctx.fillStyle = "#eaf2f8";
     ctx.fillText(text, x, y);
-  }
-
-  private drawResourceNodes(nodes: ResourceNode[], _me?: PlayerState) {
-    for (const n of nodes) {
-      const { sx, sy } = this.toScreen(n.x + 0.5, n.y + 0.5);
-      drawResourceSprite(this.ctx, n, sx, sy);
-    }
   }
 
   private drawPlants(plants: PlantState[]) {
@@ -1016,40 +1113,38 @@ export class Game {
     return best;
   }
 
-  private drawNpcs(npcs: NpcState[], me?: PlayerState) {
+  private drawNpc(n: NpcState, me?: PlayerState) {
     const ctx = this.ctx;
-    for (const n of npcs) {
-      const { sx, sy } = this.toScreen(n.x + 0.5, n.y + 0.5);
-      const R = TILE_SIZE * 0.4;
-      // Face toward the nearby player so locals "notice" you; else face down.
-      let facing: Facing = "down";
-      if (me) {
-        const dx = me.x - (n.x + 0.5), dy = me.y - (n.y + 0.5);
-        if (Math.hypot(dx, dy) < 4) facing = facingFromDir(Math.atan2(dy, dx));
-      }
-      const gait = this.gaitFor("npc-" + n.id, n.x, n.y);
-      drawCharacter(ctx, sx, sy, {
-        skin: "#e0ac69",
-        hair: "#3a2a18",
-        shirt: NPC_COLORS[n.kind] ?? "#607d8b",
-      }, { facing, phase: gait.phase, moving: gait.moving });
+    const { sx, sy } = this.toScreen(n.x + 0.5, n.y + 0.5);
+    const R = TILE_SIZE * 0.4;
+    // Face toward the nearby player so locals "notice" you; else face down.
+    let facing: Facing = "down";
+    if (me) {
+      const dx = me.x - (n.x + 0.5), dy = me.y - (n.y + 0.5);
+      if (Math.hypot(dx, dy) < 4) facing = facingFromDir(Math.atan2(dy, dx));
+    }
+    const gait = this.gaitFor("npc-" + n.id, n.x, n.y);
+    drawCharacter(ctx, sx, sy, {
+      skin: "#e0ac69",
+      hair: "#3a2a18",
+      shirt: NPC_COLORS[n.kind] ?? "#607d8b",
+    }, { facing, phase: gait.phase, moving: gait.moving });
 
-      // Role label
-      ctx.fillStyle = "#eaf2f8";
-      ctx.font = "10px system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText(NPC_NAME[n.kind] ?? "Local", sx, sy - TILE_SIZE * 1.15);
-      // "talk" bubble when you're close
-      const close = me && Math.hypot(n.x + 0.5 - me.x, n.y + 0.5 - me.y) <= 1.8;
-      if (close) {
-        ctx.fillStyle = "#fff3cf";
-        ctx.beginPath();
-        ctx.arc(sx + R, sy - TILE_SIZE * 1.0, 7, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "#15384f";
-        ctx.font = "bold 10px system-ui";
-        ctx.fillText("?", sx + R, sy - TILE_SIZE * 1.0 + 3.5);
-      }
+    // Role label
+    ctx.fillStyle = "#eaf2f8";
+    ctx.font = "10px system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText(NPC_NAME[n.kind] ?? "Local", sx, sy - TILE_SIZE * 1.15);
+    // "talk" bubble when you're close
+    const close = me && Math.hypot(n.x + 0.5 - me.x, n.y + 0.5 - me.y) <= 1.8;
+    if (close) {
+      ctx.fillStyle = "#fff3cf";
+      ctx.beginPath();
+      ctx.arc(sx + R, sy - TILE_SIZE * 1.0, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#15384f";
+      ctx.font = "bold 10px system-ui";
+      ctx.fillText("?", sx + R, sy - TILE_SIZE * 1.0 + 3.5);
     }
   }
 
@@ -1252,14 +1347,23 @@ export class Game {
     return Math.max(0, this.snap.waterline - this.map.elevation[ty * this.map.width + tx]);
   }
 
-  private drawCreatures(creatures: CreatureState[]) {
-    const me = this.snap?.players.find((p) => p.id === this.myId);
+  // Marine creatures live on/under the water surface — drawn beneath the
+  // upright (Y-sorted) layer so a dorsal fin never floats over a dock or boat.
+  private drawMarineCreatures(creatures: CreatureState[], me?: PlayerState) {
     for (const c of creatures) {
+      if (!MARINE_KINDS.has(c.kind)) continue;
       const { sx, sy } = this.toScreen(c.x, c.y);
       const depth = this.clientDepthAt(c.x, c.y);
       const dist = me ? Math.hypot(c.x - me.x, c.y - me.y) : 999;
       drawCreatureSprite(this.ctx, c.kind, sx, sy, depth, dist);
     }
+  }
+
+  private drawLandCreature(c: CreatureState, me?: PlayerState) {
+    const { sx, sy } = this.toScreen(c.x, c.y);
+    const depth = this.clientDepthAt(c.x, c.y);
+    const dist = me ? Math.hypot(c.x - me.x, c.y - me.y) : 999;
+    drawCreatureSprite(this.ctx, c.kind, sx, sy, depth, dist);
   }
 
   // Track whether an entity is moving and advance its walk-cycle phase. Returns
@@ -1584,24 +1688,30 @@ function drawResourceSprite(ctx: CanvasRenderingContext2D, n: ResourceNode, x: n
     ctx.arc(x - R * 0.2, y - R * 0.4, R * 0.35, 0, Math.PI * 2);
     ctx.fill();
   } else if (n.kind === "tree") {
-    // Shadow
-    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    // Ground shadow at the base.
+    ctx.fillStyle = "rgba(0,0,0,0.2)";
     ctx.beginPath();
-    ctx.ellipse(x, y + R * 0.6, R * 0.85, R * 0.3, 0, 0, Math.PI * 2);
+    ctx.ellipse(x, y + R * 0.75, R * 0.9, R * 0.32, 0, 0, Math.PI * 2);
     ctx.fill();
-    // Trunk
-    ctx.fillStyle = "#6b4423";
-    ctx.fillRect(x - 3, y, 6, R * 0.7);
-    // Canopy (layered circles for depth)
+    // Trunk — taller so the canopy rises well above the base (oblique height).
+    const trunkH = R * 0.95;
+    ctx.fillStyle = "#5a3a1f";
+    ctx.fillRect(x - 3, y, 6, trunkH);
+    ctx.fillStyle = "rgba(0,0,0,0.25)"; // bark shadow on the right
+    ctx.fillRect(x + 1, y, 2, trunkH);
+    // Canopy lifted up off the trunk, layered for volume.
+    const top = y - R * 0.5;
     for (const [ox, oy, r, col] of [
-      [0, -R * 0.15, R, "#2d6e1e"],
-      [-R * 0.3, -R * 0.2, R * 0.7, "#3a8c28"],
-      [R * 0.3, -R * 0.15, R * 0.65, "#348a24"],
-      [0, -R * 0.45, R * 0.78, "#4aac32"],
+      [0, 0, R * 1.05, "#256b1c"],
+      [-R * 0.42, -R * 0.1, R * 0.72, "#2f7d22"],
+      [R * 0.42, -R * 0.05, R * 0.68, "#2a7820"],
+      [-R * 0.15, -R * 0.5, R * 0.7, "#3a9a2c"],
+      [R * 0.2, -R * 0.45, R * 0.6, "#43a832"],
+      [0, -R * 0.85, R * 0.5, "#4eb83a"], // sunlit crown
     ] as const) {
       ctx.fillStyle = col;
       ctx.beginPath();
-      ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
+      ctx.arc(x + ox, top + oy, r, 0, Math.PI * 2);
       ctx.fill();
     }
   } else if (n.kind === "berryBush") {
@@ -2063,7 +2173,40 @@ function drawCharacter(
 }
 
 // --- creature sprites (top-down, recognizable silhouettes) ------------------
-// Creatures hide in deep water: ripple → dorsal fin → full body as player nears.
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+const MARINE_KINDS = new Set([
+  "crab", "octopus", "dogfish", "sixgill", "orca",
+  "humpback", "greywhale", "seal", "sealLion", "seaOtter",
+]);
+
+function drawFullCreature(ctx: CanvasRenderingContext2D, kind: string, x: number, y: number) {
+  switch (kind) {
+    case "crab":      return drawCrab(ctx, x, y);
+    case "octopus":   return drawOctopus(ctx, x, y);
+    case "dogfish":   return drawShark(ctx, x, y, 0.55, "#5a6b78", false);
+    case "sixgill":   return drawShark(ctx, x, y, 0.8,  "#3b4a57", false);
+    case "orca":      return drawShark(ctx, x, y, 0.9,  "#10141a", true);
+    case "humpback":  return drawWhale(ctx, x, y, "#33414b");
+    case "greywhale": return drawWhale(ctx, x, y, "#6b7480");
+    case "seal":      return drawSeal(ctx, x, y);
+    case "sealLion":  return drawSealLion(ctx, x, y);
+    case "seaOtter":  return drawSeaOtter(ctx, x, y);
+    case "deer":      return drawDeer(ctx, x, y);
+    case "elk":       return drawElk(ctx, x, y);
+    case "grouse":    return drawGrouse(ctx, x, y);
+    case "bear":      return drawBear(ctx, x, y);
+    case "cougar":    return drawCougar(ctx, x, y);
+    case "wolf":      return drawWolf(ctx, x, y);
+  }
+}
+
+// Marine creatures live under the surface. Rather than popping the whole sprite
+// in, we reveal them the way a top-down game does it: a faint, water-tinted
+// silhouette gliding below, with only the part that breaks the surface (dorsal
+// fin, whale back + blow, otter head) drawn solid on top. How much of the body
+// shows is driven by the real water DEPTH — shallow water reveals nearly the
+// whole animal, deep water hides all but the fin.
 function drawCreatureSprite(
   ctx: CanvasRenderingContext2D,
   kind: string,
@@ -2072,48 +2215,42 @@ function drawCreatureSprite(
   depth: number,
   distToPlayer: number,
 ) {
-  const inWater = depth > 0;
-  const closeEnough = distToPlayer < 5; // within 5 tiles → always show full
-  const nearish = distToPlayer < 12;    // 5-12 tiles → fin only for big predators
-
-  if (!inWater || closeEnough) {
-    // On land or player right next to it — full sprite.
-    switch (kind) {
-      case "crab":      return drawCrab(ctx, x, y);
-      case "octopus":   return drawOctopus(ctx, x, y);
-      case "dogfish":   return drawShark(ctx, x, y, 0.55, "#5a6b78", false);
-      case "sixgill":   return drawShark(ctx, x, y, 0.8,  "#3b4a57", false);
-      case "orca":      return drawShark(ctx, x, y, 0.9,  "#10141a", true);
-      case "humpback":  return drawWhale(ctx, x, y, "#33414b");
-      case "greywhale": return drawWhale(ctx, x, y, "#6b7480");
-      case "seal":      return drawSeal(ctx, x, y);
-      case "sealLion":  return drawSealLion(ctx, x, y);
-      case "seaOtter":  return drawSeaOtter(ctx, x, y);
-      case "deer":      return drawDeer(ctx, x, y);
-      case "elk":       return drawElk(ctx, x, y);
-      case "grouse":    return drawGrouse(ctx, x, y);
-      case "bear":      return drawBear(ctx, x, y);
-      case "cougar":    return drawCougar(ctx, x, y);
-      case "wolf":      return drawWolf(ctx, x, y);
-    }
+  // Land animals (and beached crabs at low tide) always draw their full sprite.
+  if (depth <= 0 || !MARINE_KINDS.has(kind)) {
+    drawFullCreature(ctx, kind, x, y);
     return;
   }
 
-  // In water, far away — show ripple or dorsal fin based on creature type.
   const bigPredator = kind === "dogfish" || kind === "sixgill" || kind === "orca";
   const whale = kind === "humpback" || kind === "greywhale";
 
-  if (bigPredator && nearish) {
-    // Dorsal fin breaks the surface — telltale sign of a predator.
-    const orcaFin = kind === "orca";
-    drawDorsalFin(ctx, x, y, orcaFin);
-  } else if (whale && nearish) {
-    // Whale blow: a gentle spout visible at range.
-    drawWhaleBlow(ctx, x, y);
-  } else {
-    // Just a water ripple — something is moving under the surface.
-    drawRipple(ctx, x, y);
+  // Submersion 0..1: shallow (ankle) → 0, deep → 1. Drives body opacity.
+  const sub = clamp01((depth - DEPTH_ANKLE) / (DEPTH_DEEP - DEPTH_ANKLE));
+
+  // Beyond ~13 tiles you only get telltales — a ripple, a far fin, a blow.
+  if (distToPlayer > 13) {
+    if (bigPredator && distToPlayer < 24) drawDorsalFin(ctx, x, y, kind === "orca");
+    else if (whale) drawWhaleBlow(ctx, x, y);
+    else drawRipple(ctx, x, y);
+    return;
   }
+
+  // The submerged body: full sprite, faded + water-tinted by how deep it sits.
+  const bodyAlpha = 0.9 - sub * 0.68; // 0.9 in the shallows → ~0.22 in the deep
+  ctx.save();
+  ctx.globalAlpha = bodyAlpha;
+  drawFullCreature(ctx, kind, x, y);
+  // Cool blue wash over the underwater body so it reads as "below the surface".
+  ctx.globalCompositeOperation = "source-atop";
+  ctx.globalAlpha = 0.18 + sub * 0.4;
+  ctx.fillStyle = "#0f4e74";
+  ctx.fillRect(x - TILE_SIZE, y - TILE_SIZE, TILE_SIZE * 2, TILE_SIZE * 2);
+  ctx.restore();
+
+  // The part that breaks the surface, drawn solid on top.
+  if (bigPredator) drawDorsalFin(ctx, x, y, kind === "orca");
+  else if (whale) drawWhaleBlow(ctx, x, y);
+  else drawRipple(ctx, x, y); // small fry: just the surface disturbance
 }
 
 // Expanding ring ripple — creature beneath the surface.
@@ -2730,14 +2867,20 @@ function buildingLabel(kind: BuildingState["kind"]): string {
 function buildingColor(kind: BuildingState["kind"]): string {
   switch (kind) {
     case "house":
-      return "#b5651d";
+      return "#c08a52";  // warm cedar siding
     case "shop":
-      return "#9c6b3f";
+      return "#b09068";  // weathered storefront
     case "boathouse":
-      return "#8a5a2b";
+      return "#8a6a42";  // dark stained timber
     case "dock":
       return "#7a5a36";
     default:
       return "#4a4038";
   }
 }
+
+const ROOF_COLORS: Record<string, string> = {
+  house:     "#7a3b2e", // red shingle
+  shop:      "#3f5d6b", // blue-grey metal
+  boathouse: "#4a5a3a", // mossy green
+};
