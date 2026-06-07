@@ -28,6 +28,8 @@ import {
   TravelNode,
   VehicleState,
   WorldMap,
+  OverviewMap,
+  CHUNK,
   TIDE_CYCLE_MS,
   WATERLINE_LOW,
   WATERLINE_HIGH,
@@ -61,6 +63,8 @@ interface Session {
   iframeUntil: number; // dodge i-frames: no damage taken until this time
   travelCdUntil: number; // brief cooldown after a region change (stops ping-pong)
   sprint: boolean; // shift held — run faster but drain stamina / burn more fuel
+  sentChunks: Set<string>; // map chunks already streamed to this connection
+  chunkRegion: RegionId | null; // region those chunks belong to (reset on travel)
 }
 
 // Server-side vehicle adds rust tracking (not sent to clients).
@@ -357,7 +361,7 @@ export class GameRoom {
   // --- connection lifecycle -------------------------------------------------
   private onConnect(ws: WebSocket) {
     const playerId = `p${this.idCounter++}`;
-    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0, lastDodge: 0, lastHarvest: 0, iframeUntil: 0, travelCdUntil: 0, sprint: false });
+    this.sessions.set(ws, { ws, playerId, dx: 0, dy: 0, lastAttack: 0, lastDodge: 0, lastHarvest: 0, iframeUntil: 0, travelCdUntil: 0, sprint: false, sentChunks: new Set(), chunkRegion: null });
     ws.addEventListener("message", (ev) => {
       try {
         this.onMessage(ws, JSON.parse(ev.data as string) as ClientMessage);
@@ -491,17 +495,85 @@ export class GameRoom {
 
   private sendInit(ws: WebSocket, player: PlayerState) {
     const region = this.regions.get(player.region)!;
+    const s = this.sessions.get(ws);
+    if (s) { s.sentChunks = new Set(); s.chunkRegion = region.id; } // fresh map → restream
     this.send(ws, {
       t: "init",
       id: player.id,
       region: {
         id: region.id,
         name: region.name,
-        map: region.map,
+        width: region.map.width,
+        height: region.map.height,
+        overview: this.overviewFor(region.id),
         travelNodes: region.travelNodes,
       },
       snapshot: this.snapshot(region.id),
     });
+    if (s) this.streamChunks(ws, s, player); // push the spawn-area chunks now
+  }
+
+  // --- Chunked map streaming ------------------------------------------------
+  private overviews = new Map<RegionId, OverviewMap>();
+
+  // A downsampled whole-map snapshot for the minimap. Built once per region.
+  private overviewFor(regionId: RegionId): OverviewMap {
+    const cached = this.overviews.get(regionId);
+    if (cached) return cached;
+    const { width: w, height: h, tiles, elevation } = this.regions.get(regionId)!.map;
+    const scale = 4;
+    const ow = Math.ceil(w / scale), oh = Math.ceil(h / scale);
+    const ot: number[] = new Array(ow * oh);
+    const oe: number[] = new Array(ow * oh);
+    for (let oy = 0; oy < oh; oy++) {
+      for (let ox = 0; ox < ow; ox++) {
+        const sx = Math.min(w - 1, ox * scale), sy = Math.min(h - 1, oy * scale);
+        const i = sy * w + sx;
+        ot[oy * ow + ox] = tiles[i];
+        oe[oy * ow + ox] = elevation[i];
+      }
+    }
+    const ov: OverviewMap = { scale, width: ow, height: oh, tiles: ot, elevation: oe };
+    this.overviews.set(regionId, ov);
+    return ov;
+  }
+
+  // Stream any map chunks within a radius of the player that we haven't sent to
+  // this connection yet. Capped per call so a fresh join spreads over a few ticks.
+  private streamChunks(ws: WebSocket, s: Session, player: PlayerState) {
+    const region = this.regions.get(player.region);
+    if (!region) return;
+    if (s.chunkRegion !== player.region) { s.sentChunks = new Set(); s.chunkRegion = player.region; }
+    const { width: w, height: h, tiles, elevation } = region.map;
+    const chunksX = Math.ceil(w / CHUNK), chunksY = Math.ceil(h / CHUNK);
+    const pcx = Math.floor(player.x / CHUNK), pcy = Math.floor(player.y / CHUNK);
+    const RAD = 3;                 // chunks in each direction (~96 tiles)
+    const MAX_PER_CALL = 16;       // smooth the burst over a few ticks
+    let sent = 0;
+    // Nearest-first so the screen fills from the player outward.
+    for (let r = 0; r <= RAD && sent < MAX_PER_CALL; r++) {
+      for (let cy = pcy - r; cy <= pcy + r && sent < MAX_PER_CALL; cy++) {
+        for (let cx = pcx - r; cx <= pcx + r && sent < MAX_PER_CALL; cx++) {
+          if (Math.max(Math.abs(cx - pcx), Math.abs(cy - pcy)) !== r) continue; // ring r only
+          if (cx < 0 || cy < 0 || cx >= chunksX || cy >= chunksY) continue;
+          const key = cx + "," + cy;
+          if (s.sentChunks.has(key)) continue;
+          s.sentChunks.add(key);
+          const x0 = cx * CHUNK, y0 = cy * CHUNK;
+          const cw = Math.min(CHUNK, w - x0), ch = Math.min(CHUNK, h - y0);
+          const ct: number[] = new Array(cw * ch), ce: number[] = new Array(cw * ch);
+          for (let yy = 0; yy < ch; yy++) {
+            const srcRow = (y0 + yy) * w + x0, dstRow = yy * cw;
+            for (let xx = 0; xx < cw; xx++) {
+              ct[dstRow + xx] = tiles[srcRow + xx];
+              ce[dstRow + xx] = elevation[srcRow + xx];
+            }
+          }
+          this.send(ws, { t: "chunk", region: player.region, cx, cy, w: cw, h: ch, tiles: ct, elevation: ce });
+          sent++;
+        }
+      }
+    }
   }
 
   // --- main loop ------------------------------------------------------------
@@ -543,6 +615,7 @@ export class GameRoom {
         cache.set(p.region, snap);
       }
       this.send(s.ws, { t: "snapshot", snapshot: snap });
+      this.streamChunks(s.ws, s, p); // feed in map chunks as they walk/sail
     }
   }
 

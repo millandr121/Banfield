@@ -57,6 +57,22 @@ export interface WorldMap {
   elevation: number[]; // per-tile height; tile is submerged when elevation < waterline
 }
 
+// --- Chunked map streaming --------------------------------------------------
+// Big maps aren't shipped whole. The server streams CHUNK×CHUNK tile blocks
+// around each player as they move, and sends a single downsampled OVERVIEW up
+// front for the full-region minimap. Default (unloaded) tiles read as ocean.
+export const CHUNK = 32;
+
+// A low-res snapshot of the whole region for the map overlay. `scale` is how
+// many real tiles each overview cell covers.
+export interface OverviewMap {
+  scale: number;
+  width: number;  // overview cells across = ceil(mapWidth / scale)
+  height: number;
+  tiles: number[];
+  elevation: number[];
+}
+
 // --- Entities ---------------------------------------------------------------
 export interface Appearance {
   skin: string;
@@ -366,7 +382,9 @@ export interface TravelNode {
 export interface RegionInfo {
   id: RegionId;
   name: string;
-  map: WorldMap;
+  width: number;
+  height: number;
+  overview: OverviewMap;   // downsampled whole map for the minimap
   travelNodes: TravelNode[];
 }
 
@@ -409,6 +427,10 @@ export type ServerMessage =
   // Sent on join AND whenever the player changes region (the map swaps).
   | { t: "init"; id: string; region: RegionInfo; snapshot: Snapshot }
   | { t: "snapshot"; snapshot: Snapshot }
+  // A streamed map block: tiles/elevation for chunk (cx,cy), w×h tiles, with
+  // top-left at (cx*CHUNK, cy*CHUNK). `region` lets the client drop stale
+  // chunks that arrive after a region change.
+  | { t: "chunk"; region: RegionId; cx: number; cy: number; w: number; h: number; tiles: number[]; elevation: number[] }
   | { t: "log"; msg: string }
   | { t: "chat"; from: string; msg: string; channel: "global" | "team" | "private" };
 

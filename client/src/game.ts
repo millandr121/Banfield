@@ -23,6 +23,8 @@ import {
   TravelNode,
   VehicleState,
   WorldMap,
+  OverviewMap,
+  CHUNK,
   WATERLINE_HIGH,
   DEPTH_ANKLE,
   DEPTH_SWIM,
@@ -53,6 +55,8 @@ export class Game {
 
   private myId = "";
   private map: WorldMap | null = null;
+  private regionId = "";
+  private overview: OverviewMap | null = null; // downsampled full map for the minimap
   private regionName = "";
   private travelNodes: TravelNode[] = [];
   private snap: Snapshot | null = null;
@@ -250,10 +254,32 @@ export class Game {
   private onServer(m: ServerMessage) {
     if (m.t === "init") {
       this.myId = m.id;
-      this.map = m.region.map;
+      // Big maps stream in as chunks. Allocate the full grid up front (defaults
+      // read as ocean) and patch chunks in as they arrive; all the renderer's
+      // tiles[idx]/elevation[idx] lookups keep working unchanged.
+      const w = m.region.width, h = m.region.height;
+      this.map = {
+        width: w, height: h,
+        tiles: new Array(w * h).fill(Tile.Water),
+        elevation: new Array(w * h).fill(0),
+      };
+      this.regionId = m.region.id;
+      this.overview = m.region.overview;
       this.regionName = m.region.name;
       this.travelNodes = m.region.travelNodes;
       this.snap = m.snapshot;
+    } else if (m.t === "chunk") {
+      if (this.map && m.region === this.regionId) {
+        const mw = this.map.width;
+        for (let yy = 0; yy < m.h; yy++) {
+          const dst = (m.cy * CHUNK + yy) * mw + m.cx * CHUNK;
+          const src = yy * m.w;
+          for (let xx = 0; xx < m.w; xx++) {
+            this.map.tiles[dst + xx] = m.tiles[src + xx];
+            this.map.elevation[dst + xx] = m.elevation[src + xx];
+          }
+        }
+      }
     } else if (m.t === "snapshot") {
       this.snap = m.snapshot;
     } else if (m.t === "log") {
@@ -845,18 +871,17 @@ export class Game {
 
   // Full-region map overlay — press M to open/close.
   private drawMapOverlay(me?: PlayerState) {
-    if (!this.map) return;
+    if (!this.map || !this.overview) return;
     const ctx = this.ctx;
-    const map = this.map;
-    const mw = map.width;
-    const mh = map.height;
+    const ov = this.overview;
 
-    // Scale so the whole map fits inside 80% of the screen.
+    // Scale the downsampled overview to fit inside ~82% of the screen.
     const maxW = Math.floor(this.canvas.width  * 0.82);
     const maxH = Math.floor(this.canvas.height * 0.82);
-    const scale = Math.min(Math.floor(maxW / mw), Math.floor(maxH / mh), 3) || 1;
-    const pw = mw * scale;  // pixel width of drawn map
-    const ph = mh * scale;  // pixel height
+    const cell = Math.max(1, Math.min(maxW / ov.width, maxH / ov.height)); // px per overview cell
+    const scale = cell / ov.scale;  // px per real tile (for entity placement)
+    const pw = ov.width * cell;
+    const ph = ov.height * cell;
     const ox = Math.floor((this.canvas.width  - pw) / 2); // top-left corner
     const oy = Math.floor((this.canvas.height - ph) / 2);
 
@@ -864,12 +889,12 @@ export class Game {
     ctx.fillStyle = "rgba(5,15,25,0.88)";
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
-    // Draw tiles.
-    for (let y = 0; y < mh; y++) {
-      for (let x = 0; x < mw; x++) {
-        const tile = map.tiles[y * mw + x] as Tile;
+    // Draw the downsampled overview tiles.
+    for (let y = 0; y < ov.height; y++) {
+      for (let x = 0; x < ov.width; x++) {
+        const tile = ov.tiles[y * ov.width + x] as Tile;
         ctx.fillStyle = TILE_COLORS[tile] ?? "#333";
-        ctx.fillRect(ox + x * scale, oy + y * scale, scale, scale);
+        ctx.fillRect(ox + x * cell, oy + y * cell, Math.ceil(cell), Math.ceil(cell));
       }
     }
 
