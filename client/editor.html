@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Banfield — Sprite Editor</title>
+    <style>
+      :root {
+        font-family: system-ui, -apple-system, sans-serif;
+        --bg: #11202b;
+        --panel: #162a38;
+        --panel2: #1e3a4c;
+        --border: #2b5067;
+        --text: #eaf2f8;
+        --muted: #8fb4c9;
+        --accent: #2e9bd6;
+        --accent-hi: #54b8ef;
+        --gold: #ffd54f;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--text);
+        height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+        font-size: 13px;
+      }
+      header {
+        display: flex; align-items: center; gap: 12px; padding: 8px 14px;
+        background: var(--panel); border-bottom: 1px solid var(--border);
+      }
+      header h1 { font-size: 15px; margin: 0; color: var(--gold); font-weight: 700; }
+      header .spacer { flex: 1; }
+      header input.docname {
+        background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+        border-radius: 5px; padding: 4px 8px; font-size: 13px; width: 160px;
+      }
+      button, select {
+        background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 5px; padding: 5px 9px; cursor: pointer; font-size: 12px;
+      }
+      button:hover { background: var(--accent); border-color: var(--accent-hi); }
+      button.active { background: var(--accent); border-color: var(--accent-hi); color: #fff; }
+      main { flex: 1; display: flex; min-height: 0; }
+      .col { display: flex; flex-direction: column; gap: 10px; padding: 10px; overflow-y: auto; }
+      .left { width: 190px; background: var(--panel); border-right: 1px solid var(--border); }
+      .right { width: 210px; background: var(--panel); border-left: 1px solid var(--border); }
+      .center { flex: 1; display: flex; flex-direction: column; align-items: center;
+        justify-content: center; gap: 12px; background: #0c1820; position: relative; }
+      .group { background: var(--panel2); border: 1px solid var(--border); border-radius: 7px; padding: 9px; }
+      .group h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+        color: var(--muted); margin: 0 0 7px; }
+      .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+      .tools button { width: 38px; height: 34px; font-size: 16px; padding: 0; }
+      .palette { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
+      .swatch { width: 100%; aspect-ratio: 1; border-radius: 3px; cursor: pointer;
+        border: 1px solid rgba(0,0,0,.4); }
+      .swatch.sel { outline: 2px solid var(--gold); outline-offset: 1px; }
+      .curcolor { width: 100%; height: 28px; border-radius: 5px; border: 1px solid var(--border); }
+      .layer { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 5px;
+        cursor: pointer; border: 1px solid transparent; }
+      .layer.sel { background: var(--panel); border-color: var(--accent); }
+      .layer .vis { width: 18px; text-align: center; }
+      .layer .nm { flex: 1; }
+      .facings, .frames { display: flex; gap: 5px; flex-wrap: wrap; }
+      .facings button { flex: 1; min-width: 42px; }
+      #stage { image-rendering: pixelated; background:
+        repeating-conic-gradient(#1a2c38 0% 25%, #16242e 0% 50%) 50% / 20px 20px;
+        border: 1px solid var(--border); cursor: crosshair; }
+      #preview { image-rendering: pixelated; border: 1px solid var(--border);
+        background: #0c1820; }
+      .previewWrap { position: absolute; top: 14px; right: 14px; text-align: center; }
+      .previewWrap label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+      .hint { color: var(--muted); font-size: 11px; line-height: 1.5; }
+      label.fld { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+      label.fld input[type=number] { width: 60px; background: var(--panel); color: var(--text);
+        border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px; }
+      input[type=color] { width: 34px; height: 28px; padding: 0; border: 1px solid var(--border);
+        border-radius: 5px; background: none; cursor: pointer; }
+      a.back { color: var(--accent-hi); text-decoration: none; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>✎ Banfield Sprite Editor</h1>
+      <input class="docname" id="docname" value="character" />
+      <span class="spacer"></span>
+      <a class="back" href="/">← back to game</a>
+      <button id="btn-new">New</button>
+      <button id="btn-save">Save</button>
+      <button id="btn-load">Load</button>
+      <button id="btn-export">Export JSON</button>
+      <button id="btn-import">Import</button>
+      <button id="btn-png">Export PNG</button>
+      <input type="file" id="file-import" accept="application/json" hidden />
+    </header>
+    <main>
+      <!-- LEFT: tools, palette, colour -->
+      <div class="col left">
+        <div class="group">
+          <h2>Tools</h2>
+          <div class="row tools" id="tools">
+            <button data-tool="pencil" class="active" title="Pencil (B)">✏️</button>
+            <button data-tool="eraser" title="Eraser (E)">🧽</button>
+            <button data-tool="fill" title="Fill (G)">🪣</button>
+            <button data-tool="pick" title="Eyedropper (I)">💧</button>
+          </div>
+          <div class="row" style="margin-top:7px">
+            <button id="btn-clear" title="Clear active layer">Clear layer</button>
+          </div>
+        </div>
+        <div class="group">
+          <h2>Colour</h2>
+          <div class="row" style="margin-bottom:7px">
+            <input type="color" id="colorpick" value="#e0ac69" />
+            <div class="curcolor" id="curcolor" style="background:#e0ac69"></div>
+          </div>
+          <div class="palette" id="palette"></div>
+        </div>
+        <div class="group">
+          <h2>Canvas</h2>
+          <div class="row">
+            <label class="fld">Zoom
+              <input type="range" id="zoom" min="4" max="28" step="1" value="14" />
+            </label>
+          </div>
+          <div class="row" style="margin-top:6px">
+            <label><input type="checkbox" id="grid" checked /> Grid</label>
+            <label><input type="checkbox" id="onion" /> Onion</label>
+          </div>
+        </div>
+      </div>
+
+      <!-- CENTER: stage + preview -->
+      <div class="center">
+        <canvas id="stage"></canvas>
+        <div class="hint">Click / drag to paint · I = pick · scroll palette for more colours</div>
+        <div class="previewWrap">
+          <label>Walk preview</label>
+          <canvas id="preview" width="80" height="104"></canvas>
+          <div class="row" style="justify-content:center;margin-top:6px">
+            <button id="btn-play" class="active">▶ Play</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: facings, frames, layers -->
+      <div class="col right">
+        <div class="group">
+          <h2>Facing</h2>
+          <div class="facings" id="facings"></div>
+        </div>
+        <div class="group">
+          <h2>Frames</h2>
+          <div class="frames" id="frames"></div>
+          <div class="row" style="margin-top:7px">
+            <button id="frame-add">+ Frame</button>
+            <button id="frame-dup">Duplicate</button>
+            <button id="frame-del">Delete</button>
+          </div>
+        </div>
+        <div class="group">
+          <h2>Layers</h2>
+          <div id="layers"></div>
+        </div>
+        <div class="group">
+          <h2>Playback</h2>
+          <label class="fld">FPS
+            <input type="number" id="fps" min="1" max="24" value="6" />
+          </label>
+        </div>
+      </div>
+    </main>
+    <script type="module" src="/src/editor/main.ts"></script>
+  </body>
+</html>
