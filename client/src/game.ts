@@ -93,7 +93,7 @@ export class Game {
 
   // Per-entity walk tracking: last seen tile pos + a phase accumulator, so the
   // oblique character's legs only stride while actually moving.
-  private gait = new Map<string, { x: number; y: number; phase: number; moving: number }>();
+  private gait = new Map<string, { x: number; y: number; phase: number; moving: number; speed: number }>();
   // Transient melee-swing animation per player id (set from a "melee" fx).
   private attackAnim = new Map<string, { at: number; stance: "high" | "low" }>();
 
@@ -240,9 +240,7 @@ export class Game {
         this.net.send({ t: "grab" });
         e.preventDefault();
       } else if (!e.repeat) {
-        if (k === "shift") {
-          this.net.send({ t: "dodge" });
-        } else if (k === "f") {
+        if (k === "f") {
           this.net.send({ t: "board" });
         } else if (k === "e") {
           // Near an NPC? Talk instead of harvesting.
@@ -1905,17 +1903,22 @@ export class Game {
 
   // Track whether an entity is moving and advance its walk-cycle phase. Returns
   // the current phase (radians) and a moving flag for the oblique leg stride.
-  private gaitFor(id: string, x: number, y: number): { phase: number; moving: boolean } {
+  private gaitFor(id: string, x: number, y: number): { phase: number; moving: boolean; running: boolean; speed: number } {
     const dt = 1 / 60;
     let g = this.gait.get(id);
-    if (!g) { g = { x, y, phase: 0, moving: 0 }; this.gait.set(id, g); }
+    if (!g) { g = { x, y, phase: 0, moving: 0, speed: 0 }; this.gait.set(id, g); }
     const moved = Math.hypot(x - g.x, y - g.y);
+    // Instantaneous tiles/sec, smoothed so it doesn't jitter between snapshots.
+    const instSpeed = moved / dt;
+    g.speed += (instSpeed - g.speed) * 0.2;
     // Smooth a 0..1 "moving" weight so the stride eases in/out, not flickers.
     const target = moved > 0.002 ? 1 : 0;
     g.moving += (target - g.moving) * 0.25;
-    if (g.moving > 0.05) g.phase += dt * 9; // stride speed
+    // Stride tempo scales with actual ground speed — a run cycles the legs faster.
+    if (g.moving > 0.05) g.phase += dt * (5 + Math.min(g.speed, 10) * 0.95);
     g.x = x; g.y = y;
-    return { phase: g.phase, moving: g.moving > 0.15 };
+    // Walk speed is ~4.5 tiles/s; sprint pushes well past 6.
+    return { phase: g.phase, moving: g.moving > 0.15, running: g.speed > 6, speed: g.speed };
   }
 
   private drawPlayer(p: PlayerState, isMe: boolean) {
@@ -2039,8 +2042,12 @@ export class Game {
       return;
     }
 
-    // --- Hide: fade out for other players ---
-    if (p.hiding && !isMe) ctx.globalAlpha = 0.35;
+    // --- Hide: melt into the surroundings. To everyone else you're all but
+    //     gone (a faint heat-shimmer); to yourself a ghost so you can still aim. ---
+    if (p.hiding) {
+      const shimmer = 0.06 * Math.sin(performance.now() / 220 + p.x * 2.3);
+      ctx.globalAlpha = (isMe ? 0.4 : 0.12) + shimmer;
+    }
 
     // --- Jump: parabolic arc offset + ground shadow ---
     const jumpOffset = p.jumping ? -Math.sin((p.jumpPhase ?? 0) * Math.PI) * TILE_SIZE * 0.8 : 0;
@@ -2076,10 +2083,26 @@ export class Game {
       else attack = { phase: t, stance: aa.stance };
     }
 
+    // Running kicks up dust behind the feet (land only, not while swimming).
+    const running = gait.running && gait.moving && !p.swimming && depth <= 0 && !p.jumping;
+    if (running) {
+      const t = performance.now();
+      for (let i = 0; i < 2; i++) {
+        const age = ((t / 130 + i * 0.5) % 1);
+        const puffX = sx - Math.cos(p.dir) * (TILE_SIZE * 0.3 + age * TILE_SIZE * 0.5);
+        const puffY = sy + TILE_SIZE * 0.32 - Math.sin(p.dir) * age * TILE_SIZE * 0.2;
+        ctx.fillStyle = `rgba(180,165,135,${(0.32 * (1 - age)).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(puffX, puffY, (1.5 + age * 3) * (TILE_SIZE / 24), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     drawCharacter(ctx, sx + swayX, sy + jumpOffset - researchBob, p.appearance, {
       facing: facingFromDir(p.dir),
       phase: gait.phase,
       moving: gait.moving,
+      running,
       submerge,
       weapon: p.equipped,
       attack,
@@ -2389,7 +2412,7 @@ export class Game {
 
   private panelHelpHTML(): string {
     return `<div class="controls-section">
-      <b>Move:</b> WASD &nbsp; <b>Dodge:</b> Shift<br/>
+      <b>Move:</b> WASD &nbsp; <b>Run:</b> hold Shift<br/>
       <b style="color:#ffe7a8">Mode:</b> Tab (or buttons up top)<br/>
       <span style="color:#6a9ab5">⚔ Combat · 🔬 Research · 🛠 Pro</span><br/>
       <span style="color:#6a9ab5">You can only fight in Combat mode.</span><br/>
@@ -3247,21 +3270,33 @@ function drawCharacter(
   ctx: CanvasRenderingContext2D,
   sx: number, sy: number,
   look: CharLook,
-  o: { facing: Facing; phase: number; moving: boolean; submerge?: number; weapon?: ItemId | null;
+  o: { facing: Facing; phase: number; moving: boolean; running?: boolean; submerge?: number; weapon?: ItemId | null;
        attack?: { phase: number; stance: "high" | "low" } },
 ) {
   const u = TILE_SIZE / 24;                    // scale unit (1 at 24px tiles)
   const face = o.facing;
   const pants = look.pants ?? "#39507a";        // denim
-  const swing = o.moving ? Math.sin(o.phase) : 0;
+  const run = !!o.running;
+  // A run swings the limbs wider than a walk for clear, snappy locomotion.
+  const swing = o.moving ? Math.sin(o.phase) * (run ? 1.4 : 1) : 0;
   // Facing direction as a screen vector, for punch/kick thrusts.
   const dirX = face === "left" ? -1 : face === "right" ? 1 : 0;
   const dirY = face === "up" ? -1 : face === "down" ? 1 : 0;
+  const frontSide: -1 | 1 = face === "right" ? -1 : 1;
+
+  // Which limbs an active swing replaces, so we don't double them up.
+  const punching = !!o.attack && o.attack.stance === "high";
+  const kicking  = !!o.attack && o.attack.stance === "low";
+
+  // Upper-body bob: feet stay planted while the torso/head bounce on each step.
+  // A run bounces higher; a lean tips the body into the direction of travel.
+  const bob  = o.moving ? -Math.abs(Math.sin(o.phase)) * (run ? 1.9 : 1.0) * u : 0;
+  const lean = run ? dirX * 1.4 * u : 0;
 
   const feetY  = sy + 9 * u;
-  const hipY   = sy + 3 * u;
-  const shoY   = sy - 5 * u;                     // shoulder line
-  const headCY = sy - 11 * u;
+  const hipY   = sy + 3 * u + bob;
+  const shoY   = sy - 5 * u + bob;               // shoulder line
+  const headCY = sy - 11 * u + bob;
   const headR  = 5.2 * u;
   const bodyW  = 11 * u;
 
@@ -3294,6 +3329,8 @@ function drawCharacter(
   if (showLegs) {
     const legSpread = 2.8 * u;
     for (const side of [-1, 1] as const) {
+      // The kicking leg is drawn by the thrust block below — don't double it.
+      if (kicking && side === frontSide) continue;
       const sw = (side === -1 ? swing : -swing) * 2.2 * u;
       const lx = sx + side * legSpread + sw;
       const ly = feetY;
@@ -3313,9 +3350,11 @@ function drawCharacter(
   }
 
   // ---- arms + torso (hidden once head-deep) ----
-  const armPhase = o.moving ? Math.sin(o.phase + Math.PI) * 2.2 * u : 0;
+  // Arms counter-swing the legs; a run pumps them harder.
+  const armPhase = o.moving ? Math.sin(o.phase + Math.PI) * 2.2 * u * (run ? 1.4 : 1) : 0;
+  const lx0 = sx + lean;                    // upper-body x origin, tipped when running
   const drawArm = (side: -1 | 1) => {
-    const ax = sx + side * (bodyW / 2 - 0.5 * u);
+    const ax = lx0 + side * (bodyW / 2 - 0.5 * u);
     const handY = hipY + (side === -1 ? armPhase : -armPhase);
     ctx.strokeStyle = shade(look.shirt, 0.82);
     ctx.lineWidth = 2.9 * u;
@@ -3333,18 +3372,19 @@ function drawCharacter(
   if (showTorso) {
     drawArm(face === "right" ? 1 : -1);     // far arm first
     ctx.fillStyle = look.shirt;             // torso
-    roundRect(ctx, sx - bodyW / 2, shoY, bodyW, hipY - shoY + 2.5 * u, 3 * u);
+    roundRect(ctx, lx0 - bodyW / 2, shoY, bodyW, hipY - shoY + 2.5 * u, 3 * u);
     ctx.fill();
     ctx.fillStyle = shade(look.shirt, 0.8); // lower-torso shading
-    roundRect(ctx, sx - bodyW / 2, hipY - 1 * u, bodyW, 4 * u, 2.5 * u);
+    roundRect(ctx, lx0 - bodyW / 2, hipY - 1 * u, bodyW, 4 * u, 2.5 * u);
     ctx.fill();
-    const frontSide: -1 | 1 = face === "right" ? -1 : 1;
-    drawArm(frontSide);                     // front arm
-    // Weapon held in the front hand.
-    if (o.weapon) {
-      const ax = sx + frontSide * (bodyW / 2 - 0.5 * u);
-      const handY = hipY + (frontSide === -1 ? armPhase : -armPhase);
-      drawWeaponInHand(ctx, o.weapon, ax + frontSide * 1.5 * u, handY, frontSide, u);
+    // Front arm — but a punch replaces it with the thrust below, so skip it then.
+    if (!punching) {
+      drawArm(frontSide);
+      if (o.weapon) {                       // weapon held in the front hand
+        const ax = lx0 + frontSide * (bodyW / 2 - 0.5 * u);
+        const handY = hipY + (frontSide === -1 ? armPhase : -armPhase);
+        drawWeaponInHand(ctx, o.weapon, ax + frontSide * 1.5 * u, handY, frontSide, u);
+      }
     }
   }
 
@@ -3358,12 +3398,12 @@ function drawCharacter(
     if (o.attack.stance === "high") {
       // Punch: front arm shoots out, fist leading.
       const reach = 9 * u * t;
-      const ox = sx + ux * reach, oy = shoY + 1 * u + uy * reach * 0.6;
+      const ox = lx0 + ux * reach, oy = shoY + 1 * u + uy * reach * 0.6;
       ctx.strokeStyle = shade(look.shirt, 0.82);
       ctx.lineWidth = 3 * u;
       ctx.lineCap = "round";
       ctx.beginPath();
-      ctx.moveTo(sx + ux * (bodyW / 2), shoY + 1 * u);
+      ctx.moveTo(lx0 + ux * (bodyW / 2), shoY + 1 * u);
       ctx.lineTo(ox, oy);
       ctx.stroke();
       ctx.fillStyle = look.skin;             // fist
@@ -3401,7 +3441,7 @@ function drawCharacter(
 
   // ---- head (shifts slightly toward the facing side for a clearer profile) ----
   const headDX = face === "left" ? -1.2 * u : face === "right" ? 1.2 * u : 0;
-  const hx = sx + headDX;
+  const hx = lx0 + headDX;
   ctx.fillStyle = look.skin;
   ctx.beginPath();
   ctx.arc(hx, headCY, headR, 0, Math.PI * 2);
