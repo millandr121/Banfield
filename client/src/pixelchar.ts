@@ -362,6 +362,29 @@ function paint(a: Appearance, o: CharOpts) {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // HAT  — optional head covering, drawn over the hair cap
+  // ─────────────────────────────────────────────────────────────────────────────
+  if (a.hat) {
+    const hat = a.hat;
+    const capW = HEAD_R * 2 + 2;
+    const bandY = HEAD_CY - HEAD_R + 1;   // sits across the brow
+    // Crown
+    F(b, OL, hcx - capW / 2 - 1, bandY - 3, capW + 2, 5);
+    F(b, hat, hcx - capW / 2, bandY - 2, capW, 4);
+    F(b, dk(hat, 1.12), hcx - capW / 2 + 1, bandY - 2, capW - 4, 1); // top highlight
+    F(b, dk(hat, 0.78), hcx - capW / 2, bandY + 1, capW, 1);          // band shadow
+    // Brim — wider, forward in the facing direction (ball-cap / sun-hat feel)
+    if (dn || up) {
+      F(b, OL, hcx - capW / 2 - 1, bandY + 1, capW + 2, 2);
+      F(b, dk(hat, 0.9), hcx - capW / 2, bandY + 1, capW, 1);
+    } else {
+      const bx = rt ? hcx + 1 : hcx - HEAD_R - 1;
+      F(b, OL, bx, bandY + 1, HEAD_R + 1, 2);
+      F(b, dk(hat, 0.9), bx, bandY + 1, HEAD_R + 1, 1);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // FACE DETAILS
   // ─────────────────────────────────────────────────────────────────────────────
   if (dn) {

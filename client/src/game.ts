@@ -1849,18 +1849,16 @@ export class Game {
     }
     const gait = this.gaitFor("npc-" + n.id, n.x, n.y);
 
-    // Per-kind distinctive appearance.
-    const npcAppearance = (() => {
-      switch (n.kind) {
-        case "seamstress":      return { skin: "#c88040", hair: "#8b2252", shirt: "#d946a8" };
-        case "researcher2":     return { skin: "#d4b896", hair: "#bfa060", shirt: "#7b3fa0" };
-        case "marineBiologist": return { skin: "#b8d4e0", hair: "#2a5a80", shirt: "#0d47a1" };
-        case "snorkeler":       return { skin: "#c0d8d0", hair: "#1a3a2a", shirt: "#00838f" };
-        default: return { skin: "#e0ac69", hair: "#3a2a18", shirt: NPC_COLORS[n.kind] ?? "#607d8b" };
-      }
-    })();
+    // Each local is a distinct individual — same crisp pixel renderer as players.
+    const npcAppearance: Appearance =
+      NPC_LOOKS[n.kind] ?? { skin: "#e0ac69", hair: "#3a2a18", shirt: NPC_COLORS[n.kind] ?? "#607d8b" };
 
-    drawCharacter(ctx, sx, sy, npcAppearance, { facing, phase: gait.phase, moving: gait.moving });
+    drawCharacterPixel(ctx, sx, sy, npcAppearance, {
+      facing: facing as PixelCharOpts["facing"],
+      phase: gait.phase,
+      moving: gait.moving,
+      weapon: null,
+    });
 
     // Role label
     ctx.fillStyle = "#eaf2f8";
@@ -2752,6 +2750,39 @@ const NPC_NAME: Record<NpcState["kind"], string> = {
   icevendor: "Ice Vendor", seamstress: "Seamstress", researcher2: "Field Researcher",
   marineBiologist: "Marine Biologist", snorkeler: "Snorkeler",
 };
+
+// Each local is a distinct, quirky individual — Eastward-style cast. Skin, hair,
+// shirt, pants, optional hat, plus build/hair length give everyone a silhouette
+// you can recognise from across the map.
+const NPC_LOOKS: Record<NpcState["kind"], Appearance> = {
+  // Wiry old hippy botanist, long grey hair, mossy-green field vest.
+  naturalist:     { skin: "#caa472", hair: "#b8b0a0", shirt: "#3f6b34", pants: "#5a4a32", hairStyle: "long",   bodyBuild: "slight" },
+  // Weathered hobo pirate — sun-leathered, wild black beard-hair, tattered red.
+  pirate:         { skin: "#a86a40", hair: "#241a14", shirt: "#8a2f24", pants: "#3a3026", hat: "#2a2018", hairStyle: "medium", bodyBuild: "sturdy" },
+  // Nerdy marine scientist — pale, neat side-part, lab-blue, sturdy glasses vibe.
+  scientist:      { skin: "#e7c9a4", hair: "#5a4632", shirt: "#1565c0", pants: "#33405c", hairStyle: "short",  bodyBuild: "slight" },
+  westsider:      { skin: "#d9a877", hair: "#3a2a18", shirt: "#0f7a6c", pants: "#2e3a52", hairStyle: "short",  bodyBuild: "medium" },
+  eastsider:      { skin: "#c89060", hair: "#4a148c", shirt: "#5e35b1", pants: "#2a2440", hairStyle: "medium", bodyBuild: "medium" },
+  // Huu-ay-aht elder — warm tone, long dark hair, deep crimson regalia red.
+  huuayaht:       { skin: "#b87a4a", hair: "#1a1410", shirt: "#9a1f1f", pants: "#3a2418", hairStyle: "long",   bodyBuild: "medium" },
+  // Unofficial mayor — ruddy, balding, loud mustard blazer.
+  mayor:          { skin: "#e0a878", hair: "#8a7a5a", shirt: "#e0901f", pants: "#4a3a22", hat: "#caa040", hairStyle: "short", bodyBuild: "sturdy" },
+  // Bookish historian — grey beard-hair, tweedy brown, soft build.
+  historian:      { skin: "#d4ac80", hair: "#9a9088", shirt: "#7a5a3a", pants: "#4a3e30", hairStyle: "medium", bodyBuild: "sturdy" },
+  // Salty boat dealer — tanned, ball-cap, oilskin teal.
+  boatdealer:     { skin: "#c08850", hair: "#2a2018", shirt: "#00695c", pants: "#2a3a40", hat: "#143a36", hairStyle: "short", bodyBuild: "sturdy" },
+  // Ice vendor — chilled pale, frosty cap, cold-blue apron.
+  icevendor:      { skin: "#e3cbb0", hair: "#5a5048", shirt: "#4aa6c8", pants: "#3a4a55", hat: "#cfe8f0", hairStyle: "short", bodyBuild: "medium" },
+  // Flamboyant seamstress — magenta hair, hot-pink, expressive.
+  seamstress:     { skin: "#c88040", hair: "#8b2252", shirt: "#d946a8", pants: "#5a2a4a", hairStyle: "long",   bodyBuild: "slight", breastSize: "modest", hipSize: "wide" },
+  // Field researcher — sandy hair, eggplant cargo, practical.
+  researcher2:    { skin: "#d4b896", hair: "#bfa060", shirt: "#7b3fa0", pants: "#3e3550", hairStyle: "medium", bodyBuild: "medium" },
+  // Marine biologist — cool ocean tones, navy wetsuit-ish.
+  marineBiologist:{ skin: "#cdb59c", hair: "#2a5a80", shirt: "#0d47a1", pants: "#1a2a4a", hairStyle: "short",  bodyBuild: "medium" },
+  // Snorkeler — sun-bleached, kelp-dark hair, teal rash-guard.
+  snorkeler:      { skin: "#caa06e", hair: "#1a3a2a", shirt: "#00838f", pants: "#244a4a", hairStyle: "short",  bodyBuild: "slight" },
+};
+
 const NPC_COLORS: Record<NpcState["kind"], string> = {
   naturalist: "#2e7d32", pirate: "#37474f", scientist: "#1565c0", westsider: "#00695c",
   eastsider: "#4a148c", huuayaht: "#b71c1c", mayor: "#f57f17", historian: "#6d4c41",
@@ -2873,14 +2904,16 @@ interface TreeSpec {
   shape?: ConShape;
 }
 const TREE_SPECS: Record<string, TreeSpec> = {
-  redcedar:    { type:"conifer", trunk:"#6b4a2b", canopy:["#2c6230","#367a35","#49923f"], base:1.80, vary:1.10, shape:"broad" },
-  sitkaspruce: { type:"conifer", trunk:"#5e4a34", canopy:["#1f5742","#27684e","#368063"], base:1.90, vary:1.10, shape:"column" },
-  douglasfir:  { type:"conifer", trunk:"#5a3f28", canopy:["#234b25","#2d5d2d","#3c7339"], base:1.70, vary:0.95, shape:"cone" },
-  hemlock:     { type:"conifer", trunk:"#5a4632", canopy:["#356b3a","#418347","#57a55e"], base:1.30, vary:0.55, shape:"droop" },
-  shorepine:   { type:"conifer", trunk:"#6b5436", canopy:["#4f6f33","#5f8038","#74974a"], base:1.10, vary:0.45, shape:"scrub" },
-  yew:         { type:"conifer", trunk:"#7a3b2a", canopy:["#1b3d29","#244e33","#2f6040"], base:1.00, vary:0.40, shape:"dense" },
-  redalder:    { type:"broadleaf", trunk:"#8a8170", canopy:["#4a7d3a","#5b9146","#73a857"], base:1.40, vary:0.60 },
-  bigleafmaple:{ type:"broadleaf", trunk:"#7a6b54", canopy:["#5a8a32","#6fa23e","#88b955"], base:1.70, vary:0.85 },
+  // base/vary tuned so old-growth giants tower 5-8 tiles over a 3-tile person,
+  // while saplings of the same species stay small — real height variety.
+  redcedar:    { type:"conifer", trunk:"#6b4a2b", canopy:["#2c6230","#367a35","#49923f"], base:2.60, vary:1.90, shape:"broad" },
+  sitkaspruce: { type:"conifer", trunk:"#5e4a34", canopy:["#1f5742","#27684e","#368063"], base:2.80, vary:2.10, shape:"column" },
+  douglasfir:  { type:"conifer", trunk:"#5a3f28", canopy:["#234b25","#2d5d2d","#3c7339"], base:2.50, vary:1.80, shape:"cone" },
+  hemlock:     { type:"conifer", trunk:"#5a4632", canopy:["#356b3a","#418347","#57a55e"], base:1.70, vary:0.90, shape:"droop" },
+  shorepine:   { type:"conifer", trunk:"#6b5436", canopy:["#4f6f33","#5f8038","#74974a"], base:1.20, vary:0.55, shape:"scrub" },
+  yew:         { type:"conifer", trunk:"#7a3b2a", canopy:["#1b3d29","#244e33","#2f6040"], base:1.05, vary:0.45, shape:"dense" },
+  redalder:    { type:"broadleaf", trunk:"#8a8170", canopy:["#4a7d3a","#5b9146","#73a857"], base:1.70, vary:0.80 },
+  bigleafmaple:{ type:"broadleaf", trunk:"#7a6b54", canopy:["#5a8a32","#6fa23e","#88b955"], base:2.20, vary:1.20 },
 };
 
 // A layered conifer: trunk + stacked tiers of foliage tapering to a crown.
@@ -2952,7 +2985,7 @@ function drawResourceSprite(ctx: CanvasRenderingContext2D, n: ResourceNode, x: n
   // Per-tree size: species base × old-growth spread (giants tower over saplings).
   const spec = n.kind === "tree" ? TREE_SPECS[n.variety ?? ""] : undefined;
   const treeScale = spec ? spec.base + nodeHash(n, 4) * spec.vary : 1;
-  const R = n.kind === "tree" ? TILE_SIZE * 0.6 * treeScale : TILE_SIZE * 0.44;
+  const R = n.kind === "tree" ? TILE_SIZE * 0.82 * treeScale : TILE_SIZE * 0.44;
   if (n.depleted) {
     // Ghost outline: stump or empty pit.
     ctx.strokeStyle = n.kind === "tree" ? "#3a5c28" : "#5a4e3a";
@@ -3409,311 +3442,6 @@ function facingFromDir(dir: number): Facing {
   const dx = Math.cos(dir), dy = Math.sin(dir);
   if (Math.abs(dx) >= Math.abs(dy)) return dx > 0 ? "right" : "left";
   return dy > 0 ? "down" : "up";
-}
-
-interface CharLook { skin: string; hair: string; shirt: string; pants?: string; hat?: string }
-
-function drawWeaponInHand(ctx: CanvasRenderingContext2D, weapon: ItemId, hx: number, hy: number, side: -1 | 1, u: number) {
-  const ang = side === 1 ? -Math.PI * 0.3 : Math.PI * 0.3; // tilt away from body
-  ctx.save();
-  ctx.translate(hx, hy);
-  ctx.rotate(ang);
-  switch (weapon) {
-    case "stick": {
-      ctx.strokeStyle = "#8d6e63"; ctx.lineWidth = 1.4 * u; ctx.lineCap = "round";
-      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -9 * u); ctx.stroke();
-      break;
-    }
-    case "huntingKnife": {
-      // Handle
-      ctx.fillStyle = "#5d4037"; ctx.fillRect(-0.8 * u, 0, 1.6 * u, 3 * u);
-      // Blade
-      ctx.fillStyle = "#cfd8dc";
-      ctx.beginPath(); ctx.moveTo(-0.9 * u, -6 * u); ctx.lineTo(0.9 * u, 0); ctx.lineTo(-0.9 * u, 0); ctx.closePath(); ctx.fill();
-      break;
-    }
-    case "bow": {
-      ctx.strokeStyle = "#8d6e63"; ctx.lineWidth = 1.2 * u; ctx.lineCap = "round";
-      ctx.beginPath(); ctx.arc(0, -4 * u, 5 * u, Math.PI * 0.55, Math.PI * 1.45); ctx.stroke();
-      ctx.strokeStyle = "rgba(200,220,240,0.8)"; ctx.lineWidth = 0.5 * u;
-      ctx.beginPath(); ctx.moveTo(-4.8 * u, -7.2 * u); ctx.lineTo(-4.8 * u, -0.8 * u); ctx.stroke();
-      break;
-    }
-    case "crossbow": {
-      ctx.strokeStyle = "#5d4037"; ctx.lineWidth = 1.5 * u; ctx.lineCap = "square";
-      ctx.beginPath(); ctx.moveTo(0, 1 * u); ctx.lineTo(0, -7 * u); ctx.stroke();
-      ctx.strokeStyle = "#78909c"; ctx.lineWidth = 1.2 * u;
-      ctx.beginPath(); ctx.moveTo(-5 * u, -5 * u); ctx.lineTo(5 * u, -5 * u); ctx.stroke();
-      break;
-    }
-    case "speargun": {
-      ctx.strokeStyle = "#455a64"; ctx.lineWidth = 1.6 * u; ctx.lineCap = "round";
-      ctx.beginPath(); ctx.moveTo(0, 2 * u); ctx.lineTo(0, -8 * u); ctx.stroke();
-      ctx.fillStyle = "#cfd8dc"; // tip
-      ctx.beginPath(); ctx.moveTo(-1 * u, -8 * u); ctx.lineTo(1 * u, -8 * u); ctx.lineTo(0, -11 * u); ctx.closePath(); ctx.fill();
-      break;
-    }
-    case "rifle": {
-      ctx.strokeStyle = "#3e2723"; ctx.lineWidth = 1.8 * u; ctx.lineCap = "round";
-      ctx.beginPath(); ctx.moveTo(-1 * u, 2 * u); ctx.lineTo(0, -9 * u); ctx.stroke();
-      ctx.strokeStyle = "#78909c"; ctx.lineWidth = 1.2 * u;
-      ctx.beginPath(); ctx.moveTo(-1 * u, -3 * u); ctx.lineTo(-4 * u, -3 * u); ctx.stroke(); // mag
-      break;
-    }
-  }
-  ctx.restore();
-}
-
-function drawCharacter(
-  ctx: CanvasRenderingContext2D,
-  sx: number, sy: number,
-  look: CharLook,
-  o: { facing: Facing; phase: number; moving: boolean; running?: boolean; submerge?: number; weapon?: ItemId | null;
-       attack?: { phase: number; stance: "high" | "low" } },
-) {
-  const u = TILE_SIZE / 24;                    // scale unit (1 at 24px tiles)
-  const face = o.facing;
-  const pants = look.pants ?? "#39507a";        // denim
-  const run = !!o.running;
-  // A run swings the limbs wider than a walk for clear, snappy locomotion.
-  const swing = o.moving ? Math.sin(o.phase) * (run ? 1.4 : 1) : 0;
-  // Facing direction as a screen vector, for punch/kick thrusts.
-  const dirX = face === "left" ? -1 : face === "right" ? 1 : 0;
-  const dirY = face === "up" ? -1 : face === "down" ? 1 : 0;
-  const frontSide: -1 | 1 = face === "right" ? -1 : 1;
-
-  // Which limbs an active swing replaces, so we don't double them up.
-  const punching = !!o.attack && o.attack.stance === "high";
-  const kicking  = !!o.attack && o.attack.stance === "low";
-
-  // Upper-body bob: feet stay planted while the torso/head bounce on each step.
-  // A run bounces higher; a lean tips the body into the direction of travel.
-  const bob  = o.moving ? -Math.abs(Math.sin(o.phase)) * (run ? 1.9 : 1.0) * u : 0;
-  const lean = run ? dirX * 1.4 * u : 0;
-
-  const feetY  = sy + 9 * u;
-  const hipY   = sy + 3 * u + bob;
-  const shoY   = sy - 5 * u + bob;               // shoulder line
-  const headCY = sy - 11 * u + bob;
-  const headR  = 5.2 * u;
-  const bodyW  = 11 * u;
-
-  // Water submersion 0..1 (fraction of the body the water covers). Drives how
-  // much of the body shows: ankle-deep → ~0.12, waist → ~0.45, head-only → ~0.8.
-  const sub = o.submerge ?? 0;
-  const bodyTop = headCY - headR, bodyBot = feetY;
-  const waterY = sub > 0 ? bodyBot - sub * (bodyBot - bodyTop) : Infinity;
-  const showLegs  = waterY >= hipY - 1 * u;      // water still below the hips
-  const showTorso = waterY >= shoY + 1 * u;      // water below the shoulders
-
-  // darker shade of a hex colour, for simple shadowing
-  const shade = (hex: string, f: number) => {
-    const n = parseInt(hex.slice(1), 16);
-    const r = Math.max(0, ((n >> 16) & 255) * f) | 0;
-    const g = Math.max(0, ((n >> 8) & 255) * f) | 0;
-    const b = Math.max(0, (n & 255) * f) | 0;
-    return `rgb(${r},${g},${b})`;
-  };
-
-  // ---- ground shadow (only on land) ----
-  if (sub <= 0) {
-    ctx.fillStyle = "rgba(0,0,0,0.22)";
-    ctx.beginPath();
-    ctx.ellipse(sx, feetY + 1.5 * u, 8 * u, 2.8 * u, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // ---- legs (stride only while moving; hidden once waist-deep) ----
-  if (showLegs) {
-    const legSpread = 2.8 * u;
-    for (const side of [-1, 1] as const) {
-      // The kicking leg is drawn by the thrust block below — don't double it.
-      if (kicking && side === frontSide) continue;
-      const sw = (side === -1 ? swing : -swing) * 2.2 * u;
-      const lx = sx + side * legSpread + sw;
-      const ly = feetY;
-      ctx.strokeStyle = pants;
-      ctx.lineWidth = 3.6 * u;
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(sx + side * legSpread * 0.7, hipY);
-      ctx.lineTo(lx, ly);
-      ctx.stroke();
-      // boot
-      ctx.fillStyle = "#241809";
-      ctx.beginPath();
-      ctx.ellipse(lx + (face === "left" ? -1 : face === "right" ? 1 : 0) * u, ly + 1 * u, 2.5 * u, 1.6 * u, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  // ---- arms + torso (hidden once head-deep) ----
-  // Arms counter-swing the legs; a run pumps them harder.
-  const armPhase = o.moving ? Math.sin(o.phase + Math.PI) * 2.2 * u * (run ? 1.4 : 1) : 0;
-  const lx0 = sx + lean;                    // upper-body x origin, tipped when running
-  const drawArm = (side: -1 | 1) => {
-    const ax = lx0 + side * (bodyW / 2 - 0.5 * u);
-    const handY = hipY + (side === -1 ? armPhase : -armPhase);
-    ctx.strokeStyle = shade(look.shirt, 0.82);
-    ctx.lineWidth = 2.9 * u;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(ax, shoY + 1.5 * u);
-    ctx.lineTo(ax + side * 1.5 * u, handY);
-    ctx.stroke();
-    ctx.fillStyle = look.skin;            // hand
-    ctx.beginPath();
-    ctx.arc(ax + side * 1.5 * u, handY, 1.9 * u, 0, Math.PI * 2);
-    ctx.fill();
-  };
-
-  if (showTorso) {
-    drawArm(face === "right" ? 1 : -1);     // far arm first
-    ctx.fillStyle = look.shirt;             // torso
-    roundRect(ctx, lx0 - bodyW / 2, shoY, bodyW, hipY - shoY + 2.5 * u, 3 * u);
-    ctx.fill();
-    ctx.fillStyle = shade(look.shirt, 0.8); // lower-torso shading
-    roundRect(ctx, lx0 - bodyW / 2, hipY - 1 * u, bodyW, 4 * u, 2.5 * u);
-    ctx.fill();
-    // Front arm — but a punch replaces it with the thrust below, so skip it then.
-    if (!punching) {
-      drawArm(frontSide);
-      if (o.weapon) {                       // weapon held in the front hand
-        const ax = lx0 + frontSide * (bodyW / 2 - 0.5 * u);
-        const handY = hipY + (frontSide === -1 ? armPhase : -armPhase);
-        drawWeaponInHand(ctx, o.weapon, ax + frontSide * 1.5 * u, handY, frontSide, u);
-      }
-    }
-  }
-
-  // ---- punch / kick thrust (transient, from a melee fx) ----
-  if (o.attack) {
-    const t = Math.sin(Math.max(0, Math.min(1, o.attack.phase)) * Math.PI); // 0→1→0
-    // For up/down facings there's no horizontal lean, so throw the limb downward
-    // toward the camera so the swing still reads clearly.
-    const ux = dirX !== 0 ? dirX : 0;
-    const uy = dirX !== 0 ? 0 : (dirY !== 0 ? dirY : 1);
-    if (o.attack.stance === "high") {
-      // Punch: front arm shoots out, fist leading.
-      const reach = 9 * u * t;
-      const ox = lx0 + ux * reach, oy = shoY + 1 * u + uy * reach * 0.6;
-      ctx.strokeStyle = shade(look.shirt, 0.82);
-      ctx.lineWidth = 3 * u;
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(lx0 + ux * (bodyW / 2), shoY + 1 * u);
-      ctx.lineTo(ox, oy);
-      ctx.stroke();
-      ctx.fillStyle = look.skin;             // fist
-      ctx.beginPath();
-      ctx.arc(ox, oy, 2.4 * u, 0, Math.PI * 2);
-      ctx.fill();
-      if (t > 0.5) {                          // impact spark at full extension
-        ctx.strokeStyle = "rgba(255,236,150,0.9)";
-        ctx.lineWidth = 1.2 * u;
-        for (let i = 0; i < 4; i++) {
-          const a = i * 1.57 + 0.4;
-          ctx.beginPath();
-          ctx.moveTo(ox + Math.cos(a) * 2.6 * u, oy + Math.sin(a) * 2.6 * u);
-          ctx.lineTo(ox + Math.cos(a) * 4.4 * u, oy + Math.sin(a) * 4.4 * u);
-          ctx.stroke();
-        }
-      }
-    } else {
-      // Kick: front leg snaps out, boot leading.
-      const reach = 11 * u * t;
-      const ox = sx + ux * reach, oy = hipY + 3 * u + uy * reach * 0.5;
-      ctx.strokeStyle = pants;
-      ctx.lineWidth = 3.6 * u;
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(sx + ux * (bodyW * 0.3), hipY + 1 * u);
-      ctx.lineTo(ox, oy);
-      ctx.stroke();
-      ctx.fillStyle = "#241809";             // boot
-      ctx.beginPath();
-      ctx.ellipse(ox + ux * 1.2 * u, oy, 2.7 * u, 1.7 * u, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  // ---- head (shifts slightly toward the facing side for a clearer profile) ----
-  const headDX = face === "left" ? -1.2 * u : face === "right" ? 1.2 * u : 0;
-  const hx = lx0 + headDX;
-  ctx.fillStyle = look.skin;
-  ctx.beginPath();
-  ctx.arc(hx, headCY, headR, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = shade(look.skin, 0.92);   // jaw shading
-  ctx.beginPath();
-  ctx.ellipse(hx, headCY + headR * 0.45, headR * 0.85, headR * 0.5, 0, 0, Math.PI);
-  ctx.fill();
-
-  // ---- hair (covers the BACK of the head — opposite the facing side) ----
-  ctx.fillStyle = look.hair;
-  if (face === "up") {
-    ctx.beginPath();                        // facing away → full hair
-    ctx.arc(hx, headCY, headR, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (face === "down") {
-    ctx.beginPath();                        // facing camera → top fringe only
-    ctx.arc(hx, headCY, headR, Math.PI * 0.92, Math.PI * 2.08);
-    ctx.fill();
-  } else {
-    // Profile: hair on the back half (right half when facing left, vice-versa).
-    const a0 = face === "left" ? -Math.PI / 2 : Math.PI / 2;
-    ctx.beginPath();
-    ctx.arc(hx, headCY, headR, a0, a0 + Math.PI);
-    ctx.fill();
-    ctx.beginPath();                        // top sweep
-    ctx.arc(hx, headCY, headR, Math.PI, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // ---- eyes (on the facing side) ----
-  ctx.fillStyle = "#1a1a1a";
-  const eye = (ex: number) => {
-    ctx.beginPath();
-    ctx.arc(hx + ex, headCY + 0.5 * u, 0.9 * u, 0, Math.PI * 2);
-    ctx.fill();
-  };
-  if (face === "down") { eye(-2 * u); eye(2 * u); }
-  else if (face === "left")  eye(-2.2 * u);
-  else if (face === "right") eye(2.2 * u);
-
-  // ---- hat (research sun hat etc.): a brim + crown over the head ----
-  if (look.hat) {
-    ctx.fillStyle = look.hat;
-    // wide brim
-    ctx.beginPath();
-    ctx.ellipse(hx, headCY - headR * 0.55, headR * 1.7, headR * 0.5, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // crown
-    ctx.fillStyle = shade(look.hat, 0.88);
-    ctx.beginPath();
-    ctx.ellipse(hx, headCY - headR * 0.9, headR * 0.8, headR * 0.6, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // band
-    ctx.strokeStyle = shade(look.hat, 0.7);
-    ctx.lineWidth = 1.4 * u;
-    ctx.beginPath();
-    ctx.ellipse(hx, headCY - headR * 0.6, headR * 1.0, headR * 0.32, 0, Math.PI, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  // ---- waterline: a bright ellipse + soft wake where the body meets the water ----
-  if (sub > 0 && Number.isFinite(waterY)) {
-    const wlW = (showLegs ? 7 : showTorso ? 8 : 6) * u;
-    ctx.fillStyle = "rgba(210,235,255,0.45)";
-    ctx.beginPath();
-    ctx.ellipse(sx, waterY, wlW, 2.2 * u, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "rgba(255,255,255,0.3)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.ellipse(sx, waterY + 1.5 * u, wlW * 1.25, 3 * u, 0, 0, Math.PI * 2);
-    ctx.stroke();
-  }
 }
 
 // --- creature sprites (top-down, recognizable silhouettes) ------------------
