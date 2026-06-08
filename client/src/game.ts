@@ -185,9 +185,12 @@ export class Game {
   }
 
   private onKey(e: KeyboardEvent, down: boolean) {
+    // Until the player has washed ashore, the login form owns the keyboard —
+    // never let game bindings swallow keystrokes (fixes password typing).
+    if (!this.started) return;
     // Never intercept keys while focus is inside a text input (login form, etc.)
     const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA") return;
+    if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
     // While the chat box is open, let it handle all input.
     if (this.chatOpen) return;
     const k = e.key.toLowerCase();
