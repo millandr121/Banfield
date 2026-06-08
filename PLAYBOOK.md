@@ -147,16 +147,17 @@ scattered trees**) only take effect when the map is regenerated from the OSM
 data. I improved the importer; you regenerate like this:
 
 The current `bamfield.json` was already regenerated at the **full extent** of
-your OSM export (`48.7573,-125.2356 → 48.8606,-125.1061`) at `--width 1100`, so
-it now covers the whole coast from Tapaltos around into Pachena Bay and Anacla.
-The command that produced it (re-run if you tweak the OSM file or want a bigger
-`--width`):
+your OSM export (`48.7573,-125.2356 → 48.8606,-125.1061`) at `--width 2200`, so
+it now covers the whole coast from Tapaltos around into Pachena Bay and Anacla
+at 2× the original scale (2200×2665 = 5.86 M tiles, ~13 MB JSON).
+The command that produced it (re-run if you tweak the OSM file or want to
+change the `--width`):
 
 ```bash
 node tools/import-osm.mjs \
   --osm-xml <your-bamfield-export>.osm \
   --bbox 48.7573,-125.2356,48.8606,-125.1061 \
-  --width 1100 --id bamfield --name "Bamfield" \
+  --width 2200 --id bamfield --name "Bamfield" \
   --spawn-near "Tides & Trails Market" \
   --no-dem \
   --out shared/regions/bamfield.json
@@ -164,16 +165,15 @@ node tools/import-osm.mjs \
 
 - `--no-dem` skips the elevation download (needs internet; the game computes a
   sensible heightmap itself, with the tide-safe land floor).
-- Bump `--width` (e.g. 1300) for an even bigger world — but watch the JSON size;
-  1100 ≈ 3 MB / 1.46M tiles already.
+- Each tile is ~4 m at this scale; roads are two tiles wide; inlets feel like
+  real waterways you sail across.
 - If a specific bay still reads wrong, add `--sea-seed X,Y` pointing at a tile
   inside that bay's water to force-flood it.
 
 After it runs, `npm run dev` to see the new map.
 
-> Heads-up: bigger `--width` = more tiles = a bigger JSON and a bit more memory.
-> The chunked loading we built handles it, but 1100 is a sensible ceiling for
-> now.
+> Heads-up: at 2200 wide the JSON is ~13 MB. The chunked loading handles it —
+> only the 32×32 chunk around the player is ever in memory on the client.
 
 ---
 
