@@ -79,8 +79,6 @@ function appearance(): Appearance {
 }
 
 // ── Full-body face-on standing character preview (shared art module) ──────────
-// Uses the same drawAvatar() the in-game equip paper-doll uses, so the person on
-// the login screen looks exactly like they will in their inventory.
 function drawPreview() {
   drawAvatar(pctx, appearance(), previewCanvas.width, previewCanvas.height);
 }

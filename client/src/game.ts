@@ -40,6 +40,7 @@ import { LogbookEntry, LeaderboardData } from "../../shared/protocol";
 import { SPECIES, resourceSpeciesKey } from "../../shared/species";
 import { Net } from "./net";
 import { drawAvatar } from "./avatar";
+import { drawCharacterPixel, type CharOpts as PixelCharOpts } from "./pixelchar";
 
 const CHARGE_MAX_MS = 600; // hold Space this long for a full-power swing
 const HARVEST_RANGE_PX = 1.8 * TILE_SIZE; // client-side prompt range (cosmetic only)
@@ -94,7 +95,7 @@ export class Game {
   // Per-entity walk tracking: last seen tile pos + a phase accumulator, so the
   // oblique character's legs only stride while actually moving.
   private gait = new Map<string, { x: number; y: number; phase: number; moving: number; speed: number }>();
-  // Transient melee-swing animation per player id (set from a "melee" fx).
+  // Transient melee-swing animation per player id (set from a "melee" fx or local Space release).
   private attackAnim = new Map<string, { at: number; stance: "high" | "low" }>();
 
   // Side panel (OSRS-style right panel)
@@ -355,6 +356,8 @@ export class Game {
         this.chargeStart = null;
         const charge = Math.max(0, Math.min(1, held / CHARGE_MAX_MS));
         this.net.send({ t: "attack", charge });
+        // Immediately start a local attack animation so the swing feels responsive.
+        this.attackAnim.set(this.myId, { at: performance.now(), stance: this.me?.stance ?? "high" });
         e.preventDefault();
       }
     }
@@ -1911,13 +1914,12 @@ export class Game {
     // Instantaneous tiles/sec, smoothed so it doesn't jitter between snapshots.
     const instSpeed = moved / dt;
     g.speed += (instSpeed - g.speed) * 0.2;
-    // Smooth a 0..1 "moving" weight so the stride eases in/out, not flickers.
     const target = moved > 0.002 ? 1 : 0;
     g.moving += (target - g.moving) * 0.25;
     // Stride tempo scales with actual ground speed — a run cycles the legs faster.
     if (g.moving > 0.05) g.phase += dt * (5 + Math.min(g.speed, 10) * 0.95);
     g.x = x; g.y = y;
-    // Walk speed is ~4.5 tiles/s; sprint pushes well past 6.
+    // Walk speed ~4.5 tiles/s; sprint pushes well past 6.
     return { phase: g.phase, moving: g.moving > 0.15, running: g.speed > 6, speed: g.speed };
   }
 
@@ -1996,7 +1998,7 @@ export class Game {
       ctx.translate(sx, 0);
       ctx.scale(squash, 1);
       ctx.translate(-sx, 0);
-      drawCharacter(ctx, sx, sy, p.appearance, {
+      drawCharacterPixel(ctx, sx, sy, p.appearance, {
         facing: "down", phase: t, moving: true, submerge, weapon: null,
       });
       ctx.restore();
@@ -2042,14 +2044,13 @@ export class Game {
       return;
     }
 
-    // --- Hide: melt into the surroundings. To everyone else you're all but
-    //     gone (a faint heat-shimmer); to yourself a ghost so you can still aim. ---
+    // --- Hide: melt into the surroundings (near-invisible shimmer to others) ---
     if (p.hiding) {
       const shimmer = 0.06 * Math.sin(performance.now() / 220 + p.x * 2.3);
       ctx.globalAlpha = (isMe ? 0.4 : 0.12) + shimmer;
     }
 
-    // --- Jump: parabolic arc offset + ground shadow ---
+    // --- Jump: parabolic arc offset + shrinking ground shadow ---
     const jumpOffset = p.jumping ? -Math.sin((p.jumpPhase ?? 0) * Math.PI) * TILE_SIZE * 0.8 : 0;
     if (p.jumping) {
       const shadowScale = 1 - (p.jumpPhase ?? 0) * 0.5;
@@ -2073,10 +2074,11 @@ export class Game {
       ? Math.abs(Math.sin(gait.phase * 2)) * 2
       : 0;
 
-    // Active melee swing (set from a "melee" fx) → thrust animation over ~250 ms.
+    // Active melee swing → thrust animation over ~260 ms (server-triggered for other
+    // players; set locally for self on Space-release for immediate feel).
     const ATTACK_MS = 260;
     const aa = this.attackAnim.get(p.id);
-    let attack: { phase: number; stance: "high" | "low" } | undefined;
+    let attack: { phase: number; stance: "high" | "low" } | null = null;
     if (aa) {
       const t = (performance.now() - aa.at) / ATTACK_MS;
       if (t >= 1) this.attackAnim.delete(p.id);
@@ -2098,17 +2100,18 @@ export class Game {
       }
     }
 
-    drawCharacter(ctx, sx + swayX, sy + jumpOffset - researchBob, p.appearance, {
-      facing: facingFromDir(p.dir),
+    const pixelOpts: PixelCharOpts = {
+      facing: facingFromDir(p.dir) as PixelCharOpts["facing"],
       phase: gait.phase,
       moving: gait.moving,
       running,
       submerge,
       weapon: p.equipped,
       attack,
-    });
+    };
+    drawCharacterPixel(ctx, sx + swayX, sy + jumpOffset - researchBob, p.appearance, pixelOpts);
 
-    // Leaf overlay when hiding (visible to self as a faint green shimmer).
+    // Leaf shimmer overlay when hiding (environment-blend effect).
     if (p.hiding) {
       const leafAlpha = isMe ? 0.25 : 0.55;
       ctx.save();
@@ -2123,8 +2126,9 @@ export class Game {
         ctx.fill();
       }
       ctx.restore();
-      if (!isMe) { ctx.globalAlpha = 1; }
     }
+    // Always restore globalAlpha before drawing UI elements.
+    ctx.globalAlpha = 1;
 
     // HP / stamina bar floating above the head (oblique-friendly, not a ring).
     const frac = Math.max(0, Math.min(1, p.hp / p.maxHp));
