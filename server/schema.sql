@@ -26,8 +26,6 @@ CREATE TABLE IF NOT EXISTS players (
   updated_at     INTEGER
 );
 
--- Safe migration: add new columns to existing tables (no-op if already present).
-ALTER TABLE players ADD COLUMN mode_wardrobe TEXT;
 
 -- Leaderboards (unofficial mayor, BMSC president by species logged, etc.)
 CREATE INDEX IF NOT EXISTS idx_players_pts  ON players (banfielder_pts DESC);
