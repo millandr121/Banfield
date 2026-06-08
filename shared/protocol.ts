@@ -81,6 +81,37 @@ export interface OverviewMap {
 }
 
 // --- Entities ---------------------------------------------------------------
+// Worn clothing & gear slots — which ItemId is in each slot. These drive
+// appearance overrides (shirt/pants/hat color) and show in the equip panel.
+export type WornSlot = "head" | "torso" | "legs" | "back" | "hand";
+export type WornItems = Partial<Record<WornSlot, ItemId>>;
+
+// Which items are equippable to which slot.
+export const SLOT_FOR_ITEM: Partial<Record<string, WornSlot>> = {
+  clothShirt: "torso", waxedJacket: "torso", rainCoat: "torso", woolSweater: "torso", wetsuitTop: "torso",
+  clothPants: "legs", wetsuitBottom: "legs",
+  snorkelMask: "head", divingTank: "back",
+  // research tools → hand slot
+  binoculars: "hand", butterflyNet: "hand", listeningDevice: "hand", fieldNotebook: "hand",
+  // profession tools → hand slot
+  pickaxe: "hand", fishingCage: "hand", surveyFlag: "hand",
+  // weapons → hand slot (backed by the existing `equipped` field, kept in sync)
+  stick: "hand", huntingKnife: "hand", bow: "hand", crossbow: "hand", speargun: "hand", rifle: "hand",
+};
+
+// Visual color override when a clothing item is worn.
+export const CLOTHING_COLOR: Partial<Record<string, { shirt?: string; pants?: string; hat?: string }>> = {
+  clothShirt:     { shirt: "#c8a97a" },
+  clothPants:     { pants: "#7a6a4a" },
+  waxedJacket:    { shirt: "#3d5228" },
+  rainCoat:       { shirt: "#1565c0" },
+  woolSweater:    { shirt: "#7b4f2e" },
+  wetsuitTop:     { shirt: "#1a1a2e" },
+  wetsuitBottom:  { pants: "#1a1a2e" },
+  snorkelMask:    { hat:   "#222" },
+  divingTank:     { hat:   "#556" },   // used as a back-piece tint hint
+};
+
 export interface Appearance {
   skin: string;
   hair: string;
@@ -91,6 +122,7 @@ export interface Appearance {
   bodyBuild?: "slight" | "medium" | "sturdy";
   breastSize?: "non" | "modest" | "expressive";
   hipSize?: "narrow" | "medium" | "wide";
+  worn?: WornItems; // currently equipped items by slot (serialized with appearance)
 }
 
 // The 3-way mode switch that organises the whole game.
@@ -137,6 +169,10 @@ export const ITEM_IDS = [
   // clothing
   "clothShirt", "clothPants", "waxedJacket", "rainCoat", "woolSweater",
   "fabricDye", "seamstressKit", "snorkelMask", "divingTank", "wetsuitTop", "wetsuitBottom",
+  // research tools
+  "binoculars", "butterflyNet", "listeningDevice", "fieldNotebook",
+  // profession tools
+  "pickaxe", "fishingCage", "surveyFlag",
 ] as const;
 export type ItemId = (typeof ITEM_IDS)[number];
 export type Inventory = Partial<Record<ItemId, number>>;
@@ -163,6 +199,9 @@ export const ITEM_LABEL: Record<ItemId, string> = {
   rainCoat: "Rain Coat", woolSweater: "Wool Sweater", fabricDye: "Fabric Dye",
   seamstressKit: "Seamstress Kit", snorkelMask: "Snorkel Mask", divingTank: "Diving Tank",
   wetsuitTop: "Wetsuit Top", wetsuitBottom: "Wetsuit Bottom",
+  binoculars: "Binoculars", butterflyNet: "Butterfly Net",
+  listeningDevice: "Listening Device", fieldNotebook: "Field Notebook",
+  pickaxe: "Pickaxe", fishingCage: "Fishing Cage", surveyFlag: "Survey Flag",
 };
 
 // What eating an item restores.
@@ -482,6 +521,7 @@ export type ClientMessage =
   | { t: "checkName"; name: string } // login screen: is this name already taken?
   | { t: "scan" } // fire the discovery radius — log nearby species
   | { t: "equip"; item: ItemId | null } // wield a weapon (null = bare hands)
+  | { t: "wear"; slot: WornSlot; item: ItemId | null } // put on / take off a clothing or tool item
   | { t: "heal" } // patch up the nearest hurt player (uses cooked food)
   | { t: "input"; dx: number; dy: number; sprint?: boolean } // intended direction, each -1..1
   | { t: "attack"; charge?: number } // charge 0..1 from how long Space was held

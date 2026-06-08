@@ -9,6 +9,8 @@ import {
   INVASIVE_LABEL,
   ITEM_IDS,
   ITEM_LABEL,
+  WornSlot,
+  SLOT_FOR_ITEM,
   ItemId,
   LootDrop,
   NpcState,
@@ -593,12 +595,19 @@ export class Game {
     if (!me || qty <= 0) { this.closeItemMenu(); return; }
     const isWeapon = (WEAPON_ORDER as ItemId[]).includes(item);
     const isFood = !!(FOOD_VALUE as Record<string, unknown>)[item];
+    const slot = SLOT_FOR_ITEM[item] as WornSlot | undefined;
     const equipped = me.equipped === item;
+    const worn = me.appearance?.worn ?? {};
+    const isWorn = slot ? worn[slot] === item : false;
 
     const actions: Array<{ label: string; run: () => void }> = [];
-    if (isWeapon) {
-      if (equipped) actions.push({ label: "Unequip", run: () => this.net.send({ t: "equip", item: null }) });
-      else actions.push({ label: me.mode === "combat" ? "Wield" : "Equip", run: () => this.net.send({ t: "equip", item }) });
+    if (isWeapon || slot === "hand") {
+      if (equipped) actions.push({ label: "Put away", run: () => this.net.send({ t: "equip", item: null }) });
+      else actions.push({ label: me.mode === "combat" ? "Wield" : "Use", run: () => this.net.send({ t: "equip", item }) });
+    }
+    if (slot && slot !== "hand") {
+      if (isWorn) actions.push({ label: "Take off", run: () => this.net.send({ t: "wear", slot: slot!, item: null }) });
+      else actions.push({ label: "Wear", run: () => this.net.send({ t: "wear", slot: slot!, item }) });
     }
     if (isFood) actions.push({ label: "Eat", run: () => this.net.send({ t: "eat", item }) });
     actions.push({ label: "Drop", run: () => this.net.send({ t: "drop", item }) });
@@ -2271,53 +2280,71 @@ export class Game {
 
   private panelEquipHTML(me?: PlayerState): string {
     if (!me) return '<p class="panel-empty">Not joined yet.</p>';
-    // The hand slot holds different things depending on your mode.
-    const handLabel = me.mode === "combat" ? "Weapon"
-      : me.mode === "research" ? "Tool" : "Gear";
-    const handHint = me.mode === "combat" ? "wield a weapon"
-      : me.mode === "research" ? "binoculars, net, listening device…" : "pickaxe, flag, tools…";
+    const worn = me.appearance?.worn ?? {};
+    const handLabel = me.mode === "combat" ? "Hand (weapon)" : me.mode === "research" ? "Hand (tool)" : "Hand (gear)";
 
-    // Filled hand slot shows the equipped item; click to unequip.
-    let handSlot: string;
-    if (me.equipped) {
-      const col = (ITEM_COLORS as Record<string, string>)[me.equipped] ?? "#ffd54f";
-      handSlot = `<div class="slot-box filled" data-slot="hand" title="Click to unequip">
-        <span class="slot-swatch" style="background:${col}"></span>${ITEM_LABEL[me.equipped] ?? me.equipped}</div>`;
-    } else {
-      handSlot = `<div class="slot-box empty" title="${handHint}">empty — ${handHint}</div>`;
-    }
+    const slotRow = (slot: WornSlot, label: string) => {
+      const itemId = worn[slot];
+      if (itemId) {
+        const col = (ITEM_COLORS as Record<string, string>)[itemId] ?? "#7a6a4a";
+        return `<div class="slot-row">
+          <span class="slot-label">${label}</span>
+          <div class="slot-box filled" data-item="${itemId}" title="${ITEM_LABEL[itemId] ?? itemId} — click for options">
+            <span class="slot-swatch" style="background:${col}"></span>${ITEM_LABEL[itemId] ?? itemId}
+          </div></div>`;
+      }
+      return `<div class="slot-row">
+        <span class="slot-label">${label}</span>
+        <div class="slot-box empty">— empty</div></div>`;
+    };
 
-    // Currently only the hand slot is functional; others are placeholders for
-    // the worn-clothing subsystem coming next.
-    const stub = (label: string) =>
-      `<div class="slot-row"><span class="slot-label">${label}</span><div class="slot-box empty">—</div></div>`;
+    // Items in inventory that fit each slot (excluding current weapon/hand).
+    const CLOTHING_IDS: ItemId[] = [
+      "clothShirt", "clothPants", "waxedJacket", "rainCoat", "woolSweater",
+      "wetsuitTop", "wetsuitBottom", "snorkelMask", "divingTank",
+    ] as ItemId[];
+    const RESEARCH_TOOLS: ItemId[] = ["binoculars", "butterflyNet", "listeningDevice", "fieldNotebook"] as ItemId[];
+    const PROF_TOOLS: ItemId[] = ["pickaxe", "fishingCage", "surveyFlag"] as ItemId[];
 
-    // Items you can put in your hand (weapons in combat; future tools elsewhere).
-    const handItems = (WEAPON_ORDER as ItemId[]).filter((id) => (me.inventory[id] ?? 0) > 0);
-    const equipList = me.mode === "combat" && handItems.length
-      ? `<div style="font-size:10px;color:#7fd0c2;margin:8px 0 3px;font-weight:700;">Wield</div>
-         <div class="inv-grid">${handItems.map((id) => {
-            const col = (ITEM_COLORS as Record<string, string>)[id] ?? "#3a5a6a";
-            const on = me.equipped === id;
-            return `<div class="inv-cell" data-item="${id}" title="${ITEM_LABEL[id]}">
-              <div class="inv-swatch" style="background:${col};${on ? "outline:2px solid #ffd54f;outline-offset:-2px;" : ""}"></div>
-              <div class="inv-name">${ITEM_LABEL[id]}</div></div>`;
-          }).join("")}</div>`
-      : me.mode === "combat"
-        ? `<div class="panel-info" style="font-size:10px;margin-top:8px;">No weapons yet — craft a stick or buy one.</div>`
-        : `<div class="panel-info" style="font-size:10px;margin-top:8px;">${handLabel} items for ${me.mode} mode are coming soon.</div>`;
+    const availableClothing = CLOTHING_IDS.filter(id => (me.inventory[id] ?? 0) > 0);
+    const availableHand = (me.mode === "combat" ? (WEAPON_ORDER as ItemId[]) :
+      me.mode === "research" ? RESEARCH_TOOLS : PROF_TOOLS
+    ).filter(id => (me.inventory[id] ?? 0) > 0);
+
+    const wardrobeGrid = availableClothing.length
+      ? `<div style="font-size:10px;color:#7fd0c2;margin:6px 0 3px;font-weight:700">In your bag — click to wear/wield</div>
+         <div class="inv-grid">${availableClothing.map(id => {
+           const col = (ITEM_COLORS as Record<string, string>)[id] ?? "#7a6a4a";
+           const sl = SLOT_FOR_ITEM[id] as WornSlot;
+           const isOn = sl && worn[sl] === id;
+           return `<div class="inv-cell" data-item="${id}" title="${ITEM_LABEL[id]}">
+             <div class="inv-swatch" style="background:${col};${isOn?"outline:2px solid #ffd54f;outline-offset:-2px;":""}"></div>
+             <div class="inv-name">${ITEM_LABEL[id]}</div></div>`;
+         }).join("")}</div>` : "";
+
+    const handGrid = availableHand.length
+      ? `<div style="font-size:10px;color:#7fd0c2;margin:6px 0 3px;font-weight:700">Available ${me.mode === "combat" ? "weapons" : "tools"}</div>
+         <div class="inv-grid">${availableHand.map(id => {
+           const col = (ITEM_COLORS as Record<string, string>)[id] ?? "#3a5a6a";
+           const isOn = me.equipped === id;
+           return `<div class="inv-cell" data-item="${id}" title="${ITEM_LABEL[id]}">
+             <div class="inv-swatch" style="background:${col};${isOn?"outline:2px solid #ffd54f;outline-offset:-2px;":""}"></div>
+             <div class="inv-name">${ITEM_LABEL[id]}</div></div>`;
+         }).join("")}</div>` : `<div style="font-size:10px;color:#4a6b7c;margin-top:4px;">No ${me.mode==="combat"?"weapons":"tools"} in bag.</div>`;
 
     return `
       <div class="doll-wrap">
         <canvas id="doll-canvas" width="92" height="150"></canvas>
       </div>
-      ${stub("Head")}
-      ${stub("Torso")}
-      ${stub("Legs")}
-      <div class="slot-row"><span class="slot-label">${handLabel}</span>${handSlot}</div>
-      ${stub("Back")}
-      ${equipList}
-      <div class="panel-info" style="font-size:10px;color:#5a7f96;margin-top:8px;">Worn clothing slots (head/torso/legs/back) unlock with the wardrobe update.</div>
+      ${slotRow("head", "Head")}
+      ${slotRow("torso", "Torso")}
+      ${slotRow("legs", "Legs")}
+      ${slotRow("back", "Back")}
+      ${slotRow("hand", handLabel)}
+      <div style="border-top:1px solid #1d4a66;margin:8px 0 6px"></div>
+      ${wardrobeGrid}
+      ${handGrid}
+      <div class="panel-info" style="font-size:10px;color:#5a7f96;margin-top:8px;">Click a slot or bag item for options · clothing from Seamstress</div>
     `;
   }
 
@@ -2403,30 +2430,48 @@ export class Game {
     </div>`;
   }
 
+  // Cached base minimap image (just tiles, no player dot).
+  // Rebuilt only when the overview changes — never on every frame.
+  private minimapCache: OffscreenCanvas | null = null;
+  private minimapCacheKey = "";
+
   private drawMinimapPanel(me?: PlayerState) {
     const mctx = this.minimapCtx;
     if (!mctx || !this.overview) return;
     const mw = 184, mh = 150;
-    mctx.fillStyle = "#0a1c29";
-    mctx.fillRect(0, 0, mw, mh);
     const ov = this.overview;
-    const sx = mw / ov.width, sy = mh / ov.height;
-    for (let y = 0; y < ov.height; y++) {
-      for (let x = 0; x < ov.width; x++) {
-        const tile = ov.tiles[y * ov.width + x] as Tile;
-        mctx.fillStyle = (TILE_COLORS as Record<number, string>)[tile] ?? "#1c5f86";
-        mctx.fillRect(Math.floor(x*sx), Math.floor(y*sy), Math.ceil(sx)+1, Math.ceil(sy)+1);
+
+    const cacheKey = `${ov.width}x${ov.height}`;
+    if (this.minimapCacheKey !== cacheKey || !this.minimapCache) {
+      this.minimapCacheKey = cacheKey;
+      const ofc = new OffscreenCanvas(mw, mh);
+      const octx = ofc.getContext("2d")!;
+      octx.fillStyle = "#0a1c29";
+      octx.fillRect(0, 0, mw, mh);
+      const sx = mw / ov.width, sy = mh / ov.height;
+      for (let y = 0; y < ov.height; y++) {
+        for (let x = 0; x < ov.width; x++) {
+          const tile = ov.tiles[y * ov.width + x] as Tile;
+          octx.fillStyle = (TILE_COLORS as Record<number, string>)[tile] ?? "#1c5f86";
+          octx.fillRect(Math.floor(x * sx), Math.floor(y * sy), Math.ceil(sx) + 1, Math.ceil(sy) + 1);
+        }
       }
+      this.minimapCache = ofc;
     }
+
+    mctx.drawImage(this.minimapCache, 0, 0);
     if (me && this.map) {
       const px = (me.x / this.map.width) * mw;
       const py = (me.y / this.map.height) * mh;
+      mctx.fillStyle = "rgba(255,255,255,0.22)";
+      mctx.beginPath();
+      mctx.arc(px, py, 5, 0, Math.PI * 2);
+      mctx.fill();
       mctx.fillStyle = "#fff";
       mctx.beginPath();
       mctx.arc(px, py, 2.5, 0, Math.PI * 2);
       mctx.fill();
     }
-    // Border
     mctx.strokeStyle = "#1d4a66";
     mctx.lineWidth = 1;
     mctx.strokeRect(0, 0, mw, mh);
@@ -2472,6 +2517,10 @@ const ITEM_COLORS: Record<string, string> = {
   clothShirt: "#e3b0c0", clothPants: "#b0c3e3", waxedJacket: "#6b7b3a", rainCoat: "#e8d04a",
   woolSweater: "#8b6e4e", fabricDye: "#c040c0", seamstressKit: "#e891b8",
   snorkelMask: "#2ea8c0", divingTank: "#607d8b", wetsuitTop: "#1a2a3a", wetsuitBottom: "#1a2a3a",
+  // research tools
+  binoculars: "#3a5a6a", butterflyNet: "#7cb8c0", listeningDevice: "#6a3a6a", fieldNotebook: "#d4b44a",
+  // profession tools
+  pickaxe: "#8a8a9a", fishingCage: "#5a7a5a", surveyFlag: "#d44a4a",
 };
 
 // NPC display name + body colour + dialogue, keyed by kind.

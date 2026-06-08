@@ -1,5 +1,9 @@
 import {
   Appearance,
+  WornItems,
+  SLOT_FOR_ITEM,
+  CLOTHING_COLOR,
+  WornSlot,
   BuildingState,
   CampfireState,
   FurnaceState,
@@ -363,6 +367,8 @@ export class GameRoom {
   private playDeadUntil = new Map<string, number>();               // auto-cancel timer
   private jumpUntil = new Map<string, number>();                   // jump arc end time
   private npcWander = new Map<string, { homeX: number; homeY: number; targetX: number; targetY: number; nextMoveAt: number; radius: number }>();
+  // Training dummies: fake players spawned with /dummy. playerId → expiry epoch ms.
+  private dummies = new Map<string, number>();
   // --- Modes & grappling timing (server-only) ---
   private baseAppearance = new Map<string, Appearance>();      // chosen colours per player
   private modeWardrobe = new Map<string, Partial<Record<PlayerMode, Appearance>>>(); // saved per-mode look
@@ -708,6 +714,9 @@ export class GameRoom {
       case "equip":
         this.doEquip(s.playerId, msg.item);
         break;
+      case "wear":
+        this.doWear(s.playerId, msg.slot, msg.item);
+        break;
       case "heal":
         this.doHeal(s.playerId);
         break;
@@ -954,7 +963,9 @@ export class GameRoom {
   // Join = create a fresh settler, then overlay any saved D1 account on top.
   private async handleJoin(ws: WebSocket, s: Session, msg: Extract<ClientMessage, { t: "join" }>) {
     const region = this.regions.get(DEFAULT_REGION)!;
-    const spawn = this.landSpawn(region, region.spawn.x, region.spawn.y);
+    // New players wash up on the beach; returning players restore their saved position.
+    const beachPos = this.beachSpawn(region, region.spawn.x, region.spawn.y);
+    const spawn = beachPos;
     const name = (msg.name || "Settler").slice(0, 16);
     const player: PlayerState = {
       id: s.playerId,
@@ -1238,6 +1249,7 @@ export class GameRoom {
     this.movePlayers(dt, waterline, now);
     this.updateCreatures(dt, waterline, now);
     this.updateNpcWander(dt, waterline, now);
+    this.updateDummies(now);
     this.updateResourceRespawn(now);
     this.updateVehicleRust(dt, waterline, now);
     this.updateFishing(now);
@@ -2469,6 +2481,35 @@ export class GameRoom {
       this.tell(p, `Spawned a ${kind} at (${Math.round(p.x + 2)}, ${Math.round(p.y + 2)}).`);
       return;
     }
+    if (msg.startsWith("/dummy")) {
+      // Spawn a training dummy that can be grabbed and thrown. Auto-removes after 60 s.
+      const region = this.regions.get(p.region);
+      if (!region) return;
+      const DUMMY_LIFETIME_MS = 60_000;
+      const did = `dummy-${++this.idCounter}`;
+      const dx = p.x + Math.cos(p.dir) * 2.5;
+      const dy = p.y + Math.sin(p.dir) * 2.5;
+      const dummySpot = this.landSpawn(region, Math.round(dx), Math.round(dy));
+      const dummy: PlayerState = {
+        id: did, name: "Training Dummy", region: p.region,
+        x: dummySpot.x, y: dummySpot.y, dir: 0,
+        hp: 100, maxHp: 100, stamina: 100, maxStamina: 100,
+        hunger: 100, maxHunger: 100,
+        skills: defaultSkills(), banfielderPts: 0, rank: 0, isMayor: false,
+        inventory: {}, money: 0, team: null,
+        appearance: { skin: "#c4a35a", hair: "#5a3c1a", shirt: "#8d6e4c" },
+        swimming: false, dodging: false, fishing: false, sleeping: false,
+        vehicleId: null, dead: false, equipped: null, titles: [],
+        speedBoosted: false, mode: "combat", stance: "high",
+        transforming: false, grabbing: null, grabbedBy: null,
+        spin: 0, knockedOut: false, blocking: false,
+        hiding: false, playingDead: false, jumping: false, jumpPhase: 0, listenMode: false,
+      };
+      this.players.set(did, dummy);
+      this.dummies.set(did, Date.now() + DUMMY_LIFETIME_MS);
+      this.tell(p, `Training dummy spawned! It auto-removes in 60 s. (You can grab and throw it!)`);
+      return;
+    }
     if (msg === "/kill") {
       this.killPlayer(p);
       return;
@@ -2531,6 +2572,16 @@ export class GameRoom {
 
   private addItem(inv: Inventory, item: ItemId, qty: number) {
     inv[item] = (inv[item] ?? 0) + qty;
+  }
+
+  private updateDummies(now: number) {
+    for (const [id, expires] of this.dummies) {
+      if (now > expires) {
+        this.dummies.delete(id);
+        this.players.delete(id);
+        this.releaseGrab(this.players.get(id) ?? { id, grabbing: null, grabbedBy: null } as PlayerState);
+      }
+    }
   }
 
   private updateResourceRespawn(now: number) {
@@ -2727,10 +2778,67 @@ export class GameRoom {
   private doEquip(playerId: string, item: ItemId | null) {
     const p = this.players.get(playerId);
     if (!p) return;
-    if (item === null) { p.equipped = null; return; }
-    if (!WEAPONS[item]) return;            // not a weapon
-    if ((p.inventory[item] ?? 0) <= 0) return; // must own it
+    if (item === null) {
+      p.equipped = null;
+      if (p.appearance.worn) delete p.appearance.worn["hand"];
+      return;
+    }
+    const isWeapon = !!WEAPONS[item];
+    const isModeTool = SLOT_FOR_ITEM[item] === "hand";
+    if (!isWeapon && !isModeTool) return;
+    if ((p.inventory[item] ?? 0) <= 0) return;
     p.equipped = item;
+    if (!p.appearance.worn) p.appearance.worn = {};
+    p.appearance.worn["hand"] = item;
+  }
+
+  // Put on or take off a clothing / gear / tool item in a specific slot.
+  private doWear(playerId: string, slot: WornSlot, item: ItemId | null) {
+    const p = this.players.get(playerId);
+    if (!p) return;
+    if (!p.appearance.worn) p.appearance.worn = {};
+
+    if (item === null) {
+      // Unequip: remove from slot, revert appearance override.
+      delete p.appearance.worn[slot];
+      this.applyWornAppearance(p);
+      return;
+    }
+    // Validate the item can go into this slot.
+    const targetSlot = SLOT_FOR_ITEM[item];
+    if (!targetSlot || targetSlot !== slot) {
+      this.tell(p, `${item} doesn't go in the ${slot} slot.`);
+      return;
+    }
+    // Must actually own the item (except hand slot handled by doEquip).
+    if (slot !== "hand" && (p.inventory[item] ?? 0) <= 0) return;
+    // For the hand slot, delegate to the weapon/tool equip logic.
+    if (slot === "hand") { this.doEquip(playerId, item); return; }
+
+    // Take off whatever was there before.
+    delete p.appearance.worn[slot];
+    p.appearance.worn[slot] = item;
+    this.applyWornAppearance(p);
+    this.tell(p, `Wearing ${ITEM_LABEL[item] ?? item}.`);
+  }
+
+  // Recompute shirt/pants/hat appearance from the worn[] map so the world sees
+  // the correct colors without a separate "outfit" object.
+  private applyWornAppearance(p: PlayerState) {
+    const base = this.baseAppearance.get(p.id) ?? p.appearance;
+    // Start from their base skin/hair colours.
+    p.appearance.shirt = base.shirt;
+    p.appearance.pants = base.pants;
+    p.appearance.hat = base.hat;
+    if (!p.appearance.worn) return;
+    for (const item of Object.values(p.appearance.worn)) {
+      if (!item) continue;
+      const cc = CLOTHING_COLOR[item];
+      if (!cc) continue;
+      if (cc.shirt) p.appearance.shirt = cc.shirt;
+      if (cc.pants) p.appearance.pants = cc.pants;
+      if (cc.hat)   p.appearance.hat   = cc.hat;
+    }
   }
 
   private doDodge(playerId: string) {
@@ -3381,6 +3489,37 @@ export class GameRoom {
     return null;
   }
 
+  // Find a beach (Sand) tile at the water's edge near sx,sy — used to give
+  // first-time players a "wash ashore" feel (spawn in ankle-deep water).
+  private beachSpawn(region: Region, sx: number, sy: number): { x: number; y: number } {
+    const cx = Math.floor(sx), cy = Math.floor(sy);
+    for (let r = 0; r < Math.max(region.map.width, region.map.height); r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const tx = cx + dx, ty = cy + dy;
+          const tile = this.tileAt(region.map, tx + 0.5, ty + 0.5);
+          if (tile !== Tile.Sand) continue;
+          // Check that at least one adjacent tile is water (true beach edge).
+          const adjTile = (ddx: number, ddy: number) => this.tileAt(region.map, tx + ddx + 0.5, ty + ddy + 0.5);
+          const hasWater = [[1,0],[-1,0],[0,1],[0,-1]].some(([ddx, ddy]) => {
+            const t = adjTile(ddx, ddy); return t !== null && isWaterTile(t);
+          });
+          if (!hasWater) continue;
+          // Place player half a tile into the water side.
+          const waterDir = [[1,0],[-1,0],[0,1],[0,-1]].find(([ddx, ddy]) => {
+            const t = adjTile(ddx, ddy); return t !== null && isWaterTile(t);
+          }) ?? [0, 0];
+          return {
+            x: tx + 0.5 + waterDir[0] * 0.5,
+            y: ty + 0.5 + waterDir[1] * 0.5,
+          };
+        }
+      }
+    }
+    return this.landSpawn(region, sx, sy); // fallback
+  }
+
   // Snap a desired spawn to the nearest tile that stays DRY even at high tide,
   // so players never spawn (and get stuck) in the inlet.
   private landSpawn(region: Region, sx: number, sy: number): { x: number; y: number } {
@@ -3716,6 +3855,7 @@ function sanitizeAppearance(a: Appearance | undefined): Appearance {
     bodyBuild: bodyBuilds.includes(a?.bodyBuild as typeof bodyBuilds[number]) ? a!.bodyBuild : undefined,
     breastSize: breastSizes.includes(a?.breastSize as typeof breastSizes[number]) ? a!.breastSize : undefined,
     hipSize: hipSizes.includes(a?.hipSize as typeof hipSizes[number]) ? a!.hipSize : undefined,
+    worn: a?.worn && typeof a.worn === "object" ? (a.worn as WornItems) : undefined,
   };
 }
 
