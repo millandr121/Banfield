@@ -338,8 +338,8 @@ export class GameRoom {
         this.plants.set(pl.id, this.mkPlant(pl, def.id, now));
       }
     }
-    // Pre-place the forge at Ostrom's Gas Bar in Bamfield.
-    this.furnaces.set("forge-ostroms", { id: "forge-ostroms", region: "bamfield", x: 191, y: 70 });
+    // Pre-place the forge at Ostrom's Gas Bar in Bamfield (full-extent map coords).
+    this.furnaces.set("forge-ostroms", { id: "forge-ostroms", region: "bamfield", x: 842, y: 470 });
     // Pre-place a forge at the Anacla gas bar too.
     this.furnaces.set("forge-anacla",  { id: "forge-anacla",  region: "anacla",   x: 223, y: 52 });
 

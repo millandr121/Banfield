@@ -146,27 +146,30 @@ Some fixes (a **bigger inlet**, the **Grappler Bay east shore**, and **denser,
 scattered trees**) only take effect when the map is regenerated from the OSM
 data. I improved the importer; you regenerate like this:
 
+The current `bamfield.json` was already regenerated at the **full extent** of
+your OSM export (`48.7573,-125.2356 → 48.8606,-125.1061`) at `--width 1100`, so
+it now covers the whole coast from Tapaltos around into Pachena Bay and Anacla.
+The command that produced it (re-run if you tweak the OSM file or want a bigger
+`--width`):
+
 ```bash
-# Bamfield — bump --width up for a larger, more realistic scale.
-# 1100 makes the inlet noticeably wider than the old 700.
 node tools/import-osm.mjs \
   --osm-xml <your-bamfield-export>.osm \
-  --bbox 48.80,-125.225,48.858,-125.135 \
+  --bbox 48.7573,-125.2356,48.8606,-125.1061 \
   --width 1100 --id bamfield --name "Bamfield" \
-  --spawn-near "market" \
+  --spawn-near "Tides & Trails Market" \
+  --no-dem \
   --out shared/regions/bamfield.json
-
-# Anacla / Pachena Bay
-node tools/import-osm.mjs \
-  --osm-xml <your-anacla-export>.osm \
-  --bbox 48.785,-125.135,48.82,-125.072 \
-  --width 700 --id anacla --name "Anacla / Pachena Bay" \
-  --out shared/regions/anacla.json
 ```
 
-Replace `<your-...-export>.osm` with the OSM files you downloaded. After it
-runs, `npm run dev` to see the new map. If a specific bay still reads wrong, add
-`--sea-seed X,Y` pointing at a tile inside that bay's water to force-flood it.
+- `--no-dem` skips the elevation download (needs internet; the game computes a
+  sensible heightmap itself, with the tide-safe land floor).
+- Bump `--width` (e.g. 1300) for an even bigger world — but watch the JSON size;
+  1100 ≈ 3 MB / 1.46M tiles already.
+- If a specific bay still reads wrong, add `--sea-seed X,Y` pointing at a tile
+  inside that bay's water to force-flood it.
+
+After it runs, `npm run dev` to see the new map.
 
 > Heads-up: bigger `--width` = more tiles = a bigger JSON and a bit more memory.
 > The chunked loading we built handles it, but 1100 is a sensible ceiling for

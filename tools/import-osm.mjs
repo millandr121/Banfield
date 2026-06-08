@@ -375,6 +375,62 @@ function beachify(g) {
   g.t = out;
 }
 
+// BFS distance (in tiles) from every cell to the nearest Water tile.
+function distanceToWater(g) {
+  const { W, H, t } = g;
+  const d = new Int32Array(W * H).fill(-1);
+  const q = [];
+  for (let i = 0; i < W * H; i++) if (t[i] === T.Water) { d[i] = 0; q.push(i); }
+  for (let h = 0; h < q.length; h++) {
+    const i = q[h], x = i % W, y = (i / W) | 0;
+    for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+      const ni = ny * W + nx;
+      if (d[ni] === -1) { d[ni] = d[i] + 1; q.push(ni); }
+    }
+  }
+  return d;
+}
+
+// Clothe BARE grass (areas OSM left untagged) in natural coastal rainforest:
+// a grassy shore band you can build/walk on, dense forest interior, and the
+// odd rocky knoll on high ground. Without this the untagged south reads as one
+// flat featureless lawn. Only ever paints over Grass — never water/sand/roads.
+function applyLandcover(g) {
+  const { W, H, t } = g;
+  const dw = distanceToWater(g);
+  for (let i = 0; i < W * H; i++) {
+    if (t[i] !== T.Grass) continue;
+    const d = dw[i] < 0 ? 9999 : dw[i];
+    if (d <= 6) continue; // keep a grassy waterfront band (walkable shore/town)
+    const x = i % W, y = (i / W) | 0;
+    // Hash noise (non-periodic) so clearings & knolls scatter naturally instead
+    // of forming a regular polka-dot grid.
+    const v = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+    const r = v - Math.floor(v); // 0..1
+    if (d > 26 && r > 0.94) t[i] = T.Hill;       // rare ridge knoll deep inland
+    else if (r > 0.985) continue;                 // the odd meadow clearing
+    else t[i] = T.Forest;
+  }
+}
+
+// Carve a grassy margin around every road so it reads as a road through trees.
+function clearRoadMargins(g, radius = 2) {
+  const { W, H, t } = g;
+  const roads = [];
+  for (let i = 0; i < W * H; i++) if (t[i] === T.Road) roads.push(i);
+  for (const i of roads) {
+    const x = i % W, y = (i / W) | 0;
+    for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+      const ni = ny * W + nx;
+      if (t[ni] === T.Forest || t[ni] === T.Hill) t[ni] = T.Grass;
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Elevation: convert real DEM metres -> game elevation values
 // Game range: 0..100, waterline sweeps 1..30.
@@ -431,9 +487,10 @@ function autoPlaceResources(g, regionId) {
     const n = Math.sin((x * 12.9898 + y * 78.233 + salt * 37.719)) * 43758.5453;
     return n - Math.floor(n); // 0..1
   };
-  // Tighter spacing (6) + jitter gives a fuller, more natural-looking forest.
-  for (let y = 2; y < H - 2; y += 6) {
-    for (let x = 2; x < W - 2; x += 6) {
+  // Spacing 8 + jitter gives a full, natural forest without flooding the world
+  // with tens of thousands of harvest nodes now that the back-country is wooded.
+  for (let y = 2; y < H - 2; y += 8) {
+    for (let x = 2; x < W - 2; x += 8) {
       const tile = t[y * W + x];
       if (tile === T.Forest) {
         // Nudge the tree up to ±2 tiles off the grid point (staying in bounds).
@@ -647,6 +704,10 @@ async function main() {
     floodFill(g, sx, sy, T.Grass, T.Water);
   }
 
+  // 7b. Clothe the remaining bare grass (untagged interior) in rainforest so
+  //     the back-country reads as real coastal forest, not a flat lawn.
+  applyLandcover(g);
+
   // 8. Roads (on top of everything — they're authoritative). Drawn wide so the
   //    main roads read as real two-lane traffic, tracks/trails a touch narrower.
   for (const e of ways) {
@@ -659,6 +720,8 @@ async function main() {
     const thickness = trail ? 1 : major ? 3 : 2; // 3 = two-lane, 2 = service/track
     drawLine(g, geom(e), T.Road, thickness);
   }
+  // Keep a grassy verge along the roads so they're not buried in the new forest.
+  clearRoadMargins(g, 2);
 
   // 9. Docks / piers / breakwaters
   for (const e of ways) {
@@ -769,6 +832,29 @@ async function main() {
   // --- Resource nodes + invasive plants ------------------------------------
   const { nodes: resourceNodes, plants } = autoPlaceResources(g, args.id);
 
+  // --- Starter vehicles (near spawn, in THIS map's coordinate space) --------
+  // A car on the nearest road, a couple of boats on the nearest water — so they
+  // don't fall back to stale handcrafted coords on the big imported map.
+  const nearestTile = (wantTiles) => {
+    for (let r = 1; r < Math.max(gridW, gridH); r++) {
+      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const x = spawnX + dx, y = spawnY + dy;
+        if (x < 0 || y < 0 || x >= gridW || y >= gridH) continue;
+        if (wantTiles.includes(g.t[y * gridW + x])) return { x, y };
+      }
+    }
+    return null;
+  };
+  const vehicles = [];
+  const carAt = nearestTile([T.Road]);
+  if (carAt) vehicles.push({ id: `${args.id}-car-1`, kind: "car", x: carAt.x, y: carAt.y });
+  const boatAt = nearestTile([T.Water]);
+  if (boatAt) {
+    vehicles.push({ id: `${args.id}-boat-1`, kind: "boat", x: boatAt.x, y: boatAt.y });
+    vehicles.push({ id: `${args.id}-boat-2`, kind: "boat", x: boatAt.x, y: Math.min(gridH - 1, boatAt.y + 2) });
+  }
+
   // --- Output JSON ----------------------------------------------------------
   const out = {
     id: args.id,
@@ -780,7 +866,7 @@ async function main() {
     buildings,
     spawn: { x: spawnX, y: spawnY },
     travelNodes: [],      // derived dynamically at runtime by applyImported()
-    vehicles: [],         // place by hand after first look
+    vehicles,
     resourceNodes,
     plants,
   };
