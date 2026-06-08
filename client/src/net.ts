@@ -11,6 +11,9 @@ export class Net {
   }
 
   connect() {
+    // Idempotent: the login screen opens the socket early, then start() may call
+    // again — don't stack a second connection on top of a live one.
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     this.ws = new WebSocket(`${proto}://${location.host}/ws`);
     this.ws.addEventListener("open", () => {

@@ -94,6 +94,26 @@
       }
       button:hover { background: #1976d2; }
 
+      .tabs { display: flex; gap: 8px; margin: 4px 0 6px; }
+      .tab {
+        flex: 1; margin: 0; padding: 9px; font-size: 14px; font-weight: 600;
+        background: #0a1c29; color: #8fb4c9; border: 1px solid #2a5a78; border-radius: 8px;
+        cursor: pointer; width: auto;
+      }
+      .tab.active { background: #1e88e5; color: #fff; border-color: #1e88e5; }
+      .tab:hover { background: #123247; }
+      .tab.active:hover { background: #1976d2; }
+      .status { font-size: 12px; font-weight: 600; }
+      .status.free { color: #57c46a; }
+      .status.taken { color: #ff7676; }
+      .status.checking { color: #8fb4c9; }
+      .hint { color: #6f93a8; font-size: 11px; font-weight: 400; }
+      .error {
+        margin-top: 12px; padding: 9px 12px; border-radius: 8px;
+        background: rgba(229,57,53,0.16); border: 1px solid #e53935;
+        color: #ffb3b1; font-size: 13px;
+      }
+
       #hud {
         position: fixed;
         left: 12px;
@@ -162,25 +182,36 @@
         <h1 class="title">Ba<span class="swap"><span class="m">m</span><span class="n">n</span></span>field<span class="rest">,&nbsp;The Game</span></h1>
         <p class="sub">Survive low tide and high tide on the coast of Barkley Sound.</p>
 
-        <label for="name">Name</label>
-        <input id="name" type="text" maxlength="16" placeholder="Settler" />
-
-        <div class="row">
-          <div>
-            <label>Skin</label>
-            <div class="swatches"><input id="skin" type="color" value="#e0ac69" /></div>
-          </div>
-          <div>
-            <label>Hair</label>
-            <div class="swatches"><input id="hair" type="color" value="#3b2a1a" /></div>
-          </div>
-          <div>
-            <label>Shirt</label>
-            <div class="swatches"><input id="shirt" type="color" value="#2e7d32" /></div>
-          </div>
+        <div class="tabs">
+          <button type="button" id="tab-new" class="tab active">New here</button>
+          <button type="button" id="tab-return" class="tab">Returning</button>
         </div>
 
-        <canvas id="preview" width="96" height="96"></canvas>
+        <label for="name">Name <span id="name-status" class="status"></span></label>
+        <input id="name" type="text" maxlength="16" placeholder="Pick a unique name" autocomplete="off" />
+
+        <label for="pass">Passphrase <span class="hint">— remembers your character on any device</span></label>
+        <input id="pass" type="password" maxlength="64" placeholder="Something you'll remember" autocomplete="off" />
+
+        <div id="design">
+          <div class="row">
+            <div>
+              <label>Skin</label>
+              <div class="swatches"><input id="skin" type="color" value="#e0ac69" /></div>
+            </div>
+            <div>
+              <label>Hair</label>
+              <div class="swatches"><input id="hair" type="color" value="#3b2a1a" /></div>
+            </div>
+            <div>
+              <label>Shirt</label>
+              <div class="swatches"><input id="shirt" type="color" value="#2e7d32" /></div>
+            </div>
+          </div>
+          <canvas id="preview" width="96" height="96"></canvas>
+        </div>
+
+        <div id="auth-error" class="error hidden"></div>
         <button id="play">Wash ashore</button>
       </div>
     </div>

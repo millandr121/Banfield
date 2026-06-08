@@ -111,10 +111,18 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
 - [x] **Persistence** — Cloudflare D1 (`banfieldthegame`). Players save/load by
       name with a per-device claim secret; autosave every 30s + on disconnect.
       Schema in `server/schema.sql`.
-- [ ] **Login screen** + **recovery emails** (needs an email provider). The
-      `secret`/`email` columns + claim flow are already in place to build on.
-- [ ] **Intro / character creation** — pick a unique (untaken) name + design
-      your look. Change name every 30 days; change look at your own house.
+- [x] **Login / register screen** — the intro now has **New here** vs
+      **Returning** tabs. New players pick a name (checked live for availability
+      against the DB), set a **passphrase**, and design their look; returning
+      players sign in with name + passphrase. The passphrase IS the cross-device
+      account claim, so your character follows you to any device — real recovery
+      without an email provider. Wrong passphrase on a registered name is
+      refused (no more silent guest-variant). Server: `checkName` +
+      `joinDenied`; passphrase stored in the existing `players.secret` column.
+- [ ] **Recovery emails** — optional add-on once an email provider is wired
+      (the `email` column already exists); passphrase login covers recovery now.
+- [ ] **Intro / character creation polish** — richer look options (hair styles,
+      outfits). Change name every 30 days; change look at your own house.
 - [ ] **OSRS-style UI**: visible backpack/inventory, skill progression & stats,
       a menu/tab bar, a controls helper you can toggle on/off.
 - [ ] **Community leaderboard** menu — current unofficial mayor, BMSC President

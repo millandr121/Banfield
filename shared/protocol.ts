@@ -420,7 +420,8 @@ export interface LeaderboardData {
 }
 
 export type ClientMessage =
-  | { t: "join"; name: string; appearance: Appearance; secret?: string }
+  | { t: "join"; name: string; appearance: Appearance; secret?: string; register?: boolean }
+  | { t: "checkName"; name: string } // login screen: is this name already taken?
   | { t: "scan" } // fire the discovery radius — log nearby species
   | { t: "equip"; item: ItemId | null } // wield a weapon (null = bare hands)
   | { t: "heal" } // patch up the nearest hurt player (uses cooked food)
@@ -470,6 +471,9 @@ export type ServerMessage =
   | { t: "leaderboard"; data: LeaderboardData } // current town title holders
   // A transient visual effect (e.g. a ranged-shot tracer) for clients to draw.
   | { t: "fx"; kind: "tracer"; region: RegionId; x1: number; y1: number; x2: number; y2: number; weapon: string }
+  // Login screen support: live name-availability + a rejected sign-in.
+  | { t: "nameStatus"; name: string; taken: boolean }
+  | { t: "joinDenied"; reason: string }
   | { t: "chat"; from: string; msg: string; channel: "global" | "team" | "private" };
 
 // Helper shared by both sides: a tile is under water when its (per-tile)

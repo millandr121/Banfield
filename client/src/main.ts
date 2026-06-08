@@ -1,23 +1,34 @@
 import { Appearance } from "../../shared/protocol";
 import { Game } from "./game";
 
-// Character creator -> game bootstrap.
+// Login / register screen -> game bootstrap.
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const nameInput = $<HTMLInputElement>("name");
+const passInput = $<HTMLInputElement>("pass");
 const skinInput = $<HTMLInputElement>("skin");
 const hairInput = $<HTMLInputElement>("hair");
 const shirtInput = $<HTMLInputElement>("shirt");
 const previewCanvas = $<HTMLCanvasElement>("preview");
 const pctx = previewCanvas.getContext("2d")!;
+const tabNew = $<HTMLButtonElement>("tab-new");
+const tabReturn = $<HTMLButtonElement>("tab-return");
+const designBox = $<HTMLDivElement>("design");
+const playBtn = $<HTMLButtonElement>("play");
+const nameStatus = $<HTMLSpanElement>("name-status");
+const authError = $<HTMLDivElement>("auth-error");
 
-// Restore last-used identity.
+let mode: "new" | "return" = "new";
+
+// Restore last-used identity (name + look; never the passphrase).
 const saved = JSON.parse(localStorage.getItem("bamfield-char") || "null");
 if (saved) {
   nameInput.value = saved.name ?? "";
   skinInput.value = saved.appearance?.skin ?? skinInput.value;
   hairInput.value = saved.appearance?.hair ?? hairInput.value;
   shirtInput.value = saved.appearance?.shirt ?? shirtInput.value;
+  // If we've played before, default to the returning-player tab.
+  if (saved.name) setMode("return");
 }
 
 function appearance(): Appearance {
@@ -47,14 +58,89 @@ for (const el of [skinInput, hairInput, shirtInput]) {
 }
 drawPreview();
 
-$<HTMLButtonElement>("play").addEventListener("click", () => {
-  const name = nameInput.value.trim() || "Settler";
+function setMode(m: "new" | "return") {
+  mode = m;
+  tabNew.classList.toggle("active", m === "new");
+  tabReturn.classList.toggle("active", m === "return");
+  designBox.classList.toggle("hidden", m === "return"); // returning players keep their look
+  playBtn.textContent = m === "new" ? "Wash ashore" : "Sign in";
+  nameStatus.textContent = "";
+  nameStatus.className = "status";
+  authError.classList.add("hidden");
+  if (m === "new") scheduleNameCheck();
+}
+tabNew.addEventListener("click", () => setMode("new"));
+tabReturn.addEventListener("click", () => setMode("return"));
+
+// --- wire the game socket early so we can check names before committing ------
+const game = new Game($<HTMLCanvasElement>("game"));
+game.connect();
+
+game.onNameStatus = (name, taken) => {
+  if (mode !== "new" || name !== nameInput.value.trim()) return;
+  if (taken) {
+    nameStatus.textContent = "· taken";
+    nameStatus.className = "status taken";
+  } else {
+    nameStatus.textContent = "· available";
+    nameStatus.className = "status free";
+  }
+};
+
+game.onJoinDenied = (reason) => {
+  authError.textContent = reason;
+  authError.classList.remove("hidden");
+  playBtn.disabled = false;
+  playBtn.textContent = mode === "new" ? "Wash ashore" : "Sign in";
+};
+
+let checkTimer: number | undefined;
+function scheduleNameCheck() {
+  window.clearTimeout(checkTimer);
+  const name = nameInput.value.trim();
+  if (mode !== "new") { nameStatus.textContent = ""; return; }
+  if (name.length < 2) { nameStatus.textContent = ""; nameStatus.className = "status"; return; }
+  nameStatus.textContent = "· checking…";
+  nameStatus.className = "status checking";
+  checkTimer = window.setTimeout(() => game.checkName(name), 300);
+}
+nameInput.addEventListener("input", () => { authError.classList.add("hidden"); scheduleNameCheck(); });
+
+function submit() {
+  const name = nameInput.value.trim();
+  const pass = passInput.value;
+  authError.classList.add("hidden");
+  if (name.length < 2) { showError("Pick a name (at least 2 characters)."); return; }
+  if (pass.length < 4) { showError("Choose a passphrase of at least 4 characters — it's how you log back in."); return; }
+  if (mode === "new" && nameStatus.classList.contains("taken")) {
+    showError("That name's taken. Pick another, or switch to “Returning”."); return;
+  }
   const app = appearance();
   localStorage.setItem("bamfield-char", JSON.stringify({ name, appearance: app }));
 
+  playBtn.disabled = true;
+  playBtn.textContent = "Connecting…";
+  game.start(name, app, pass, mode === "new");
+
+  // Reveal the HUD; if the join is denied, onJoinDenied re-enables the form.
   $("creator").classList.add("hidden");
   for (const id of ["hud", "help", "log"]) $(id).classList.remove("hidden");
+}
 
-  const game = new Game($<HTMLCanvasElement>("game"));
-  game.start(name, app);
-});
+function showError(msg: string) {
+  authError.textContent = msg;
+  authError.classList.remove("hidden");
+}
+
+// A denied sign-in must bring the form back so they can retry.
+const origDenied = game.onJoinDenied!;
+game.onJoinDenied = (reason) => {
+  $("creator").classList.remove("hidden");
+  for (const id of ["hud", "help", "log"]) $(id).classList.add("hidden");
+  origDenied(reason);
+};
+
+playBtn.addEventListener("click", submit);
+for (const el of [nameInput, passInput]) {
+  el.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+}

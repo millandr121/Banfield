@@ -551,6 +551,10 @@ export class GameRoom {
         void this.handleJoin(ws, s, msg);
         break;
       }
+      case "checkName": {
+        void this.handleCheckName(ws, msg.name);
+        break;
+      }
       case "input": {
         const len = Math.hypot(msg.dx, msg.dy);
         s.dx = len > 1 ? msg.dx / len : msg.dx;
@@ -727,25 +731,31 @@ export class GameRoom {
       titles: [],
     };
 
-    // Restore a saved account if one exists for this name (and the claim
-    // secret matches, once claimed). Best-effort — never block joining on DB.
+    // Account flow. The `secret` is now the player's chosen passphrase, so an
+    // account follows them across devices (real login, no email needed yet).
+    //   • Returning to a claimed name → the passphrase MUST match, else denied.
+    //   • Registering / a never-claimed name → claim it with this passphrase.
+    // Best-effort — if the DB is down we just play in-memory.
     let restored = false;
     try {
       const row = await this.loadPlayer(name);
       if (row) {
-        const claimed = row.secret as string | null;
-        const ok = !claimed || !msg.secret || claimed === msg.secret;
-        if (ok) {
-          this.applySave(player, row);
-          this.savedNames.set(s.playerId, name);
-          restored = true;
-        } else {
-          // Name taken by another device — let them in under a guest variant.
-          player.name = (name + "~" + s.playerId.slice(-2)).slice(0, 16);
+        const claimed = (row.secret as string | null) || "";
+        if (claimed && claimed !== (msg.secret ?? "")) {
+          // Wrong passphrase for an existing account — refuse the sign-in.
+          this.send(ws, {
+            t: "joinDenied",
+            reason: `"${name}" is already registered. Wrong passphrase — try again, or pick a new name.`,
+          });
+          return;
         }
+        this.applySave(player, row);
+        this.savedNames.set(s.playerId, name);
+        restored = true;
+        if (!claimed && msg.secret) await this.savePlayer(player, msg.secret); // claim a legacy unclaimed name
       } else {
         this.savedNames.set(s.playerId, name);
-        await this.savePlayer(player, msg.secret ?? null); // claim the name now
+        await this.savePlayer(player, msg.secret ?? null); // register & claim the name now
       }
     } catch { /* DB unavailable — play in-memory only */ }
 
@@ -761,6 +771,19 @@ export class GameRoom {
   private async loadPlayer(name: string): Promise<Record<string, unknown> | null> {
     if (!this.env.DB) return null;
     return await this.env.DB.prepare("SELECT * FROM players WHERE name = ?").bind(name).first();
+  }
+
+  // Login screen: report whether a name is already registered. A name that
+  // exists but was never claimed (no secret) still counts as "taken" so two
+  // people don't collide. Also treats a name currently online as taken.
+  private async handleCheckName(ws: WebSocket, rawName: string) {
+    const name = (rawName || "").trim().slice(0, 16);
+    if (!name) { this.send(ws, { t: "nameStatus", name: rawName, taken: false }); return; }
+    let taken = [...this.players.values()].some((p) => p.name.toLowerCase() === name.toLowerCase());
+    if (!taken) {
+      try { taken = !!(await this.loadPlayer(name)); } catch { /* DB down — treat as free */ }
+    }
+    this.send(ws, { t: "nameStatus", name, taken });
   }
 
   private applySave(p: PlayerState, row: Record<string, unknown>) {

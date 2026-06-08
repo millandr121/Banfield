@@ -89,6 +89,11 @@ export class Game {
   // oblique character's legs only stride while actually moving.
   private gait = new Map<string, { x: number; y: number; phase: number; moving: number }>();
 
+  // Login-screen hooks (main.ts wires these before the game proper starts).
+  onNameStatus?: (name: string, taken: boolean) => void;
+  onJoinDenied?: (reason: string) => void;
+  private started = false;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d")!;
@@ -99,19 +104,24 @@ export class Game {
     window.addEventListener("keyup", (e) => this.onKey(e, false));
   }
 
-  start(name: string, appearance: Appearance) {
+  // Open the socket early so the login screen can check name availability
+  // before the player commits. Idempotent.
+  connect() {
     this.net.connect();
-    // A per-device claim token so your saved account loads back to you. Stored
-    // locally; becomes the basis of the real login/recovery flow later.
-    let secret = "";
-    try {
-      secret = localStorage.getItem("banfield-secret") ?? "";
-      if (!secret) {
-        secret = (crypto.randomUUID?.() ?? String(Math.random()).slice(2)) + Date.now().toString(36);
-        localStorage.setItem("banfield-secret", secret);
-      }
-    } catch { /* private mode — play unclaimed */ }
-    this.net.send({ t: "join", name, appearance, secret });
+  }
+
+  // Ask the server whether a name is already registered (login screen).
+  checkName(name: string) {
+    this.net.send({ t: "checkName", name });
+  }
+
+  // Submit a sign-in / registration. `secret` is the player's passphrase, which
+  // doubles as the cross-device account claim (real recovery, no email yet).
+  start(name: string, appearance: Appearance, secret: string, register = false) {
+    this.net.connect();
+    this.net.send({ t: "join", name, appearance, secret, register });
+    if (this.started) return; // a retry after a denied sign-in — loop already runs
+    this.started = true;
     requestAnimationFrame(() => this.frame());
 
     // Chat input box — wired up once.
@@ -326,6 +336,10 @@ export class Game {
           }
         }
       }
+    } else if (m.t === "nameStatus") {
+      this.onNameStatus?.(m.name, m.taken);
+    } else if (m.t === "joinDenied") {
+      this.onJoinDenied?.(m.reason);
     } else if (m.t === "snapshot") {
       this.snap = m.snapshot;
     } else if (m.t === "logbook") {
