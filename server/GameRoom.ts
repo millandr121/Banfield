@@ -11,6 +11,7 @@ import {
   CreatureState,
   FOOD_VALUE,
   INVASIVE_LABEL,
+  ITEM_IDS,
   ITEM_LABEL,
   Inventory,
   InvasiveKind,
@@ -22,6 +23,7 @@ import {
   RegionId,
   ResourceNode,
   ServerMessage,
+  SKILL_NAMES,
   SkillName,
   Snapshot,
   LeaderboardData,
@@ -138,9 +140,17 @@ const VIEW_RADIUS = 55; // tiles: interest-management radius for dense entities
 // Swimming & drowning --------------------------------------------------------
 const SWIM_STAMINA_DRAIN = 9;   // stamina/sec while actively swimming in deep water
 const SWIM_TIRED_MULT = 0.55;   // speed multiplier once stamina is gone
-const FLOAT_GRACE_MS = 60_000;  // you can float in deep water this long before drowning
+const FLOAT_GRACE_MS = 180_000; // you can float in deep water this long before drowning
 const DROWN_DPS = 7;            // hp/sec lost once you've floated past the grace period
 const DROWN_DPS_TIRED = 12;     // faster if you're also out of stamina
+
+// Natural disaster rarity (seeded daily check) --------------------------------
+// Uses a deterministic hash of the calendar day so events are reproducible and
+// the server only rolls once per day rather than every 60 s.
+// King tide: ~1/15 days = ~twice a month of server uptime.
+// Tsunami:  ~1/365 days = ~once per real year (OSRS 3rd-age rare).
+const KING_TIDE_DAILY_P = 1 / 15;
+const TSUNAMI_DAILY_P   = 1 / 365;
 
 // Vehicles -------------------------------------------------------------------
 const CAR_SPEED = 7.5; // tiles/sec on a road
@@ -316,8 +326,10 @@ export class GameRoom {
   private event: "none" | "king" | "tsunami" = "none";
   private eventUntil = 0;
   private nextEventCheck = Date.now() + 60_000;
+  private lastEventDayKey = -1;
   private nextRankCheck = 0;
   private mayorId: string | null = null;
+  private godPlayers = new Set<string>(); // admin god-mode (testing only)
 
   private env: Env;
   private nextSave = 0;                       // periodic autosave timer
@@ -944,23 +956,40 @@ export class GameRoom {
   private updateEvents(now: number) {
     if (this.event !== "none" && now > this.eventUntil) {
       this.broadcastLog(
-        this.event === "tsunami" ? "The tsunami recedes." : "The king tide eases.",
+        this.event === "tsunami" ? "The tsunami recedes. (Banfielder pts awarded to all survivors online!)" : "The king tide eases.",
       );
+      // Award Banfielder pts to all online players for surviving a natural disaster.
+      if (this.event === "tsunami" || this.event === "king") {
+        const bonus = this.event === "tsunami" ? 50 : 10;
+        for (const p of this.players.values()) {
+          if (!p.dead) {
+            p.banfielderPts += bonus;
+            this.tell(p, `You survived a ${this.event === "tsunami" ? "tsunami" : "king tide"}! +${bonus} Banfielder pts.`);
+          }
+        }
+      }
       this.event = "none";
     }
     if (now > this.nextEventCheck) {
       this.nextEventCheck = now + 60_000;
-      if (this.tideLevel(now) > 0.6) {
-        const roll = Math.random();
-        if (roll < 0.04) {
-          this.event = "tsunami";
-          this.eventUntil = now + 20_000;
-          this.broadcastLog("TSUNAMI INCOMING — get to high ground!");
-        } else if (roll < 0.2) {
-          this.event = "king";
-          this.eventUntil = now + 40_000;
-          this.broadcastLog("A king tide is rolling in.");
-        }
+      if (this.event !== "none") return; // already an active event
+
+      // Seeded daily roll: the same calendar day always rolls the same result,
+      // so restarts don't double-trigger. One event maximum per day.
+      const dayKey = Math.floor(now / 86_400_000);
+      if (dayKey === this.lastEventDayKey) return;
+      this.lastEventDayKey = dayKey;
+
+      const r1 = seededHash(dayKey);
+      const r2 = seededHash(dayKey ^ 0xDEAD_BEEF);
+      if (r1 < TSUNAMI_DAILY_P) {
+        this.event = "tsunami";
+        this.eventUntil = now + 60_000; // 1 minute to get to high ground
+        this.broadcastLog("⚠ TSUNAMI INCOMING — get to high ground immediately!");
+      } else if (r2 < KING_TIDE_DAILY_P) {
+        this.event = "king";
+        this.eventUntil = now + 600_000; // 10-minute king tide
+        this.broadcastLog("A king tide is rolling in — watch the inlet!");
       }
     }
   }
@@ -1013,13 +1042,13 @@ export class GameRoom {
         p.y = ny;
       }
 
-      // Drowning: you float fine in deep water for about a minute, but if you
+      // Drowning: you float fine in deep water for 3 min, but if you
       // don't reach the shallows in time you start to go under — faster if your
       // stamina is spent. Not easy to drown, but you must swim for shore.
       if (p.swimming) {
         if (!this.deepSince.has(p.id)) this.deepSince.set(p.id, now);
         const floated = now - (this.deepSince.get(p.id) ?? now);
-        if (floated > FLOAT_GRACE_MS) {
+        if (floated > FLOAT_GRACE_MS && !this.godPlayers.has(p.id)) {
           if (floated - dt * 1000 <= FLOAT_GRACE_MS) this.tell(p, "You're going under — swim to shore!");
           p.hp -= (p.stamina <= 0 ? DROWN_DPS_TIRED : DROWN_DPS) * dt;
           if (p.hp <= 0 && !p.dead) this.killPlayer(p);
@@ -1116,6 +1145,7 @@ export class GameRoom {
           if (d < COLLISION_RANGE) {
             const ts = this.sessionFor(p.id);
             if (ts && now < ts.iframeUntil) continue; // dodging = you leaped clear
+            if (this.godPlayers.has(p.id)) continue; // god mode: immune
             const dmg = activeSpeed * 6;
             p.hp -= dmg;
             this.applyKnockback(p.id, p.x - v.x, p.y - v.y, activeSpeed * 1.5);
@@ -1345,6 +1375,12 @@ export class GameRoom {
   private updateHunger(dt: number) {
     for (const p of this.players.values()) {
       if (p.dead) continue;
+      if (this.godPlayers.has(p.id)) {
+        p.hunger = p.maxHunger; // god mode: no hunger drain
+        p.hp = p.maxHp;
+        this.recomputeMaxHp(p);
+        continue;
+      }
       const s = this.sessionFor(p.id);
       const working = s ? s.dx !== 0 || s.dy !== 0 : false;
       const decay = HUNGER_DECAY + (working ? HUNGER_WORK_EXTRA : 0);
@@ -1793,6 +1829,100 @@ export class GameRoom {
       return;
     }
 
+    // ---- Admin/testing commands (open to all for now) -----------------------
+    if (msg.startsWith("/give ")) {
+      const parts = msg.slice(6).trim().split(/\s+/);
+      let qty = 1, target = "";
+      if (parts.length >= 2) {
+        const n0 = parseInt(parts[0]), n1 = parseInt(parts[1]);
+        if (!isNaN(n0)) { qty = n0; target = parts[1] ?? ""; }
+        else { target = parts[0]; qty = isNaN(n1) ? 1 : n1; }
+      } else { target = parts[0] ?? ""; }
+      const sk = target.toLowerCase();
+      const matchSkill = SKILL_NAMES.find((s) => s.toLowerCase() === sk);
+      const matchItem = ITEM_IDS.find((id) => id.toLowerCase() === sk);
+      if (matchSkill) {
+        p.skills[matchSkill] = qty * qty; // qty = desired level, xp = level²
+        this.tell(p, `Skill ${matchSkill} → level ${qty} (${qty * qty} XP).`);
+      } else if (matchItem) {
+        this.addItem(p.inventory, matchItem, qty);
+        this.tell(p, `Gave ${qty}× ${ITEM_LABEL[matchItem]}.`);
+      } else {
+        this.tell(p, `Unknown: "${target}". Items: ${ITEM_IDS.join(" ")} | Skills: ${SKILL_NAMES.join(" ")}`);
+      }
+      return;
+    }
+    if (msg.startsWith("/money ")) {
+      const n = parseInt(msg.slice(7).trim());
+      if (isNaN(n)) { this.tell(p, "Usage: /money [amount]"); return; }
+      p.money += n;
+      this.tell(p, `Added $${n}. Balance: $${p.money}.`);
+      return;
+    }
+    if (msg.startsWith("/tp ")) {
+      const [, , rawX, rawY] = msg.split(/\s+/);
+      const tx = parseFloat(rawX ?? ""), ty = parseFloat(rawY ?? "");
+      if (isNaN(tx) || isNaN(ty)) { this.tell(p, "Usage: /tp [x] [y]"); return; }
+      p.x = tx; p.y = ty;
+      this.tell(p, `Teleported to (${tx}, ${ty}).`);
+      return;
+    }
+    if (msg.startsWith("/god")) {
+      if (this.godPlayers.has(p.id)) {
+        this.godPlayers.delete(p.id);
+        this.tell(p, "God mode OFF.");
+      } else {
+        this.godPlayers.add(p.id);
+        p.hp = p.maxHp; p.hunger = p.maxHunger; p.stamina = p.maxStamina;
+        this.tell(p, "God mode ON — immune to all damage, hunger, and drowning.");
+      }
+      return;
+    }
+    if (msg.startsWith("/tide ")) {
+      const arg = msg.slice(6).trim().toLowerCase();
+      const now = Date.now();
+      if (arg === "tsunami") {
+        this.event = "tsunami"; this.eventUntil = now + 60_000;
+        this.broadcastLog("⚠ TSUNAMI INCOMING — get to high ground immediately!");
+      } else if (arg === "king") {
+        this.event = "king"; this.eventUntil = now + 600_000;
+        this.broadcastLog("A king tide is rolling in — watch the inlet!");
+      } else if (arg === "none" || arg === "low" || arg === "normal") {
+        this.event = "none";
+        this.tell(p, "Tide event cleared.");
+      } else {
+        this.tell(p, "Usage: /tide [tsunami|king|none]");
+      }
+      return;
+    }
+    if (msg.startsWith("/spawn ")) {
+      const kind = msg.slice(7).trim() as CreatureKind;
+      const region = this.regions.get(p.region);
+      if (!region) return;
+      const id = `spawn-${kind}-${Date.now()}`;
+      this.creatures.set(id, { id, kind, region: p.region, x: p.x + 2, y: p.y + 2, hp: creatureHp(kind) });
+      this.tell(p, `Spawned a ${kind} at (${Math.round(p.x + 2)}, ${Math.round(p.y + 2)}).`);
+      return;
+    }
+    if (msg === "/kill") {
+      this.killPlayer(p);
+      return;
+    }
+    if (msg === "/heal") {
+      p.hp = p.maxHp; p.hunger = p.maxHunger; p.stamina = p.maxStamina;
+      this.tell(p, "Fully healed.");
+      return;
+    }
+    if (msg.startsWith("/where") || msg.startsWith("/pos")) {
+      this.tell(p, `(${Math.round(p.x)}, ${Math.round(p.y)}) in ${p.region} | HP: ${Math.round(p.hp)}/${p.maxHp} | $${p.money}`);
+      return;
+    }
+    if (msg === "/help" || msg === "/commands") {
+      this.tell(p, "Commands: /give [qty] [item|skill] | /money [n] | /tp [x] [y] | /god | /tide [tsunami|king|none] | /spawn [creature] | /kill | /heal | /where | /who | /team [name]");
+      return;
+    }
+    // ---- End admin commands -------------------------------------------------
+
     // Channels: /// private (to a named player), // team, / or plain = global.
     if (msg.startsWith("///")) {
       const rest = msg.slice(3).trim();
@@ -1921,6 +2051,7 @@ export class GameRoom {
     if (target.dead) return;
     const ts = this.sessionFor(target.id);
     if (ts && Date.now() < ts.iframeUntil) return; // dodged
+    if (this.godPlayers.has(target.id)) return; // god mode: immune
     target.hp -= damage;
     this.applyKnockback(target.id, target.x - attacker.x, target.y - attacker.y, knockback);
     this.giveXP(attacker, "combat", damage * 0.15);
@@ -2395,6 +2526,7 @@ export class GameRoom {
       // A well-timed dodge phases you through the hit entirely.
       const ts = this.sessionFor(target.player.id);
       if (ts && Date.now() < ts.iframeUntil) return;
+      if (this.godPlayers.has(target.player.id)) return; // god mode: immune
       target.player.hp -= dmg;
       // Shove the player away from the attacker (bounce-back).
       this.applyKnockback(target.player.id, target.player.x - c.x, target.player.y - c.y, HIT_KNOCKBACK);
@@ -2774,6 +2906,14 @@ function pickFish(depth: number, hasLure: boolean, level: number): ItemId {
     return r < 0.52 ? "salmon" : r < 0.88 ? "fish" : "lingcod";
   }
   return "fish"; // shore — small fry
+}
+
+// Deterministic hash of an integer → float in [0, 1). Used for seeded daily
+// event rolls so the same day always produces the same disaster outcome even
+// across server restarts.
+function seededHash(n: number): number {
+  const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return s - Math.floor(s);
 }
 
 function creatureHp(kind: CreatureKind): number {

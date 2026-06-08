@@ -50,6 +50,8 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
 - [x] Oblique buildings (wall facade, pitched roof, windows, door)
 - [x] Taller trees with trunks; Y-sorting (depth overlap)
 - [x] Marine depth-reveal (fin/blow/ripple; faint body under the surface)
+- [x] **Flood grace period extended** (180 s → was 60 s). Also bumped to 3 min
+      so crossing the inlet doesn't silently drown you mid-swim.
 - [ ] **BUG: fish shows full body AND fin at once** (double-render glitch) —
       deep water should show ONLY the fin, no full body.
 - [ ] **BUG: character faces the wrong way walking left/right** (hair on the
@@ -132,6 +134,9 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
       earns Banfielder pts and feeds the responder rank.
 - [x] **Community leaderboard** (K) — all current title-holders + top Banfielders.
 - [x] **Death rework** — now costs 35% Banfielder pts + randomized skill XP.
+- [x] **Admin / test commands** — `/give [qty] [item|skill]`, `/money [n]`, `/tp [x] [y]`,
+      `/god` (invincible), `/tide [tsunami|king|none]`, `/spawn [creature]`,
+      `/heal`, `/kill`, `/where`. Open to everyone for now (lock down later).
 - [ ] **Scrapyard** (up Bamfield Main Rd) — buy **vehicles/cars**.
 - [ ] **Breaker's Marine** — buy **boats**.
 - [ ] **Vehicle ownership** + sell/trade via "pinkslips"; **locking**.
@@ -140,6 +145,41 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
 - [ ] Mayor / chief / responders can tag players **wanted** without cause.
 - [ ] **Wildfires** + fire-fighting (feeds the Fire Chief role) — part of the
       natural-disaster system alongside tsunami / king tides.
+- [x] **Natural-disaster rarity rework** — king tides now seeded by real calendar
+      day (~1/15 days = ~2×/month); tsunamis ~1/365 days = OSRS 3rd-age rare.
+      Surviving either awards Banfielder pts (king tide +10, tsunami +50).
+- [ ] **Disaster logbook achievement** — log the specific date + event when
+      a player survives a king tide or tsunami; visible in the field logbook.
+- [ ] **BUG LOG: "dragged under" random death** — player dies with "dragged under"
+      message after swimming and returning to shore. Root cause: FLOAT_GRACE_MS
+      was only 60 s; at 3300-tile scale the inlet takes ~90 s to cross when
+      tired. Fixed grace to 180 s. Suspect also flares during king tides when
+      shore tiles briefly become swimming depth. Monitor for recurrence.
+
+## 7. FUTURE — BIG RESEARCH PUSH (species catalog)
+All of the below is a future multi-session effort. Not started.
+- [ ] **Full NW Vancouver Island species encyclopedia** — catalog every species
+      present near Bamfield: trees, shrubs, berries, kelp types (bull kelp,
+      giant kelp, etc.), flowers, mosses, lichens, mushrooms, intertidal
+      invertebrates (barnacles, mussels, chitons, sea stars, urchins, nudibranchs,
+      anemones, limpets, hermit crabs, purple sea urchin, ochre star, turban
+      snail, sea cucumber), fish (coho, chinook, steelhead, rockfish, cabezon,
+      wolf eel, halibut, dungeness crab, Tanner crab, prawn), marine mammals
+      (harbour seal, Steller sea lion, California sea lion, harbour porpoise,
+      Dall's porpoise, Pacific white-sided dolphin, grey whale, humpback,
+      minke, orca), land mammals (black-tailed deer, elk, black bear, cougar,
+      wolf, river otter, mink, marten, raccoon, beaver, muskrat, Douglas
+      squirrel), birds (bald eagle, great blue heron, osprey, kingfisher,
+      marbled murrelet, rhinoceros auklet, tufted puffin, common murre, pigeon
+      guillemot, western grebe, loon, scoter, surf bird, black oystercatcher,
+      dunlin, turnstone, cedar waxwing, Steller's jay, raven, crow, varied
+      thrush, winter wren, golden-crowned kinglet), insects (Faun swallowtail,
+      common wood nymph, bumblebee, dragonfly).
+- [ ] Each species: common name + scientific name, real rarity, one-sentence
+      field fact, OSRS-style rarity label, distinct art sprite true to life.
+- [ ] **Art redesign backend** — admin UI to edit existing tile/creature sprites,
+      create new art assets, patch map tiles, and push live without redeployment.
+      (Significant implementation effort — a future session.)
 
 ---
 
