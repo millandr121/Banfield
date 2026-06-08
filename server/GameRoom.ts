@@ -358,6 +358,11 @@ export class GameRoom {
   private lastDrink = new Map<string, number>(); // throttle freshwater sips
   private speedBoostUntil = new Map<string, number>(); // playerId → boost expiry ms
   private lootDrops = new Map<string, LootDrop>(); // ground loot waiting to be picked up
+  // --- Hide / play-dead / jump / listen ---
+  private hidingAt = new Map<string, { x: number; y: number }>(); // playerId → hiding pos
+  private playDeadUntil = new Map<string, number>();               // auto-cancel timer
+  private jumpUntil = new Map<string, number>();                   // jump arc end time
+  private npcWander = new Map<string, { homeX: number; homeY: number; targetX: number; targetY: number; nextMoveAt: number; radius: number }>();
   // --- Modes & grappling timing (server-only) ---
   private baseAppearance = new Map<string, Appearance>();      // chosen colours per player
   private modeWardrobe = new Map<string, Partial<Record<PlayerMode, Appearance>>>(); // saved per-mode look
@@ -439,16 +444,20 @@ export class GameRoom {
     // `near` is a building name/id substring; `atAnacla` pins the NPC by the
     // Anacla bus stop (it's the SE corner of the one big Bamfield world now).
     const cfg: Array<{ id: string; kind: NpcState["kind"]; region: RegionId; near?: string; atAnacla?: boolean }> = [
-      { id: "npc-naturalist", kind: "naturalist", region: "bamfield", near: "Marine Sciences" },
-      { id: "npc-scientist",  kind: "scientist",  region: "bamfield", near: "Whale Lab" },
-      { id: "npc-historian",  kind: "historian",  region: "bamfield", near: "Mercantile" },
-      { id: "npc-pirate",     kind: "pirate",     region: "bamfield", near: "Breakers" },
-      { id: "npc-boatdealer", kind: "boatdealer", region: "bamfield", near: "Breakers" },
-      { id: "npc-eastsider",  kind: "eastsider",  region: "bamfield", near: "East Dock" },
-      { id: "npc-westsider",  kind: "westsider",  region: "bamfield", near: "West Dock" },
-      { id: "npc-mayor",      kind: "mayor",      region: "bamfield", atAnacla: true },
-      { id: "npc-huuayaht",   kind: "huuayaht",   region: "bamfield", near: "Huu-ay-aht" },
-      { id: "npc-icevendor",  kind: "icevendor",  region: "bamfield", atAnacla: true },
+      { id: "npc-naturalist",  kind: "naturalist",     region: "bamfield", near: "Marine Sciences" },
+      { id: "npc-scientist",   kind: "scientist",      region: "bamfield", near: "Whale Lab" },
+      { id: "npc-historian",   kind: "historian",      region: "bamfield", near: "Mercantile" },
+      { id: "npc-pirate",      kind: "pirate",         region: "bamfield", near: "Breakers" },
+      { id: "npc-boatdealer",  kind: "boatdealer",     region: "bamfield", near: "Breakers" },
+      { id: "npc-eastsider",   kind: "eastsider",      region: "bamfield", near: "East Dock" },
+      { id: "npc-westsider",   kind: "westsider",      region: "bamfield", near: "West Dock" },
+      { id: "npc-mayor",       kind: "mayor",          region: "bamfield", atAnacla: true },
+      { id: "npc-huuayaht",    kind: "huuayaht",       region: "bamfield", near: "Huu-ay-aht" },
+      { id: "npc-icevendor",   kind: "icevendor",      region: "bamfield", atAnacla: true },
+      { id: "npc-seamstress",  kind: "seamstress",     region: "bamfield", near: "East Dock" },
+      { id: "npc-researcher2", kind: "researcher2",    region: "bamfield", near: "Marine Sciences" },
+      { id: "npc-marinebio",   kind: "marineBiologist",region: "bamfield" },
+      { id: "npc-snorkeler",   kind: "snorkeler",      region: "bamfield", near: "West Dock" },
     ];
     this.npcs = [];
     for (let i = 0; i < cfg.length; i++) {
@@ -464,7 +473,16 @@ export class GameRoom {
         if (a) { tx = a.x; ty = a.y; }
       }
       const spot = this.landSpawn(region, tx + ((i % 3) - 1), ty + (i % 2));
-      this.npcs.push({ id: c.id, kind: c.kind, region: c.region, x: Math.floor(spot.x), y: Math.floor(spot.y) });
+      const nx = Math.floor(spot.x), ny = Math.floor(spot.y);
+      this.npcs.push({ id: c.id, kind: c.kind, region: c.region, x: nx, y: ny });
+      // Set up wandering zone for this NPC.
+      const wanderRadius: Record<string, number> = {
+        naturalist: 8, scientist: 6, historian: 5, pirate: 12, boatdealer: 6,
+        eastsider: 10, westsider: 12, mayor: 40, huuayaht: 8, icevendor: 5,
+        seamstress: 25, researcher2: 30, marineBiologist: 20, snorkeler: 15,
+      };
+      const radius = wanderRadius[c.kind] ?? 8;
+      this.npcWander.set(c.id, { homeX: nx, homeY: ny, targetX: nx, targetY: ny, nextMoveAt: Date.now() + Math.random() * 5000 + 3000, radius });
     }
   }
 
@@ -598,6 +616,9 @@ export class GameRoom {
       this.prevDx.delete(s.playerId);
       this.baseAppearance.delete(s.playerId);
       this.modeWardrobe.delete(s.playerId);
+      this.hidingAt.delete(s.playerId);
+      this.playDeadUntil.delete(s.playerId);
+      this.jumpUntil.delete(s.playerId);
     }
     this.sessions.delete(ws);
     if (this.sessions.size === 0 && this.loop) {
@@ -703,6 +724,18 @@ export class GameRoom {
         break;
       case "block":
         this.doBlock(s.playerId);
+        break;
+      case "hide":
+        this.doHide(s.playerId);
+        break;
+      case "playDead":
+        this.doPlayDead(s.playerId);
+        break;
+      case "jump":
+        this.doJump(s.playerId);
+        break;
+      case "listen":
+        this.doListen(s.playerId);
         break;
     }
   }
@@ -958,6 +991,11 @@ export class GameRoom {
       spin: 0,
       knockedOut: false,
       blocking: false,
+      hiding: false,
+      playingDead: false,
+      jumping: false,
+      jumpPhase: 0,
+      listenMode: false,
     };
     // Remember the player's chosen base colours so each mode's outfit keeps them.
     this.baseAppearance.set(s.playerId, sanitizeAppearance(msg.appearance));
@@ -1185,6 +1223,7 @@ export class GameRoom {
     this.moveVehicles(dt, waterline, now);
     this.movePlayers(dt, waterline, now);
     this.updateCreatures(dt, waterline, now);
+    this.updateNpcWander(dt, waterline, now);
     this.updateResourceRespawn(now);
     this.updateVehicleRust(dt, waterline, now);
     this.updateFishing(now);
@@ -1388,6 +1427,57 @@ export class GameRoom {
 
       // Walk onto a road gate at the map edge and you cross to the next region.
       if (moved) this.autoTravelOnFoot(p);
+
+      // --- Jump arc update ---
+      const jumpEnd = this.jumpUntil.get(p.id);
+      if (jumpEnd) {
+        const elapsed = 400 - Math.max(0, jumpEnd - now);
+        p.jumpPhase = Math.min(1, elapsed / 400);
+        if (now >= jumpEnd) {
+          p.jumping = false;
+          p.jumpPhase = 0;
+          this.jumpUntil.delete(p.id);
+        }
+      }
+
+      // --- Auto-cancel play-dead if moved ---
+      if (p.playingDead) {
+        const deadUntil = this.playDeadUntil.get(p.id) ?? 0;
+        if (now >= deadUntil || moved) {
+          p.playingDead = false;
+          this.playDeadUntil.delete(p.id);
+          if (moved) this.tell(p, "You got up — play dead cancelled.");
+        }
+      }
+
+      // --- Auto-cancel hide if moved too far ---
+      if (p.hiding && moved) {
+        const hidePos = this.hidingAt.get(p.id);
+        if (hidePos && Math.hypot(p.x - hidePos.x, p.y - hidePos.y) > 0.3) {
+          p.hiding = false;
+          this.hidingAt.delete(p.id);
+          this.tell(p, "You moved — hiding broken.");
+        }
+      }
+
+      // --- Auto-cancel listen mode if moved ---
+      if (p.listenMode && moved) {
+        p.listenMode = false;
+        this.tell(p, "Listen mode cancelled (you moved).");
+      }
+
+      // --- Listen mode flavour messages ---
+      if (p.listenMode && Math.random() < 0.002) {
+        const msgs = [
+          "You hear rustling in the undergrowth…",
+          "Somewhere nearby, a branch snaps.",
+          "The forest goes very quiet.",
+          "Distant splashing from the inlet.",
+          "A grouse calls somewhere overhead.",
+          "You catch the scent of something large upwind.",
+        ];
+        this.tell(p, msgs[Math.floor(Math.random() * msgs.length)]);
+      }
 
       // Pick up ground loot by walking over it (within 1.2 tiles).
       for (const drop of this.lootDrops.values()) {
@@ -2681,6 +2771,102 @@ export class GameRoom {
     if (node) this.footTravel(s.ws, p, node);
   }
 
+  // --- NPC wandering --------------------------------------------------------
+  private updateNpcWander(dt: number, waterline: number, now: number) {
+    const SPEED = 1.2; // tiles/sec
+    for (const npc of this.npcs) {
+      const w = this.npcWander.get(npc.id);
+      if (!w) continue;
+      const region = this.regions.get(npc.region);
+      if (!region) continue;
+      // Time to pick a new target?
+      if (now >= w.nextMoveAt) {
+        const ang = Math.random() * Math.PI * 2;
+        const dist = Math.random() * w.radius;
+        const tx = Math.round(w.homeX + Math.cos(ang) * dist);
+        const ty = Math.round(w.homeY + Math.sin(ang) * dist);
+        // marineBiologist wanders water; others need land.
+        const isMarine = npc.kind === "marineBiologist";
+        const isWalkable = isMarine
+          ? this.depthAt(region.map, tx + 0.5, ty + 0.5, waterline) > 0
+          : this.walkable(region.map, tx + 0.5, ty + 0.5, WATERLINE_HIGH, false);
+        if (isWalkable) {
+          w.targetX = tx; w.targetY = ty;
+        }
+        w.nextMoveAt = now + 3000 + Math.random() * 5000;
+      }
+      // Move toward target.
+      const dx = w.targetX + 0.5 - npc.x, dy = w.targetY + 0.5 - npc.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 0.4) {
+        const step = SPEED * dt;
+        npc.x += (dx / dist) * step;
+        npc.y += (dy / dist) * step;
+      }
+    }
+  }
+
+  // --- Hide behind trees ----------------------------------------------------
+  private doHide(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead || p.vehicleId) return;
+    const region = this.regions.get(p.region);
+    if (!region) return;
+    // Must be near a tree.
+    const nearTree = this.nodesNear(p.region, p.x, p.y, 1.5).some(
+      (n) => n.kind === "tree" && !n.depleted,
+    );
+    if (!nearTree && !p.hiding) {
+      this.tell(p, "Stand near a tree to hide behind it.");
+      return;
+    }
+    p.hiding = !p.hiding;
+    if (p.hiding) {
+      this.hidingAt.set(playerId, { x: p.x, y: p.y });
+      this.tell(p, "You duck behind a tree. Stay still to remain hidden.");
+    } else {
+      this.hidingAt.delete(playerId);
+      this.tell(p, "You step out of hiding.");
+    }
+  }
+
+  // --- Play dead ------------------------------------------------------------
+  private doPlayDead(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead || p.vehicleId) return;
+    if (p.mode !== "research") { this.tell(p, "Play dead only works in research mode."); return; }
+    p.playingDead = !p.playingDead;
+    if (p.playingDead) {
+      this.playDeadUntil.set(playerId, Date.now() + 15000);
+      this.tell(p, "You play dead… Bears won't attack for 15 seconds. Don't move!");
+    } else {
+      this.playDeadUntil.delete(playerId);
+      this.tell(p, "You get back up.");
+    }
+  }
+
+  // --- Jump -----------------------------------------------------------------
+  private doJump(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead || p.vehicleId || p.jumping) return;
+    p.jumping = true;
+    p.jumpPhase = 0;
+    this.jumpUntil.set(playerId, Date.now() + 400);
+  }
+
+  // --- Listen mode ----------------------------------------------------------
+  private doListen(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead) return;
+    if (p.mode !== "research") { this.tell(p, "Listen mode only works in research mode."); return; }
+    p.listenMode = !p.listenMode;
+    if (p.listenMode) {
+      this.tell(p, "You go quiet and listen to the forest… (V to cancel, move to cancel)");
+    } else {
+      this.tell(p, "You stop listening.");
+    }
+  }
+
   // --- creatures ------------------------------------------------------------
   private maybeSpawn(now: number, waterline: number) {
     if (now < this.nextSpawn) return;
@@ -2951,6 +3137,8 @@ export class GameRoom {
     let bestD = Infinity;
     for (const p of this.players.values()) {
       if (p.dead || p.region !== region.id) continue;
+      // Bears ignore players who are playing dead (research mode mechanic).
+      if (p.playingDead && c.kind === "bear") continue;
       const pd = this.depthAt(region.map, p.x, p.y, waterline);
       if (deepPredator && pd <= DEPTH_ANKLE) continue;
       if (landPred && pd > 0) continue; // land predators stay on dry land
@@ -3466,12 +3654,20 @@ function swimmer(kind: CreatureKind): boolean {
 function sanitizeAppearance(a: Appearance | undefined): Appearance {
   const hex = (v: string | undefined, fallback: string) =>
     typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : fallback;
+  const hairStyles = ["short", "medium", "long"] as const;
+  const bodyBuilds = ["slight", "medium", "sturdy"] as const;
+  const breastSizes = ["non", "modest", "expressive"] as const;
+  const hipSizes = ["narrow", "medium", "wide"] as const;
   return {
     skin: hex(a?.skin, "#e0ac69"),
     hair: hex(a?.hair, "#3b2a1a"),
     shirt: hex(a?.shirt, "#2e7d32"),
     pants: a?.pants && /^#[0-9a-fA-F]{6}$/.test(a.pants) ? a.pants : undefined,
     hat: a?.hat && /^#[0-9a-fA-F]{6}$/.test(a.hat) ? a.hat : undefined,
+    hairStyle: hairStyles.includes(a?.hairStyle as typeof hairStyles[number]) ? a!.hairStyle : undefined,
+    bodyBuild: bodyBuilds.includes(a?.bodyBuild as typeof bodyBuilds[number]) ? a!.bodyBuild : undefined,
+    breastSize: breastSizes.includes(a?.breastSize as typeof breastSizes[number]) ? a!.breastSize : undefined,
+    hipSize: hipSizes.includes(a?.hipSize as typeof hipSizes[number]) ? a!.hipSize : undefined,
   };
 }
 

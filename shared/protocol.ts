@@ -87,6 +87,10 @@ export interface Appearance {
   shirt: string;
   pants?: string; // leg colour (defaults to denim when absent)
   hat?: string;   // head covering colour (none when absent)
+  hairStyle?: "short" | "medium" | "long";
+  bodyBuild?: "slight" | "medium" | "sturdy";
+  breastSize?: "non" | "modest" | "expressive";
+  hipSize?: "narrow" | "medium" | "wide";
 }
 
 // The 3-way mode switch that organises the whole game.
@@ -130,6 +134,9 @@ export const ITEM_IDS = [
   "stick", "huntingKnife", "bow", "crossbow", "speargun", "rifle",
   // ammo
   "arrow", "bolt", "spear", "bullet",
+  // clothing
+  "clothShirt", "clothPants", "waxedJacket", "rainCoat", "woolSweater",
+  "fabricDye", "seamstressKit", "snorkelMask", "divingTank", "wetsuitTop", "wetsuitBottom",
 ] as const;
 export type ItemId = (typeof ITEM_IDS)[number];
 export type Inventory = Partial<Record<ItemId, number>>;
@@ -152,6 +159,10 @@ export const ITEM_LABEL: Record<ItemId, string> = {
   stick: "Stick", huntingKnife: "Hunting Knife", bow: "Bow", crossbow: "Crossbow",
   speargun: "Speargun", rifle: "Rifle",
   arrow: "Arrow", bolt: "Bolt", spear: "Spear", bullet: "Bullet",
+  clothShirt: "Cloth Shirt", clothPants: "Cloth Pants", waxedJacket: "Waxed Jacket",
+  rainCoat: "Rain Coat", woolSweater: "Wool Sweater", fabricDye: "Fabric Dye",
+  seamstressKit: "Seamstress Kit", snorkelMask: "Snorkel Mask", divingTank: "Diving Tank",
+  wetsuitTop: "Wetsuit Top", wetsuitBottom: "Wetsuit Bottom",
 };
 
 // What eating an item restores.
@@ -325,6 +336,11 @@ export interface PlayerState {
   spin: number;            // 0..1 helicopter wind-up while holding someone
   knockedOut: boolean;     // dizzy/down phase after being thrown
   blocking: boolean;       // briefly raising a block
+  hiding: boolean;         // hidden behind a tree/bush
+  playingDead: boolean;    // playing dead (research mode vs bears)
+  jumping: boolean;        // in the air
+  jumpPhase: number;       // 0..1 arc
+  listenMode: boolean;     // research "listen" posture active
 }
 
 export type CreatureKind =
@@ -408,7 +424,7 @@ export interface BuildingState {
 }
 
 // --- NPCs -------------------------------------------------------------------
-export type NpcKind = "naturalist" | "pirate" | "scientist" | "westsider" | "eastsider" | "huuayaht" | "mayor" | "historian" | "boatdealer" | "icevendor";
+export type NpcKind = "naturalist" | "pirate" | "scientist" | "westsider" | "eastsider" | "huuayaht" | "mayor" | "historian" | "boatdealer" | "icevendor" | "seamstress" | "researcher2" | "marineBiologist" | "snorkeler";
 
 export interface NpcState {
   id: string;
@@ -486,7 +502,11 @@ export type ClientMessage =
   | { t: "repair" }
   | { t: "trade"; buildingId: string; kind: "buy" | "sell"; item: ItemId; qty: number }
   | { t: "travel" }
-  | { t: "refuel" };
+  | { t: "refuel" }
+  | { t: "hide" }         // toggle hiding behind a tree/bush
+  | { t: "playDead" }     // toggle play dead (research only)
+  | { t: "jump" }         // jump
+  | { t: "listen" };      // research listen mode toggle
 
 // --- Messages: server -> client --------------------------------------------
 export interface Snapshot {

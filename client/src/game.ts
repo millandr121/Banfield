@@ -241,7 +241,21 @@ export class Game {
           this.leaderboardOpen = !this.leaderboardOpen;
           e.preventDefault();
         } else if (k === "h") {
-          this.net.send({ t: "heal" }); // first aid to nearest hurt player
+          // Context-sensitive: research mode = hide, combat/profession = heal.
+          if (this.me?.mode === "research") {
+            this.net.send({ t: "hide" });
+          } else {
+            this.net.send({ t: "heal" }); // first aid to nearest hurt player
+          }
+          e.preventDefault();
+        } else if (k === "j") {
+          this.net.send({ t: "jump" });
+          e.preventDefault();
+        } else if (k === "p" && this.me?.mode === "research") {
+          this.net.send({ t: "playDead" });
+          e.preventDefault();
+        } else if (k === "v" && this.me?.mode === "research") {
+          this.net.send({ t: "listen" });
           e.preventDefault();
         } else if (k === "r") {
           this.net.send({ t: "scan" });        // discovery radius
@@ -1492,11 +1506,19 @@ export class Game {
       if (Math.hypot(dx, dy) < 4) facing = facingFromDir(Math.atan2(dy, dx));
     }
     const gait = this.gaitFor("npc-" + n.id, n.x, n.y);
-    drawCharacter(ctx, sx, sy, {
-      skin: "#e0ac69",
-      hair: "#3a2a18",
-      shirt: NPC_COLORS[n.kind] ?? "#607d8b",
-    }, { facing, phase: gait.phase, moving: gait.moving });
+
+    // Per-kind distinctive appearance.
+    const npcAppearance = (() => {
+      switch (n.kind) {
+        case "seamstress":      return { skin: "#c88040", hair: "#8b2252", shirt: "#d946a8" };
+        case "researcher2":     return { skin: "#d4b896", hair: "#bfa060", shirt: "#7b3fa0" };
+        case "marineBiologist": return { skin: "#b8d4e0", hair: "#2a5a80", shirt: "#0d47a1" };
+        case "snorkeler":       return { skin: "#c0d8d0", hair: "#1a3a2a", shirt: "#00838f" };
+        default: return { skin: "#e0ac69", hair: "#3a2a18", shirt: NPC_COLORS[n.kind] ?? "#607d8b" };
+      }
+    })();
+
+    drawCharacter(ctx, sx, sy, npcAppearance, { facing, phase: gait.phase, moving: gait.moving });
 
     // Role label
     ctx.fillStyle = "#eaf2f8";
@@ -1841,19 +1863,87 @@ export class Game {
       return;
     }
 
+    // --- Play dead: slumped body + ZZZ, no stars (research mode mechanic) ---
+    if (p.playingDead) {
+      // ground shadow
+      ctx.fillStyle = "rgba(0,0,0,0.22)";
+      ctx.beginPath();
+      ctx.ellipse(sx, sy + R * 0.5, R * 1.1, R * 0.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // slumped body (shirt)
+      ctx.fillStyle = p.appearance.shirt;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy + R * 0.15, R * 0.7, R * 0.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // head lolled to the side
+      ctx.fillStyle = p.appearance.skin;
+      ctx.beginPath();
+      ctx.arc(sx + R * 0.15, sy - R * 0.35, R * 0.42, 0, Math.PI * 2);
+      ctx.fill();
+      // ZZZ floating gently upward (no stars)
+      ctx.fillStyle = "rgba(180,220,255,0.9)";
+      ctx.font = "12px system-ui";
+      ctx.textAlign = "left";
+      const ztd = Math.floor(performance.now() / 600) % 3;
+      ctx.fillText("z".repeat(ztd + 1), sx + R * 0.8, sy - R * 0.8);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#eaf2f8"; ctx.font = "11px system-ui"; ctx.textAlign = "center";
+      ctx.fillText(p.name, sx, sy - TILE_SIZE * 0.9);
+      return;
+    }
+
+    // --- Hide: fade out for other players ---
+    if (p.hiding && !isMe) ctx.globalAlpha = 0.35;
+
+    // --- Jump: parabolic arc offset + ground shadow ---
+    const jumpOffset = p.jumping ? -Math.sin((p.jumpPhase ?? 0) * Math.PI) * TILE_SIZE * 0.8 : 0;
+    if (p.jumping) {
+      const shadowScale = 1 - (p.jumpPhase ?? 0) * 0.5;
+      ctx.save();
+      ctx.globalAlpha = ctx.globalAlpha * 0.25;
+      ctx.fillStyle = "#000";
+      ctx.beginPath();
+      ctx.ellipse(sx, sy + 4, TILE_SIZE * 0.4 * shadowScale, TILE_SIZE * 0.15 * shadowScale, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
     // Combat-ready shuffle: a subtle side-to-side sway when stood in combat mode.
     let swayX = 0;
     if (p.mode === "combat" && !gait.moving && !p.swimming) {
       swayX = Math.sin(performance.now() / 260 + p.x * 3.1) * 1.6;
     }
 
-    drawCharacter(ctx, sx + swayX, sy, p.appearance, {
+    // Research mode gait: bouncier vertical bob when moving.
+    const researchBob = (p.mode === "research" && gait.moving)
+      ? Math.abs(Math.sin(gait.phase * 2)) * 2
+      : 0;
+
+    drawCharacter(ctx, sx + swayX, sy + jumpOffset - researchBob, p.appearance, {
       facing: facingFromDir(p.dir),
       phase: gait.phase,
       moving: gait.moving,
       submerge,
       weapon: p.equipped,
     });
+
+    // Leaf overlay when hiding (visible to self as a faint green shimmer).
+    if (p.hiding) {
+      const leafAlpha = isMe ? 0.25 : 0.55;
+      ctx.save();
+      ctx.globalAlpha = leafAlpha;
+      for (let i = 0; i < 5; i++) {
+        const ang = i * 1.26 + performance.now() / 2200;
+        const lx = sx + Math.cos(ang) * R * 1.1;
+        const ly = sy - R * 0.4 + Math.sin(ang) * R * 0.7;
+        ctx.fillStyle = i % 2 === 0 ? "#2e7d32" : "#43a047";
+        ctx.beginPath();
+        ctx.ellipse(lx, ly, 3.5, 2, ang + 0.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+      if (!isMe) { ctx.globalAlpha = 1; }
+    }
 
     // HP / stamina bar floating above the head (oblique-friendly, not a ring).
     const frac = Math.max(0, Math.min(1, p.hp / p.maxHp));
@@ -2162,6 +2252,9 @@ const ITEM_COLORS: Record<string, string> = {
   stick: "#8d6e63", huntingKnife: "#cfd8dc", bow: "#8d6e63", crossbow: "#5d4037",
   speargun: "#455a64", rifle: "#3e2723",
   arrow: "#8d6e63", bolt: "#78909c", spear: "#607d8b", bullet: "#90a4ae",
+  clothShirt: "#e3b0c0", clothPants: "#b0c3e3", waxedJacket: "#6b7b3a", rainCoat: "#e8d04a",
+  woolSweater: "#8b6e4e", fabricDye: "#c040c0", seamstressKit: "#e891b8",
+  snorkelMask: "#2ea8c0", divingTank: "#607d8b", wetsuitTop: "#1a2a3a", wetsuitBottom: "#1a2a3a",
 };
 
 // NPC display name + body colour + dialogue, keyed by kind.
@@ -2169,12 +2262,14 @@ const NPC_NAME: Record<NpcState["kind"], string> = {
   naturalist: "Naturalist", pirate: "Local Pirate", scientist: "Marine Scientist",
   westsider: "West Sider", eastsider: "East Sider", huuayaht: "Huu-ay-aht Citizen",
   mayor: "Unofficial Mayor", historian: "Local Historian", boatdealer: "Boat Dealer",
-  icevendor: "Ice Vendor",
+  icevendor: "Ice Vendor", seamstress: "Seamstress", researcher2: "Field Researcher",
+  marineBiologist: "Marine Biologist", snorkeler: "Snorkeler",
 };
 const NPC_COLORS: Record<NpcState["kind"], string> = {
   naturalist: "#2e7d32", pirate: "#37474f", scientist: "#1565c0", westsider: "#00695c",
   eastsider: "#4a148c", huuayaht: "#b71c1c", mayor: "#f57f17", historian: "#6d4c41",
-  boatdealer: "#0277bd", icevendor: "#00838f",
+  boatdealer: "#0277bd", icevendor: "#00838f", seamstress: "#ad1457",
+  researcher2: "#00838f", marineBiologist: "#006064", snorkeler: "#00838f",
 };
 const NPC_DIALOGUE: Record<NpcState["kind"], string[]> = {
   naturalist: [
@@ -2224,6 +2319,26 @@ const NPC_DIALOGUE: Record<NpcState["kind"], string[]> = {
   mayor: [
     "I'm not the OFFICIAL mayor. There is no official mayor. But somebody's got to keep an eye on things.",
     "Pull the Himalayan blackberry before it swallows the riverbank — same as broom, get it while it flowers.",
+  ],
+  seamstress: [
+    "I can sew you something to wear — waxed jacket for the rain, wool sweater for the cold nights. I take cloth and coin.",
+    "Fabric dye? Got a few colours left. Bring me the cloth and I'll dye it any shade you like.",
+    "I wander east side to west — you'll find me most days along the waterfront. Knock if the light's on.",
+  ],
+  researcher2: [
+    "I've been tracking the wolf pack on the ridge for three seasons now. They're more cautious than people think.",
+    "Saw a cougar kill near the old logging road this morning. Keep your eyes up when you're in the trees.",
+    "The elk herd is moving earlier this year. Could be the broom spreading up the hillside.",
+  ],
+  marineBiologist: [
+    "Out here studying tidal flow patterns around Barkley Sound. The kelp beds shift every season.",
+    "I've got oxygen tanks — enough for a proper dive. The reefs past the headland are worth it.",
+    "Saw a Pacific white-sided dolphin pod this morning. Still rare in these waters.",
+  ],
+  snorkeler: [
+    "The shallows off the west dock are incredible at low tide — nudibranch, hermit crabs, the lot.",
+    "Got a snorkel mask if you want one. Salt water is harder on gear than people think — rinse it after every dive.",
+    "Sea otters are back in the kelp past the point. Stay slow and quiet and they'll let you watch.",
   ],
 };
 
