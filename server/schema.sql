@@ -19,11 +19,15 @@ CREATE TABLE IF NOT EXISTS players (
   hunger         REAL,
   skills         TEXT,           -- JSON: { skillName: rawXp, ... }
   inventory      TEXT,           -- JSON: { itemId: qty, ... }
-  appearance     TEXT,           -- JSON: { skin, hair, shirt }
-  discoveries    TEXT,           -- JSON logbook (species/plants found) — future
+  appearance     TEXT,           -- JSON: { skin, hair, shirt, pants, hat, hairStyle, bodyBuild, breastSize, hipSize, ... }
+  discoveries    TEXT,           -- JSON: { speciesKey: { count, firstAt }, ... }
+  mode_wardrobe  TEXT,           -- JSON: { combat?: Appearance, research?: Appearance, profession?: Appearance }
   created_at     INTEGER,
   updated_at     INTEGER
 );
+
+-- Safe migration: add new columns to existing tables (no-op if already present).
+ALTER TABLE players ADD COLUMN mode_wardrobe TEXT;
 
 -- Leaderboards (unofficial mayor, BMSC president by species logged, etc.)
 CREATE INDEX IF NOT EXISTS idx_players_pts  ON players (banfielder_pts DESC);

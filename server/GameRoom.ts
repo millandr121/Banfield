@@ -1079,6 +1079,15 @@ export class GameRoom {
     p.inventory = json(row.inventory, p.inventory);
     p.appearance = sanitizeAppearance(json(row.appearance, p.appearance));
     this.discoveries.set(p.name, json(row.discoveries, {} as Record<string, { count: number; firstAt: number }>));
+    // Restore per-mode wardrobe (research/profession outfits).
+    const savedWardrobe = json(row.mode_wardrobe, {} as Partial<Record<PlayerMode, Appearance>>);
+    const sanitizedWardrobe: Partial<Record<PlayerMode, Appearance>> = {};
+    for (const mode of ["combat", "research", "profession"] as PlayerMode[]) {
+      if (savedWardrobe[mode]) sanitizedWardrobe[mode] = sanitizeAppearance(savedWardrobe[mode]!);
+    }
+    this.modeWardrobe.set(p.name, sanitizedWardrobe);
+    // Apply current-mode outfit if one was saved.
+    if (sanitizedWardrobe[p.mode]) p.appearance = sanitizedWardrobe[p.mode]!;
     // Re-equip a weapon they actually still own (saved inventory may differ).
     if (!p.equipped || (p.inventory[p.equipped] ?? 0) <= 0) {
       p.equipped = WEAPON_ITEMS.find((w) => (p.inventory[w] ?? 0) > 0) ?? null;
@@ -1089,12 +1098,13 @@ export class GameRoom {
     if (!this.env.DB) return;
     const now = Date.now();
     try {
-      const discoveries = JSON.stringify(this.discoveries.get(p.name) ?? {});
+      const discoveries   = JSON.stringify(this.discoveries.get(p.name) ?? {});
+      const modeWardrobe  = JSON.stringify(this.modeWardrobe.get(p.name) ?? {});
       await this.env.DB.prepare(
         `INSERT INTO players
            (name, secret, email, region, x, y, money, banfielder_pts, hp, max_hp, hunger,
-            skills, inventory, appearance, discoveries, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            skills, inventory, appearance, discoveries, mode_wardrobe, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(name) DO UPDATE SET
            secret=COALESCE(players.secret, excluded.secret),
            email=COALESCE(excluded.email, players.email),
@@ -1103,12 +1113,13 @@ export class GameRoom {
            hp=excluded.hp, max_hp=excluded.max_hp, hunger=excluded.hunger,
            skills=excluded.skills, inventory=excluded.inventory,
            appearance=excluded.appearance, discoveries=excluded.discoveries,
+           mode_wardrobe=excluded.mode_wardrobe,
            updated_at=excluded.updated_at`,
       ).bind(
         p.name, secret, email ?? null, p.region, p.x, p.y, p.money, p.banfielderPts,
         p.hp, p.maxHp, p.hunger,
         JSON.stringify(p.skills), JSON.stringify(p.inventory), JSON.stringify(p.appearance),
-        discoveries, now, now,
+        discoveries, modeWardrobe, now, now,
       ).run();
     } catch { /* swallow — never crash the tick on a write */ }
   }
