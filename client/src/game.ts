@@ -92,7 +92,7 @@ export class Game {
   private gait = new Map<string, { x: number; y: number; phase: number; moving: number }>();
 
   // Side panel (OSRS-style right panel)
-  private panelTab: "inv" | "skills" | "log" | "map" | "help" = "inv";
+  private panelTab: "inv" | "equip" | "skills" | "log" | "map" | "help" = "inv";
   private panelLastUpdate = 0;
   private minimapCtx: CanvasRenderingContext2D | null = null;
   static readonly PANEL_W = 200; // px — must match #side-panel width in CSS
@@ -136,7 +136,7 @@ export class Game {
     panel.classList.remove("hidden");
     const minimapEl = document.getElementById("minimap-canvas") as HTMLCanvasElement;
     this.minimapCtx = minimapEl.getContext("2d")!;
-    for (const tab of ["inv", "skills", "log", "map", "help"] as const) {
+    for (const tab of ["inv", "equip", "skills", "log", "map", "help"] as const) {
       document.getElementById(`ptab-${tab}`)?.addEventListener("click", () => {
         this.panelTab = tab;
         document.querySelectorAll(".ptab").forEach((b) => b.classList.remove("active"));
@@ -644,10 +644,29 @@ export class Game {
   }
 
   // The BMSC logbook panel (L) — everything you've scanned, grouped.
+  // Cache of 48×48 OffscreenCanvas portraits for logbook creature entries.
+  private readonly logPortraitCache = new Map<string, OffscreenCanvas>();
+
+  private getLogPortrait(kind: string): OffscreenCanvas {
+    let oc = this.logPortraitCache.get(kind);
+    if (!oc) {
+      oc = new OffscreenCanvas(48, 48);
+      const pctx = oc.getContext("2d")!;
+      pctx.fillStyle = "#0a1c29";
+      pctx.fillRect(0, 0, 48, 48);
+      pctx.save();
+      // drawFullCreature expects canvas coords — center the creature in the 48×48 tile.
+      drawFullCreature(pctx as unknown as CanvasRenderingContext2D, kind, 24, 24);
+      pctx.restore();
+      this.logPortraitCache.set(kind, oc);
+    }
+    return oc;
+  }
+
   private drawLogbook() {
     const ctx = this.ctx;
-    const W = Math.min(560, this.canvas.width - 60);
-    const H = Math.min(520, this.canvas.height - 60);
+    const W = Math.min(600, this.canvas.width - 60);
+    const H = Math.min(540, this.canvas.height - 60);
     const x = (this.canvas.width - W) / 2, y = (this.canvas.height - H) / 2;
     ctx.fillStyle = "rgba(6,16,24,0.95)";
     roundRect(ctx, x, y, W, H, 12); ctx.fill();
@@ -658,7 +677,7 @@ export class Game {
     ctx.fillText("BMSC Field Logbook", x + 18, y + 30);
     const total = Object.keys(SPECIES).length;
     ctx.fillStyle = "#9fd9cd"; ctx.font = "12px system-ui";
-    ctx.fillText(`${this.logbook.length} / ${total} species logged   ·   press R to scan, X to inspect, L to close`, x + 18, y + 50);
+    ctx.fillText(`${this.logbook.length} / ${total} species   ·   R=scan  X=inspect  L=close`, x + 18, y + 50);
 
     const byKey = new Map(this.logbook.map((e) => [e.key, e]));
     let ry = y + 74;
@@ -666,23 +685,74 @@ export class Game {
       ["marine", "Marine"], ["land", "Land mammals"], ["bird", "Birds"],
       ["plant", "Plants"], ["tree", "Trees"], ["mineral", "Minerals"],
     ];
-    ctx.font = "13px system-ui";
+
+    // Two-column layout: left column starts at x+18, right column at x+18+col_w.
+    const COL_W = Math.floor((W - 36) / 2);
+    const PORTRAIT = 48;
+    const ENTRY_H = PORTRAIT + 6;
+    let col = 0; // 0=left, 1=right
+
+    const nextEntry = () => {
+      if (col === 1) { col = 0; ry += ENTRY_H + 4; }
+      else col = 1;
+    };
+
     for (const [g, label] of groups) {
       const keys = Object.keys(SPECIES).filter((k) => SPECIES[k].group === g);
       if (!keys.length) continue;
-      ctx.fillStyle = "#7fd0c2"; ctx.font = "bold 13px system-ui";
-      ctx.fillText(label, x + 18, ry); ry += 18;
-      ctx.font = "12px system-ui";
+      // Group header spans both columns.
+      if (col === 1) { col = 0; ry += ENTRY_H + 4; }
+      ctx.fillStyle = "#7fd0c2"; ctx.font = "bold 12px system-ui";
+      ctx.textAlign = "left";
+      ctx.fillText(label, x + 18, ry);
+      ry += 16;
+
       for (const k of keys) {
         const found = byKey.get(k);
         const info = SPECIES[k];
+        const cx = x + 18 + col * COL_W;
+        const cy = ry;
+        if (cy + ENTRY_H > y + H - 8) return;
+
+        // Portrait box.
+        ctx.fillStyle = found ? "#07131c" : "#060e14";
+        roundRect(ctx, cx, cy, PORTRAIT, PORTRAIT, 4); ctx.fill();
+        ctx.strokeStyle = found ? "#2bb9a6" : "#1d3040";
+        ctx.lineWidth = 1;
+        roundRect(ctx, cx, cy, PORTRAIT, PORTRAIT, 4); ctx.stroke();
+
+        if (found) {
+          // Draw the creature portrait from the cache.
+          const portrait = this.getLogPortrait(k);
+          ctx.drawImage(portrait, cx, cy);
+        } else {
+          // Unknown — draw a "?" silhouette.
+          ctx.fillStyle = "rgba(40,80,90,0.6)";
+          ctx.font = "bold 22px system-ui"; ctx.textAlign = "center";
+          ctx.fillText("?", cx + PORTRAIT / 2, cy + PORTRAIT / 2 + 8);
+        }
+
+        // Text to the right of the portrait.
+        const tx = cx + PORTRAIT + 5;
+        const tw = COL_W - PORTRAIT - 10;
+        ctx.textAlign = "left";
         ctx.fillStyle = found ? "#eafff7" : "rgba(150,170,175,0.5)";
-        const tag = found ? `  ×${found.count}` : "  — not yet seen";
-        ctx.fillText("• " + info.common + tag, x + 28, ry);
-        ry += 16;
-        if (ry > y + H - 18) return;
+        ctx.font = "bold 11px system-ui";
+        // Clip name to available width.
+        let nm = info.common;
+        while (nm.length > 3 && ctx.measureText(nm).width > tw) nm = nm.slice(0, -1);
+        if (nm !== info.common) nm += "…";
+        ctx.fillText(nm, tx, cy + 14);
+        if (found) {
+          ctx.fillStyle = "#9fd9cd"; ctx.font = "10px system-ui";
+          ctx.fillText(`×${found.count}`, tx, cy + 28);
+        }
+
+        nextEntry();
       }
-      ry += 4;
+      // End group: force new row.
+      if (col === 1) { col = 0; ry += ENTRY_H + 4; }
+      ry += 6;
     }
   }
 
@@ -2046,7 +2116,8 @@ export class Game {
       this.drawMinimapPanel(me);
     } else {
       mmCanvas.classList.add("hidden");
-      if (this.panelTab === "inv")    content.innerHTML = this.panelInvHTML(me);
+      if (this.panelTab === "inv")         content.innerHTML = this.panelInvHTML(me);
+      else if (this.panelTab === "equip")  content.innerHTML = this.panelEquipHTML(me);
       else if (this.panelTab === "skills") content.innerHTML = this.panelSkillsHTML(me);
       else if (this.panelTab === "log")    content.innerHTML = this.panelLogbookHTML();
       else if (this.panelTab === "help")   content.innerHTML = this.panelHelpHTML();
@@ -2112,6 +2183,40 @@ export class Game {
     return `<div class="inv-grid">${cells}</div>`;
   }
 
+  private panelEquipHTML(me?: PlayerState): string {
+    if (!me) return '<p class="panel-empty">Not joined yet.</p>';
+    // Clothing items that can be equipped / worn.
+    const CLOTHING_ITEMS: ItemId[] = [
+      "clothShirt", "clothPants", "waxedJacket", "rainCoat",
+      "woolSweater", "wetsuitTop", "wetsuitBottom",
+    ] as ItemId[];
+    const DIVE_ITEMS: ItemId[] = ["snorkelMask", "divingTank"] as ItemId[];
+
+    const slotRow = (itemId: ItemId) => {
+      const qty = me.inventory[itemId] ?? 0;
+      const col = (ITEM_COLORS as Record<string, string>)[itemId] ?? "#3a5a6a";
+      const equipped = me.equipped === itemId;
+      return `<div class="inv-cell" title="${ITEM_LABEL[itemId] ?? itemId}${equipped ? " (equipped)" : ""}">
+        <div class="inv-swatch" style="background:${qty > 0 ? col : "#0a1c29"};${equipped ? "outline:2px solid #ffd54f;" : ""}"></div>
+        <div class="inv-qty" style="color:${qty > 0 ? "#eaf2f8" : "#2a4a5a"}">${qty > 0 ? `×${qty}` : "—"}</div>
+        <div class="inv-name">${ITEM_LABEL[itemId] ?? itemId}</div>
+      </div>`;
+    };
+
+    const weapRow = me.equipped
+      ? `<div style="margin-bottom:6px;font-size:10px;color:#ffd98a">Weapon: <b>${ITEM_LABEL[me.equipped] ?? me.equipped}</b></div>`
+      : `<div style="margin-bottom:6px;font-size:10px;color:#5a7f96">No weapon equipped</div>`;
+
+    return `
+      ${weapRow}
+      <div style="font-size:10px;color:#7fd0c2;margin:4px 0 3px;font-weight:700;">Clothing</div>
+      <div class="inv-grid">${CLOTHING_ITEMS.map(id => slotRow(id)).join("")}</div>
+      <div style="font-size:10px;color:#7fd0c2;margin:6px 0 3px;font-weight:700;">Dive Gear</div>
+      <div class="inv-grid">${DIVE_ITEMS.map(id => slotRow(id)).join("")}</div>
+      <div style="font-size:10px;color:#5a7f96;margin-top:8px;">Buy clothing from the Seamstress · dive gear from the Snorkeler.</div>
+    `;
+  }
+
   private panelSkillsHTML(me?: PlayerState): string {
     if (!me) return '<p class="panel-empty">Not joined yet.</p>';
     const rankStr = me.isMayor ? "★ Mayor" : me.rank > 0 ? `#${me.rank}` : "unranked";
@@ -2162,6 +2267,11 @@ export class Game {
       <b>Grab:</b> /  &nbsp;then jink ← → to spin<br/>
       <b>Throw:</b> / again (fling 'em!)<br/>
       <b>Block / break grab:</b> B (high stance)<br/><br/>
+      <b style="color:#7fd0ff">🔬 Research:</b><br/>
+      <b>H</b> = hide near trees<br/>
+      <b>P</b> = play dead (bears ignore you!)<br/>
+      <b>V</b> = listen (ambient clues)<br/><br/>
+      <b>J</b> = jump (any mode)<br/><br/>
       <b>Talk:</b> E or N near an NPC<br/>
       <b>Chop/mine/pick:</b> E<br/>
       <b>Drink (lake):</b> E &nbsp; <b>Eat:</b> Q<br/>
@@ -2170,7 +2280,7 @@ export class Game {
       <b>Bus (Anacla $3):</b> T<br/>
       <b>Craft:</b> C &nbsp; <b>Shop:</b> B (non-combat)<br/>
       <b>Map:</b> M<br/>
-      <b>First aid:</b> H &nbsp; <b>Scan:</b> R<br/>
+      <b>H (combat/pro):</b> First aid &nbsp; <b>Scan:</b> R<br/>
       <b>Inspect:</b> X &nbsp; <b>Leaderboard:</b> K<br/>
       <b>Weapons 1-6:</b> switch slot<br/>
       <b>Chat:</b> Enter<br/>

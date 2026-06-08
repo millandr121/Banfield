@@ -21,37 +21,182 @@ const authError = $<HTMLDivElement>("auth-error");
 
 let mode: "new" | "return" = "new";
 
-// Restore last-used identity (name + look; never the passphrase).
+// ── Chip selectors ────────────────────────────────────────────────────────────
+type ChipField = "hairStyle" | "bodyBuild" | "breastSize" | "hipSize";
+const chipValues: Record<ChipField, string> = {
+  hairStyle: "short",
+  bodyBuild: "slight",
+  breastSize: "non",
+  hipSize: "narrow",
+};
+
+function wireChipGroup(field: ChipField) {
+  const group = document.getElementById(`chips-${field}`)!;
+  group.addEventListener("click", (e) => {
+    const chip = (e.target as HTMLElement).closest(".chip") as HTMLElement | null;
+    if (!chip) return;
+    chipValues[field] = chip.dataset.val ?? chipValues[field];
+    group.querySelectorAll(".chip").forEach((c) => c.classList.remove("selected"));
+    chip.classList.add("selected");
+    drawPreview();
+  });
+}
+
+(["hairStyle", "bodyBuild", "breastSize", "hipSize"] as ChipField[]).forEach(wireChipGroup);
+
+// ── Restore saved identity ────────────────────────────────────────────────────
 const saved = JSON.parse(localStorage.getItem("bamfield-char") || "null");
 if (saved) {
   nameInput.value = saved.name ?? "";
   skinInput.value = saved.appearance?.skin ?? skinInput.value;
   hairInput.value = saved.appearance?.hair ?? hairInput.value;
   shirtInput.value = saved.appearance?.shirt ?? shirtInput.value;
-  // If we've played before, default to the returning-player tab.
+  // Restore chip selections if saved.
+  for (const f of ["hairStyle", "bodyBuild", "breastSize", "hipSize"] as ChipField[]) {
+    const v = saved.appearance?.[f];
+    if (v) {
+      chipValues[f] = v;
+      const group = document.getElementById(`chips-${f}`)!;
+      group.querySelectorAll(".chip").forEach((c) => {
+        c.classList.toggle("selected", (c as HTMLElement).dataset.val === v);
+      });
+    }
+  }
   if (saved.name) setMode("return");
 }
 
 function appearance(): Appearance {
-  return { skin: skinInput.value, hair: hairInput.value, shirt: shirtInput.value };
+  return {
+    skin: skinInput.value,
+    hair: hairInput.value,
+    shirt: shirtInput.value,
+    hairStyle: chipValues.hairStyle as Appearance["hairStyle"],
+    bodyBuild: chipValues.bodyBuild as Appearance["bodyBuild"],
+    breastSize: chipValues.breastSize as Appearance["breastSize"],
+    hipSize: chipValues.hipSize as Appearance["hipSize"],
+  };
 }
 
+// ── Full-body face-on standing character preview ──────────────────────────────
+// Canvas is 80×160. Character centered at cx=40.
 function drawPreview() {
   const a = appearance();
-  const c = 48;
-  pctx.clearRect(0, 0, 96, 96);
+  const W = previewCanvas.width, H = previewCanvas.height;
+  const cx = W / 2;
+  pctx.clearRect(0, 0, W, H);
+
+  // Proportions based on build chip.
+  const buildScale = chipValues.bodyBuild === "sturdy" ? 1.18
+    : chipValues.bodyBuild === "medium" ? 1.0 : 0.86;
+
+  // Body geometry (all in canvas pixels, face-on).
+  const headR = 11;
+  const headCY = 26;
+  const shoulderW = 18 * buildScale;
+  const torsoH = 34;
+  const torsoTopY = headCY + headR + 2;
+  const torsoBottomY = torsoTopY + torsoH;
+  const hipW = (chipValues.hipSize === "wide" ? 22 : chipValues.hipSize === "medium" ? 18 : 14) * buildScale;
+  const legH = 44;
+  const legW = 7 * buildScale;
+
+  // ── Legs (pants = dark navy by default) ──
+  const pantsColor = "#263c5a";
+  const legTopY = torsoBottomY - 4;
+  // Left leg
+  pctx.fillStyle = pantsColor;
+  pctx.beginPath();
+  pctx.roundRect(cx - hipW * 0.55 - legW / 2, legTopY, legW, legH, 3);
+  pctx.fill();
+  // Right leg
+  pctx.beginPath();
+  pctx.roundRect(cx + hipW * 0.55 - legW / 2, legTopY, legW, legH, 3);
+  pctx.fill();
+
+  // ── Torso (shirt) ──
   pctx.fillStyle = a.shirt;
   pctx.beginPath();
-  pctx.arc(c, c, 34, 0, Math.PI * 2);
+  // trapezoid: shoulders narrower than hips
+  pctx.moveTo(cx - shoulderW, torsoTopY);
+  pctx.lineTo(cx + shoulderW, torsoTopY);
+  pctx.lineTo(cx + hipW, torsoBottomY);
+  pctx.lineTo(cx - hipW, torsoBottomY);
+  pctx.closePath();
   pctx.fill();
+
+  // ── Chest hint (breastSize) ──
+  if (chipValues.breastSize !== "non") {
+    const bustR = chipValues.breastSize === "expressive" ? 6 : 3.5;
+    const bustY = torsoTopY + 12;
+    pctx.fillStyle = shadeColor(a.shirt, -18);
+    pctx.beginPath();
+    pctx.ellipse(cx - shoulderW * 0.38, bustY, bustR, bustR * 0.7, 0, 0, Math.PI * 2);
+    pctx.fill();
+    pctx.beginPath();
+    pctx.ellipse(cx + shoulderW * 0.38, bustY, bustR, bustR * 0.7, 0, 0, Math.PI * 2);
+    pctx.fill();
+  }
+
+  // ── Arms ──
+  const armW = 5 * buildScale;
+  const armH = 28;
+  const armTopY = torsoTopY + 4;
+  pctx.fillStyle = a.skin;
+  // Left arm
+  pctx.beginPath();
+  pctx.roundRect(cx - shoulderW - armW + 1, armTopY, armW, armH, 3);
+  pctx.fill();
+  // Right arm
+  pctx.beginPath();
+  pctx.roundRect(cx + shoulderW - 1, armTopY, armW, armH, 3);
+  pctx.fill();
+
+  // ── Head ──
   pctx.fillStyle = a.skin;
   pctx.beginPath();
-  pctx.arc(c, c, 21, 0, Math.PI * 2);
+  pctx.arc(cx, headCY, headR, 0, Math.PI * 2);
   pctx.fill();
+
+  // ── Hair ──
   pctx.fillStyle = a.hair;
+  if (chipValues.hairStyle === "long") {
+    // Long: cap + flowing sides down past shoulders
+    pctx.beginPath();
+    pctx.arc(cx, headCY, headR, Math.PI, 0);
+    pctx.fill();
+    pctx.fillRect(cx - headR, headCY, headR * 0.7, torsoTopY - headCY + 6);
+    pctx.fillRect(cx + headR * 0.3, headCY, headR * 0.7, torsoTopY - headCY + 6);
+  } else if (chipValues.hairStyle === "medium") {
+    // Medium: cap + short side tufts
+    pctx.beginPath();
+    pctx.arc(cx, headCY, headR, Math.PI, 0);
+    pctx.fill();
+    pctx.fillRect(cx - headR, headCY, headR * 0.55, 8);
+    pctx.fillRect(cx + headR * 0.45, headCY, headR * 0.55, 8);
+  } else {
+    // Buzz/short: just the scalp cap
+    pctx.beginPath();
+    pctx.arc(cx, headCY, headR, Math.PI, 0);
+    pctx.fill();
+  }
+
+  // ── Eyes (tiny dots) ──
+  pctx.fillStyle = "#0b1d2a";
   pctx.beginPath();
-  pctx.arc(c, c, 21, Math.PI, Math.PI * 2);
+  pctx.arc(cx - 4, headCY + 2, 1.5, 0, Math.PI * 2);
   pctx.fill();
+  pctx.beginPath();
+  pctx.arc(cx + 4, headCY + 2, 1.5, 0, Math.PI * 2);
+  pctx.fill();
+}
+
+/** Lighten (positive) or darken (negative) a hex colour by `amount`. */
+function shadeColor(col: string, amount: number): string {
+  const num = parseInt(col.replace("#", ""), 16);
+  const r = Math.min(255, Math.max(0, (num >> 16) + amount));
+  const g = Math.min(255, Math.max(0, ((num >> 8) & 0xff) + amount));
+  const b = Math.min(255, Math.max(0, (num & 0xff) + amount));
+  return "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
 }
 
 for (const el of [skinInput, hairInput, shirtInput]) {

@@ -263,6 +263,16 @@
       .controls-section { font-size: 10px; color: #6a9ab5; line-height: 1.5; padding: 2px 0; }
       .controls-section b { color: #9fc2d6; }
       .panel-empty { color: #5a7f96; font-size: 12px; text-align: center; padding: 20px 4px; }
+
+      /* Body-customisation chip selectors */
+      .chip-group { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+      .chip {
+        padding: 4px 10px; border-radius: 12px; font-size: 12px;
+        background: #0a1c29; color: #8fb4c9; border: 1px solid #2a5a78;
+        cursor: pointer; user-select: none; transition: background 0.12s;
+      }
+      .chip.selected { background: #1e88e5; color: #fff; border-color: #1e88e5; }
+      .chip:hover:not(.selected) { background: #123247; }
     </style>
   </head>
   <body>
@@ -281,6 +291,7 @@
       </div>
       <div id="panel-tabs">
         <button class="ptab active" id="ptab-inv">Inv</button>
+        <button class="ptab" id="ptab-equip">Equip</button>
         <button class="ptab" id="ptab-skills">Skills</button>
         <button class="ptab" id="ptab-log">Log</button>
         <button class="ptab" id="ptab-map">Map</button>
@@ -313,21 +324,53 @@
         </div>
 
         <div id="design">
-          <div class="row">
-            <div>
-              <label>Skin</label>
-              <div class="swatches"><input id="skin" type="color" value="#e0ac69" /></div>
-            </div>
-            <div>
-              <label>Hair</label>
-              <div class="swatches"><input id="hair" type="color" value="#3b2a1a" /></div>
-            </div>
-            <div>
-              <label>Shirt</label>
-              <div class="swatches"><input id="shirt" type="color" value="#2e7d32" /></div>
+          <div style="display:flex;gap:12px;align-items:flex-start;">
+            <canvas id="preview" width="80" height="160" style="border-radius:8px;background:#0a1c29;flex-shrink:0;"></canvas>
+            <div style="flex:1;min-width:0;">
+              <div class="row">
+                <div>
+                  <label>Skin</label>
+                  <div class="swatches"><input id="skin" type="color" value="#e0ac69" /></div>
+                </div>
+                <div>
+                  <label>Hair</label>
+                  <div class="swatches"><input id="hair" type="color" value="#3b2a1a" /></div>
+                </div>
+                <div>
+                  <label>Shirt</label>
+                  <div class="swatches"><input id="shirt" type="color" value="#2e7d32" /></div>
+                </div>
+              </div>
+
+              <label>Hair length</label>
+              <div class="chip-group" id="chips-hairStyle">
+                <span class="chip selected" data-val="short">Buzz</span>
+                <span class="chip" data-val="medium">Medium</span>
+                <span class="chip" data-val="long">Long</span>
+              </div>
+
+              <label>Build</label>
+              <div class="chip-group" id="chips-bodyBuild">
+                <span class="chip selected" data-val="slight">Wiry</span>
+                <span class="chip" data-val="medium">Solid</span>
+                <span class="chip" data-val="sturdy">Stout</span>
+              </div>
+
+              <label>Chest</label>
+              <div class="chip-group" id="chips-breastSize">
+                <span class="chip selected" data-val="non">Flat</span>
+                <span class="chip" data-val="modest">Modest</span>
+                <span class="chip" data-val="expressive">Expressive</span>
+              </div>
+
+              <label>Hips</label>
+              <div class="chip-group" id="chips-hipSize">
+                <span class="chip selected" data-val="narrow">Narrow</span>
+                <span class="chip" data-val="medium">Average</span>
+                <span class="chip" data-val="wide">Wide</span>
+              </div>
             </div>
           </div>
-          <canvas id="preview" width="96" height="96"></canvas>
         </div>
 
         <div id="auth-error" class="error hidden"></div>

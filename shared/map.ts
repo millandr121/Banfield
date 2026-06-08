@@ -523,6 +523,42 @@ const SHOP_FLORAS: ShopDef = {
     { item: "berry",        price:  5 },
   ],
 };
+const SHOP_SEAMSTRESS: ShopDef = {
+  name: "Seamstress",
+  buys: [
+    { item: "leather", price: 6 },
+  ],
+  sells: [
+    { item: "clothShirt",   price: 18 },
+    { item: "clothPants",   price: 18 },
+    { item: "waxedJacket",  price: 45 },
+    { item: "rainCoat",     price: 55 },
+    { item: "woolSweater",  price: 35 },
+    { item: "fabricDye",    price: 12 },
+    { item: "seamstressKit", price: 80 },
+  ],
+};
+const SHOP_SNORKELER: ShopDef = {
+  name: "Snorkel Rental & Gear",
+  buys: [],
+  sells: [
+    { item: "snorkelMask", price: 30 },
+  ],
+};
+const SHOP_MARINEBIO: ShopDef = {
+  name: "Marine Biology Field Supplies",
+  buys: [
+    { item: "fish",     price: 6  },
+    { item: "liveFish", price: 10 },
+    { item: "salmon",   price: 12 },
+  ],
+  sells: [
+    { item: "divingTank",    price: 90  },
+    { item: "wetsuitTop",    price: 75  },
+    { item: "wetsuitBottom", price: 65  },
+    { item: "snorkelMask",   price: 28  },
+  ],
+};
 
 // Shape produced by the OSM importer (tools/import-osm.mjs).
 export interface RegionData {
@@ -566,14 +602,17 @@ export function regionFromData(data: RegionData): RegionDef {
 // Imported maps reference shops by a stable building id (the TS ShopDefs can't
 // be embedded in JSON). Re-attach the real ShopDef to each named building here.
 const SHOP_BY_BUILDING: Record<string, ShopDef> = {
-  "bf-shop-market":   SHOP_MARKET,
-  "bf-shop-bmsc":     SHOP_BMSC,
-  "bf-shop-ostroms":  SHOP_OSTROMS,
-  "bf-shop-breakers": SHOP_BREAKERS,
-  "bf-shop-floras":   SHOP_FLORAS,
-  "an-shop-gas":      SHOP_ANACLA_GAS,
-  "an-house-food":    SHOP_ANACLA_HOME,
-  "an-shop-gov":      SHOP_ANACLA_GOV,
+  "bf-shop-market":      SHOP_MARKET,
+  "bf-shop-bmsc":        SHOP_BMSC,
+  "bf-shop-ostroms":     SHOP_OSTROMS,
+  "bf-shop-breakers":    SHOP_BREAKERS,
+  "bf-shop-floras":      SHOP_FLORAS,
+  "bf-shop-seamstress":  SHOP_SEAMSTRESS,
+  "bf-shop-snorkeler":   SHOP_SNORKELER,
+  "bf-shop-marinebio":   SHOP_MARINEBIO,
+  "an-shop-gas":         SHOP_ANACLA_GAS,
+  "an-house-food":       SHOP_ANACLA_HOME,
+  "an-shop-gov":         SHOP_ANACLA_GOV,
 };
 
 function attachShops(buildings: BuildingState[]): BuildingState[] {
