@@ -495,7 +495,8 @@ export type ClientMessage =
   | { t: "harvest" } // chop/mine/forage nearest resource node, or pull invasive plant
   | { t: "craft"; recipe: CraftRecipeId } // craft (recipe validated server-side)
   | { t: "fish" } // toggle fishing on/off (needs rod in inventory)
-  | { t: "eat" } // consume food from inventory for hunger/HP
+  | { t: "eat"; item?: ItemId } // consume food (specific item, else best) for hunger/HP
+  | { t: "drop"; item: ItemId; all?: boolean } // drop 1 (or all) of an item on the ground
   | { t: "drink" } // sip from an adjacent freshwater lake (a little hunger back)
   | { t: "sleep" } // toggle resting by a fire to heal
   | { t: "chat"; msg: string } // text; / global, // team, ///name private
@@ -539,6 +540,8 @@ export type ServerMessage =
   | { t: "leaderboard"; data: LeaderboardData } // current town title holders
   // A transient visual effect (e.g. a ranged-shot tracer) for clients to draw.
   | { t: "fx"; kind: "tracer"; region: RegionId; x1: number; y1: number; x2: number; y2: number; weapon: string }
+  // A melee swing — clients animate the attacker's arm/leg thrust for ~250 ms.
+  | { t: "fx"; kind: "melee"; region: RegionId; id: string; stance: Stance; weapon: string | null }
   // Login screen support: live name-availability + a rejected sign-in.
   | { t: "nameStatus"; name: string; taken: boolean }
   | { t: "joinDenied"; reason: string }

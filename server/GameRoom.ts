@@ -673,7 +673,10 @@ export class GameRoom {
         this.doFishToggle(s.playerId);
         break;
       case "eat":
-        this.doEat(s.playerId);
+        this.doEat(s.playerId, msg.item);
+        break;
+      case "drop":
+        this.doDrop(s.playerId, msg.item, msg.all === true);
         break;
       case "sleep":
         this.doSleep(s.playerId);
@@ -2159,16 +2162,21 @@ export class GameRoom {
   }
 
   // Eat the most-filling food you carry; restores hunger (and a little HP).
-  private doEat(playerId: string) {
+  private doEat(playerId: string, item?: ItemId) {
     const p = this.players.get(playerId);
     if (!p || p.dead) return;
-    // Pick the food item that restores the most hunger and that we actually have.
     let chosen: ItemId | null = null;
-    let bestHunger = -1;
-    for (const [item, val] of Object.entries(FOOD_VALUE) as [ItemId, { hunger: number; hp: number }][]) {
-      if ((p.inventory[item] ?? 0) > 0 && val.hunger > bestHunger) {
-        bestHunger = val.hunger;
-        chosen = item;
+    if (item && FOOD_VALUE[item] && (p.inventory[item] ?? 0) > 0) {
+      // Eat the exact item the player chose from their bag.
+      chosen = item;
+    } else {
+      // Otherwise pick the food that restores the most hunger and that we have.
+      let bestHunger = -1;
+      for (const [it, val] of Object.entries(FOOD_VALUE) as [ItemId, { hunger: number; hp: number }][]) {
+        if ((p.inventory[it] ?? 0) > 0 && val.hunger > bestHunger) {
+          bestHunger = val.hunger;
+          chosen = it;
+        }
       }
     }
     if (!chosen) {
@@ -2181,6 +2189,27 @@ export class GameRoom {
     const gainedHp = Math.min(val.hp, p.maxHp - p.hp);
     p.hp += gainedHp;
     this.tell(p, `Ate ${ITEM_LABEL[chosen]} (+${val.hunger} food${gainedHp > 0 ? `, +${Math.round(gainedHp)} HP` : ""}).`);
+  }
+
+  // Drop 1 (or all) of an item onto the ground as a pickup-able loot drop.
+  private doDrop(playerId: string, item: ItemId, all: boolean) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead) return;
+    const have = p.inventory[item] ?? 0;
+    if (have <= 0) return;
+    const qty = all ? have : 1;
+    p.inventory[item] = have - qty;
+    if (p.inventory[item]! <= 0) delete p.inventory[item];
+    if (p.equipped === item && (p.inventory[item] ?? 0) <= 0) p.equipped = null;
+    // Place it just in front of the player so it doesn't instantly re-pickup.
+    const id = `drop-${++this.idCounter}`;
+    this.lootDrops.set(id, {
+      id, region: p.region,
+      x: p.x + Math.cos(p.dir) * 0.8,
+      y: p.y + Math.sin(p.dir) * 0.8,
+      item, qty,
+    });
+    this.tell(p, `Dropped ${qty}× ${ITEM_LABEL[item] ?? item}.`);
   }
 
   // Drink from an adjacent freshwater lake. Takes the edge off hunger but can't
@@ -2559,6 +2588,12 @@ export class GameRoom {
     const p = this.players.get(playerId);
     if (!p || p.dead || p.vehicleId) return; // no swinging from the driver's seat
     if (p.transforming || p.knockedOut || p.grabbing || p.grabbedBy) return; // busy
+    // You can only fight in combat mode — researchers and professionals are
+    // peaceful, so anyone visibly in combat mode is the one to watch.
+    if (p.mode !== "combat") {
+      this.tell(p, "You can only fight in Combat mode. Press Tab to switch.");
+      return;
+    }
     p.sleeping = false;
     const s = this.sessionFor(p.id);
     if (!s) return;
@@ -2618,6 +2653,8 @@ export class GameRoom {
   private meleeAttack(p: PlayerState, s: Session, wpn: WeaponStat, charge: number, combatBonus: number, now: number) {
     s.lastAttack = now;
     p.stamina -= wpn.stamina;
+    // Tell everyone in the region to play this attacker's swing animation.
+    this.broadcastToRegion(p.region, { t: "fx", kind: "melee", region: p.region, id: p.id, stance: p.stance, weapon: p.equipped });
     const ch = Math.max(0, Math.min(1, charge));
     const scale = (1 + CHARGE_BONUS * ch) * combatBonus;
     const range = wpn.range * (1 + 0.3 * ch);

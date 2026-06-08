@@ -273,6 +273,40 @@
       }
       .chip.selected { background: #1e88e5; color: #fff; border-color: #1e88e5; }
       .chip:hover:not(.selected) { background: #123247; }
+
+      /* Item right-click / tap context menu */
+      #item-menu {
+        position: fixed; z-index: 30; min-width: 130px;
+        background: #0d2433; border: 1px solid #2a5a78; border-radius: 8px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.55); padding: 4px; overflow: hidden;
+      }
+      #item-menu .im-title {
+        font-size: 11px; font-weight: 700; color: #ffd98a;
+        padding: 4px 8px 5px; border-bottom: 1px solid #1d4a66; margin-bottom: 3px;
+      }
+      #item-menu button {
+        display: block; width: 100%; margin: 0; text-align: left;
+        padding: 7px 10px; font-size: 12px; font-weight: 600; border-radius: 5px;
+        background: transparent; color: #cfe3ef;
+      }
+      #item-menu button:hover { background: #1e88e5; color: #fff; }
+      .inv-cell { cursor: pointer; }
+      .inv-cell:hover { border-color: #1e88e5; }
+
+      /* Equip paper-doll */
+      .doll-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 4px 0 8px; }
+      #doll-canvas { background: #0a1c29; border: 1px solid #1d4a66; border-radius: 8px; }
+      .slot-row { display: flex; align-items: center; gap: 6px; width: 100%; margin-bottom: 4px; }
+      .slot-label { width: 46px; font-size: 10px; color: #8fb4c9; flex-shrink: 0; }
+      .slot-box {
+        flex: 1; min-height: 26px; display: flex; align-items: center; gap: 6px;
+        padding: 3px 6px; border-radius: 6px; border: 1px solid #1d4a66; background: #0a1c29;
+        font-size: 11px; color: #cfe3ef; cursor: pointer;
+      }
+      .slot-box.empty { color: #4a6b7c; font-style: italic; cursor: default; }
+      .slot-box.filled { border-color: #ffd54f; }
+      .slot-box:not(.empty):hover { border-color: #1e88e5; }
+      .slot-swatch { width: 16px; height: 16px; border-radius: 3px; flex-shrink: 0; }
     </style>
   </head>
   <body>
@@ -301,6 +335,9 @@
       <canvas id="minimap-canvas" class="hidden" width="184" height="150"></canvas>
       <div id="panel-stats"></div>
     </div>
+
+    <!-- Item context menu (equip / eat / drop), positioned on click -->
+    <div id="item-menu" class="hidden"></div>
 
     <div id="creator">
       <div class="card">

@@ -5,6 +5,7 @@ import {
   FurnaceState,
   CRAFT_RECIPES,
   CreatureState,
+  FOOD_VALUE,
   INVASIVE_LABEL,
   ITEM_IDS,
   ITEM_LABEL,
@@ -36,6 +37,7 @@ import {
 import { LogbookEntry, LeaderboardData } from "../../shared/protocol";
 import { SPECIES, resourceSpeciesKey } from "../../shared/species";
 import { Net } from "./net";
+import { drawAvatar } from "./avatar";
 
 const CHARGE_MAX_MS = 600; // hold Space this long for a full-power swing
 const HARVEST_RANGE_PX = 1.8 * TILE_SIZE; // client-side prompt range (cosmetic only)
@@ -90,6 +92,8 @@ export class Game {
   // Per-entity walk tracking: last seen tile pos + a phase accumulator, so the
   // oblique character's legs only stride while actually moving.
   private gait = new Map<string, { x: number; y: number; phase: number; moving: number }>();
+  // Transient melee-swing animation per player id (set from a "melee" fx).
+  private attackAnim = new Map<string, { at: number; stance: "high" | "low" }>();
 
   // Side panel (OSRS-style right panel)
   private panelTab: "inv" | "equip" | "skills" | "log" | "map" | "help" = "inv";
@@ -147,6 +151,23 @@ export class Game {
     for (const mode of ["combat", "research", "profession"] as const) {
       document.getElementById(`mode-${mode}`)?.addEventListener("click", () => this.setMode(mode));
     }
+
+    // Click delegation for inventory / equip cells -> item context menu.
+    document.getElementById("panel-content")?.addEventListener("click", (e) => {
+      const cell = (e.target as HTMLElement).closest("[data-item]") as HTMLElement | null;
+      if (!cell) return;
+      const item = cell.dataset.item as ItemId | undefined;
+      const slot = cell.dataset.slot; // present on equip paper-doll hand slot
+      if (slot === "hand") { this.net.send({ t: "equip", item: null }); this.closeItemMenu(); return; }
+      if (item) this.openItemMenu(item, e.clientX, e.clientY);
+    });
+    // Any outside click / Escape closes the item menu.
+    document.addEventListener("click", (e) => {
+      const m = document.getElementById("item-menu");
+      if (m && !m.classList.contains("hidden") &&
+          !m.contains(e.target as Node) &&
+          !(e.target as HTMLElement).closest("[data-item]")) this.closeItemMenu();
+    });
 
     requestAnimationFrame(() => this.frame());
 
@@ -413,6 +434,7 @@ export class Game {
       this.leaderboard = m.data;
     } else if (m.t === "fx") {
       if (m.kind === "tracer") this.tracers.push({ x1: m.x1, y1: m.y1, x2: m.x2, y2: m.y2, at: performance.now(), weapon: m.weapon });
+      if (m.kind === "melee") this.attackAnim.set(m.id, { at: performance.now(), stance: m.stance });
       if (this.tracers.length > 40) this.tracers.shift();
     } else if (m.t === "log") {
       this.logLines.push(m.msg);
@@ -561,6 +583,49 @@ export class Game {
     if (!item) return;
     const me = this.snap?.players.find((p) => p.id === this.myId);
     if (me && (me.inventory[item] ?? 0) > 0) this.net.send({ t: "equip", item });
+  }
+
+  // --- Item context menu (inventory / equip) --------------------------------
+  private openItemMenu(item: ItemId, x: number, y: number) {
+    const menu = document.getElementById("item-menu")!;
+    const me = this.me;
+    const qty = me?.inventory[item] ?? 0;
+    if (!me || qty <= 0) { this.closeItemMenu(); return; }
+    const isWeapon = (WEAPON_ORDER as ItemId[]).includes(item);
+    const isFood = !!(FOOD_VALUE as Record<string, unknown>)[item];
+    const equipped = me.equipped === item;
+
+    const actions: Array<{ label: string; run: () => void }> = [];
+    if (isWeapon) {
+      if (equipped) actions.push({ label: "Unequip", run: () => this.net.send({ t: "equip", item: null }) });
+      else actions.push({ label: me.mode === "combat" ? "Wield" : "Equip", run: () => this.net.send({ t: "equip", item }) });
+    }
+    if (isFood) actions.push({ label: "Eat", run: () => this.net.send({ t: "eat", item }) });
+    actions.push({ label: "Drop", run: () => this.net.send({ t: "drop", item }) });
+    if (qty > 1) actions.push({ label: `Drop all (${qty})`, run: () => this.net.send({ t: "drop", item, all: true }) });
+
+    menu.innerHTML =
+      `<div class="im-title">${ITEM_LABEL[item] ?? item}</div>` +
+      actions.map((_, i) => `<button data-act="${i}">${actions[i].label}</button>`).join("");
+    menu.querySelectorAll("button").forEach((b) => {
+      b.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const i = parseInt((b as HTMLElement).dataset.act!);
+        actions[i]?.run();
+        this.closeItemMenu();
+      });
+    });
+    // Position, clamped to viewport.
+    menu.classList.remove("hidden");
+    const r = menu.getBoundingClientRect();
+    const px = Math.min(x, window.innerWidth - r.width - 8);
+    const py = Math.min(y, window.innerHeight - r.height - 8);
+    menu.style.left = `${Math.max(8, px)}px`;
+    menu.style.top = `${Math.max(8, py)}px`;
+  }
+
+  private closeItemMenu() {
+    document.getElementById("item-menu")?.classList.add("hidden");
   }
 
   // Cycle combat → research → profession → combat (2 s transform server-side).
@@ -1992,12 +2057,23 @@ export class Game {
       ? Math.abs(Math.sin(gait.phase * 2)) * 2
       : 0;
 
+    // Active melee swing (set from a "melee" fx) → thrust animation over ~250 ms.
+    const ATTACK_MS = 260;
+    const aa = this.attackAnim.get(p.id);
+    let attack: { phase: number; stance: "high" | "low" } | undefined;
+    if (aa) {
+      const t = (performance.now() - aa.at) / ATTACK_MS;
+      if (t >= 1) this.attackAnim.delete(p.id);
+      else attack = { phase: t, stance: aa.stance };
+    }
+
     drawCharacter(ctx, sx + swayX, sy + jumpOffset - researchBob, p.appearance, {
       facing: facingFromDir(p.dir),
       phase: gait.phase,
       moving: gait.moving,
       submerge,
       weapon: p.equipped,
+      attack,
     });
 
     // Leaf overlay when hiding (visible to self as a faint green shimmer).
@@ -2120,7 +2196,12 @@ export class Game {
     } else {
       mmCanvas.classList.add("hidden");
       if (this.panelTab === "inv")         content.innerHTML = this.panelInvHTML(me);
-      else if (this.panelTab === "equip")  content.innerHTML = this.panelEquipHTML(me);
+      else if (this.panelTab === "equip") {
+        content.innerHTML = this.panelEquipHTML(me);
+        // Paint the paper-doll figure into the freshly-rendered canvas.
+        const dc = document.getElementById("doll-canvas") as HTMLCanvasElement | null;
+        if (dc && me) drawAvatar(dc.getContext("2d")!, me.appearance, dc.width, dc.height);
+      }
       else if (this.panelTab === "skills") content.innerHTML = this.panelSkillsHTML(me);
       else if (this.panelTab === "log")    content.innerHTML = this.panelLogbookHTML();
       else if (this.panelTab === "help")   content.innerHTML = this.panelHelpHTML();
@@ -2177,46 +2258,66 @@ export class Game {
     if (!items.length) return '<p class="panel-empty">Bag empty — go gather!</p>';
     const cells = items.map(id => {
       const col = (ITEM_COLORS as Record<string, string>)[id] ?? "#3a5a6a";
-      return `<div class="inv-cell" title="${ITEM_LABEL[id]}">
-        <div class="inv-swatch" style="background:${col}"></div>
+      const equipped = me.equipped === id;
+      return `<div class="inv-cell" data-item="${id}" title="${ITEM_LABEL[id]} — click for options">
+        <div class="inv-swatch" style="background:${col};${equipped ? "outline:2px solid #ffd54f;outline-offset:-2px;" : ""}"></div>
         <div class="inv-qty">×${me.inventory[id]}</div>
         <div class="inv-name">${ITEM_LABEL[id]}</div>
       </div>`;
     }).join("");
-    return `<div class="inv-grid">${cells}</div>`;
+    return `<div class="inv-grid">${cells}</div>
+      <div class="panel-info" style="font-size:10px;color:#5a7f96;margin-top:6px;">Click an item for options · ⚔ in hand has a yellow ring</div>`;
   }
 
   private panelEquipHTML(me?: PlayerState): string {
     if (!me) return '<p class="panel-empty">Not joined yet.</p>';
-    // Clothing items that can be equipped / worn.
-    const CLOTHING_ITEMS: ItemId[] = [
-      "clothShirt", "clothPants", "waxedJacket", "rainCoat",
-      "woolSweater", "wetsuitTop", "wetsuitBottom",
-    ] as ItemId[];
-    const DIVE_ITEMS: ItemId[] = ["snorkelMask", "divingTank"] as ItemId[];
+    // The hand slot holds different things depending on your mode.
+    const handLabel = me.mode === "combat" ? "Weapon"
+      : me.mode === "research" ? "Tool" : "Gear";
+    const handHint = me.mode === "combat" ? "wield a weapon"
+      : me.mode === "research" ? "binoculars, net, listening device…" : "pickaxe, flag, tools…";
 
-    const slotRow = (itemId: ItemId) => {
-      const qty = me.inventory[itemId] ?? 0;
-      const col = (ITEM_COLORS as Record<string, string>)[itemId] ?? "#3a5a6a";
-      const equipped = me.equipped === itemId;
-      return `<div class="inv-cell" title="${ITEM_LABEL[itemId] ?? itemId}${equipped ? " (equipped)" : ""}">
-        <div class="inv-swatch" style="background:${qty > 0 ? col : "#0a1c29"};${equipped ? "outline:2px solid #ffd54f;" : ""}"></div>
-        <div class="inv-qty" style="color:${qty > 0 ? "#eaf2f8" : "#2a4a5a"}">${qty > 0 ? `×${qty}` : "—"}</div>
-        <div class="inv-name">${ITEM_LABEL[itemId] ?? itemId}</div>
-      </div>`;
-    };
+    // Filled hand slot shows the equipped item; click to unequip.
+    let handSlot: string;
+    if (me.equipped) {
+      const col = (ITEM_COLORS as Record<string, string>)[me.equipped] ?? "#ffd54f";
+      handSlot = `<div class="slot-box filled" data-slot="hand" title="Click to unequip">
+        <span class="slot-swatch" style="background:${col}"></span>${ITEM_LABEL[me.equipped] ?? me.equipped}</div>`;
+    } else {
+      handSlot = `<div class="slot-box empty" title="${handHint}">empty — ${handHint}</div>`;
+    }
 
-    const weapRow = me.equipped
-      ? `<div style="margin-bottom:6px;font-size:10px;color:#ffd98a">Weapon: <b>${ITEM_LABEL[me.equipped] ?? me.equipped}</b></div>`
-      : `<div style="margin-bottom:6px;font-size:10px;color:#5a7f96">No weapon equipped</div>`;
+    // Currently only the hand slot is functional; others are placeholders for
+    // the worn-clothing subsystem coming next.
+    const stub = (label: string) =>
+      `<div class="slot-row"><span class="slot-label">${label}</span><div class="slot-box empty">—</div></div>`;
+
+    // Items you can put in your hand (weapons in combat; future tools elsewhere).
+    const handItems = (WEAPON_ORDER as ItemId[]).filter((id) => (me.inventory[id] ?? 0) > 0);
+    const equipList = me.mode === "combat" && handItems.length
+      ? `<div style="font-size:10px;color:#7fd0c2;margin:8px 0 3px;font-weight:700;">Wield</div>
+         <div class="inv-grid">${handItems.map((id) => {
+            const col = (ITEM_COLORS as Record<string, string>)[id] ?? "#3a5a6a";
+            const on = me.equipped === id;
+            return `<div class="inv-cell" data-item="${id}" title="${ITEM_LABEL[id]}">
+              <div class="inv-swatch" style="background:${col};${on ? "outline:2px solid #ffd54f;outline-offset:-2px;" : ""}"></div>
+              <div class="inv-name">${ITEM_LABEL[id]}</div></div>`;
+          }).join("")}</div>`
+      : me.mode === "combat"
+        ? `<div class="panel-info" style="font-size:10px;margin-top:8px;">No weapons yet — craft a stick or buy one.</div>`
+        : `<div class="panel-info" style="font-size:10px;margin-top:8px;">${handLabel} items for ${me.mode} mode are coming soon.</div>`;
 
     return `
-      ${weapRow}
-      <div style="font-size:10px;color:#7fd0c2;margin:4px 0 3px;font-weight:700;">Clothing</div>
-      <div class="inv-grid">${CLOTHING_ITEMS.map(id => slotRow(id)).join("")}</div>
-      <div style="font-size:10px;color:#7fd0c2;margin:6px 0 3px;font-weight:700;">Dive Gear</div>
-      <div class="inv-grid">${DIVE_ITEMS.map(id => slotRow(id)).join("")}</div>
-      <div style="font-size:10px;color:#5a7f96;margin-top:8px;">Buy clothing from the Seamstress · dive gear from the Snorkeler.</div>
+      <div class="doll-wrap">
+        <canvas id="doll-canvas" width="92" height="150"></canvas>
+      </div>
+      ${stub("Head")}
+      ${stub("Torso")}
+      ${stub("Legs")}
+      <div class="slot-row"><span class="slot-label">${handLabel}</span>${handSlot}</div>
+      ${stub("Back")}
+      ${equipList}
+      <div class="panel-info" style="font-size:10px;color:#5a7f96;margin-top:8px;">Worn clothing slots (head/torso/legs/back) unlock with the wardrobe update.</div>
     `;
   }
 
@@ -2263,7 +2364,10 @@ export class Game {
     return `<div class="controls-section">
       <b>Move:</b> WASD &nbsp; <b>Dodge:</b> Shift<br/>
       <b style="color:#ffe7a8">Mode:</b> Tab (or buttons up top)<br/>
-      <span style="color:#6a9ab5">⚔ Combat · 🔬 Research · 🛠 Pro</span><br/><br/>
+      <span style="color:#6a9ab5">⚔ Combat · 🔬 Research · 🛠 Pro</span><br/>
+      <span style="color:#6a9ab5">You can only fight in Combat mode.</span><br/>
+      <b>Items:</b> click in your bag for options<br/>
+      <span style="color:#6a9ab5">(wield · eat · drop)</span><br/><br/>
       <b style="color:#ff9d6b">⚔ Combat:</b><br/>
       <b>Stance:</b> Alt (high=punch / low=kick)<br/>
       <b>Punch/Kick:</b> Space<br/>
@@ -3094,12 +3198,16 @@ function drawCharacter(
   ctx: CanvasRenderingContext2D,
   sx: number, sy: number,
   look: CharLook,
-  o: { facing: Facing; phase: number; moving: boolean; submerge?: number; weapon?: ItemId | null },
+  o: { facing: Facing; phase: number; moving: boolean; submerge?: number; weapon?: ItemId | null;
+       attack?: { phase: number; stance: "high" | "low" } },
 ) {
   const u = TILE_SIZE / 24;                    // scale unit (1 at 24px tiles)
   const face = o.facing;
   const pants = look.pants ?? "#39507a";        // denim
   const swing = o.moving ? Math.sin(o.phase) : 0;
+  // Facing direction as a screen vector, for punch/kick thrusts.
+  const dirX = face === "left" ? -1 : face === "right" ? 1 : 0;
+  const dirY = face === "up" ? -1 : face === "down" ? 1 : 0;
 
   const feetY  = sy + 9 * u;
   const hipY   = sy + 3 * u;
@@ -3188,6 +3296,57 @@ function drawCharacter(
       const ax = sx + frontSide * (bodyW / 2 - 0.5 * u);
       const handY = hipY + (frontSide === -1 ? armPhase : -armPhase);
       drawWeaponInHand(ctx, o.weapon, ax + frontSide * 1.5 * u, handY, frontSide, u);
+    }
+  }
+
+  // ---- punch / kick thrust (transient, from a melee fx) ----
+  if (o.attack) {
+    const t = Math.sin(Math.max(0, Math.min(1, o.attack.phase)) * Math.PI); // 0→1→0
+    // For up/down facings there's no horizontal lean, so throw the limb downward
+    // toward the camera so the swing still reads clearly.
+    const ux = dirX !== 0 ? dirX : 0;
+    const uy = dirX !== 0 ? 0 : (dirY !== 0 ? dirY : 1);
+    if (o.attack.stance === "high") {
+      // Punch: front arm shoots out, fist leading.
+      const reach = 9 * u * t;
+      const ox = sx + ux * reach, oy = shoY + 1 * u + uy * reach * 0.6;
+      ctx.strokeStyle = shade(look.shirt, 0.82);
+      ctx.lineWidth = 3 * u;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(sx + ux * (bodyW / 2), shoY + 1 * u);
+      ctx.lineTo(ox, oy);
+      ctx.stroke();
+      ctx.fillStyle = look.skin;             // fist
+      ctx.beginPath();
+      ctx.arc(ox, oy, 2.4 * u, 0, Math.PI * 2);
+      ctx.fill();
+      if (t > 0.5) {                          // impact spark at full extension
+        ctx.strokeStyle = "rgba(255,236,150,0.9)";
+        ctx.lineWidth = 1.2 * u;
+        for (let i = 0; i < 4; i++) {
+          const a = i * 1.57 + 0.4;
+          ctx.beginPath();
+          ctx.moveTo(ox + Math.cos(a) * 2.6 * u, oy + Math.sin(a) * 2.6 * u);
+          ctx.lineTo(ox + Math.cos(a) * 4.4 * u, oy + Math.sin(a) * 4.4 * u);
+          ctx.stroke();
+        }
+      }
+    } else {
+      // Kick: front leg snaps out, boot leading.
+      const reach = 11 * u * t;
+      const ox = sx + ux * reach, oy = hipY + 3 * u + uy * reach * 0.5;
+      ctx.strokeStyle = pants;
+      ctx.lineWidth = 3.6 * u;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(sx + ux * (bodyW * 0.3), hipY + 1 * u);
+      ctx.lineTo(ox, oy);
+      ctx.stroke();
+      ctx.fillStyle = "#241809";             // boot
+      ctx.beginPath();
+      ctx.ellipse(ox + ux * 1.2 * u, oy, 2.7 * u, 1.7 * u, 0, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 
