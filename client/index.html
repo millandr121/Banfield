@@ -284,8 +284,13 @@
         <label for="name">Name <span id="name-status" class="status"></span></label>
         <input id="name" type="text" maxlength="16" placeholder="Pick a unique name" autocomplete="off" />
 
-        <label for="pass">Passphrase <span class="hint">— remembers your character on any device</span></label>
+        <label for="pass">Password <span class="hint">— remembers your character on any device</span></label>
         <input id="pass" type="password" maxlength="64" placeholder="Something you'll remember" autocomplete="off" />
+
+        <div id="email-row">
+          <label for="email">Email <span class="hint">— optional, for account recovery</span></label>
+          <input id="email" type="email" maxlength="120" placeholder="you@example.com (optional)" autocomplete="off" />
+        </div>
 
         <div id="design">
           <div class="row">

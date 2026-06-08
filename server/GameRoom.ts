@@ -16,6 +16,7 @@ import {
   Inventory,
   InvasiveKind,
   ItemId,
+  LootDrop,
   NpcState,
   PlantStage,
   PlantState,
@@ -233,6 +234,21 @@ const DEATH_PTS_LOSS = 0.35; // fraction of Banfielder points lost on death
 const FISHING_TIME_MS = 5000; // base wait time; reduced by fishing level
 const FISHING_ROD_REQUIRED = true;
 
+// Map tree variety → species-specific wood item.
+function treeWoodItem(variety?: string): ItemId {
+  switch (variety) {
+    case "redcedar":     return "cedarwood";
+    case "sitkaspruce":  return "sprucewood";
+    case "douglasfir":   return "firwood";
+    case "hemlock":      return "hemwood";
+    case "shorepine":    return "pinewood";
+    case "yew":          return "yewwood";
+    case "redalder":     return "alderwood";
+    case "bigleafmaple": return "mapwood";
+    default:             return "wood";
+  }
+}
+
 // Loot table -----------------------------------------------------------------
 function rollLoot(kind: CreatureKind): Array<{ item: ItemId; qty: number }> {
   const drops: Array<{ item: ItemId; qty: number }> = [];
@@ -240,43 +256,69 @@ function rollLoot(kind: CreatureKind): Array<{ item: ItemId; qty: number }> {
   switch (kind) {
     case "crab":
       if (r() < 0.85) drops.push({ item: "crabmeat", qty: 1 });
-      if (r() < 0.35) drops.push({ item: "scrap", qty: 1 });
+      if (r() < 0.5)  drops.push({ item: "bones", qty: 1 });
       break;
     case "octopus":
-      if (r() < 0.6) drops.push({ item: "fish", qty: 1 });
-      if (r() < 0.45) drops.push({ item: "scrap", qty: 1 });
+      if (r() < 0.6)  drops.push({ item: "fish", qty: 1 });
+      if (r() < 0.3)  drops.push({ item: "bones", qty: 1 });
       break;
     case "dogfish":
       drops.push({ item: "fish", qty: 1 + (r() < 0.6 ? 1 : 0) });
-      if (r() < 0.6) drops.push({ item: "scrap", qty: 1 });
+      if (r() < 0.5)  drops.push({ item: "bones", qty: 1 });
+      if (r() < 0.4)  drops.push({ item: "leather", qty: 1 });
       break;
     case "sixgill":
       drops.push({ item: "lingcod", qty: 1 });
-      drops.push({ item: "scrap", qty: 2 });
+      drops.push({ item: "bones", qty: 1 + (r() < 0.5 ? 1 : 0) });
+      if (r() < 0.55) drops.push({ item: "leather", qty: 1 });
       break;
     case "orca":
       drops.push({ item: "fish", qty: 2 });
-      drops.push({ item: "scrap", qty: 2 + Math.floor(r() * 2) });
+      drops.push({ item: "sealMeat", qty: 1 });
+      drops.push({ item: "bones", qty: 2 });
+      if (r() < 0.7)  drops.push({ item: "leather", qty: 2 });
+      break;
+    case "seal":
+      drops.push({ item: "sealMeat", qty: 1 + (r() < 0.5 ? 1 : 0) });
+      if (r() < 0.6)  drops.push({ item: "bones", qty: 1 });
+      if (r() < 0.7)  drops.push({ item: "leather", qty: 1 });
+      break;
+    case "sealLion":
+      drops.push({ item: "sealMeat", qty: 2 });
+      drops.push({ item: "bones", qty: 1 });
+      if (r() < 0.8)  drops.push({ item: "leather", qty: 1 + (r() < 0.5 ? 1 : 0) });
       break;
     // Land prey
     case "deer":
       drops.push({ item: "venison", qty: 1 + (r() < 0.5 ? 1 : 0) });
+      if (r() < 0.7)  drops.push({ item: "bones", qty: 1 });
+      if (r() < 0.55) drops.push({ item: "leather", qty: 1 });
       break;
     case "elk":
       drops.push({ item: "venison", qty: 2 + (r() < 0.6 ? 1 : 0) });
+      drops.push({ item: "bones", qty: 1 + (r() < 0.6 ? 1 : 0) });
+      if (r() < 0.7)  drops.push({ item: "leather", qty: 1 + (r() < 0.4 ? 1 : 0) });
       break;
     case "grouse":
       drops.push({ item: "poultry", qty: 1 });
+      if (r() < 0.6)  drops.push({ item: "bones", qty: 1 });
       break;
     case "bear":
-      drops.push({ item: "venison", qty: 2 });
-      if (r() < 0.4) drops.push({ item: "scrap", qty: 1 });
+      drops.push({ item: "bearMeat", qty: 2 + (r() < 0.5 ? 1 : 0) });
+      drops.push({ item: "bones", qty: 1 + (r() < 0.6 ? 1 : 0) });
+      drops.push({ item: "leather", qty: 1 + (r() < 0.5 ? 1 : 0) });
       break;
-    case "cougar": case "wolf":
-      if (r() < 0.5) drops.push({ item: "venison", qty: 1 });
-      if (r() < 0.35) drops.push({ item: "scrap", qty: 1 });
+    case "cougar":
+      drops.push({ item: "venison", qty: 1 });
+      drops.push({ item: "bones", qty: 1 });
+      if (r() < 0.8)  drops.push({ item: "leather", qty: 1 });
       break;
-    default: break; // neutrals (whales, seals, otters) — discourage killing
+    case "wolf":
+      if (r() < 0.6)  drops.push({ item: "venison", qty: 1 });
+      drops.push({ item: "bones", qty: 1 });
+      if (r() < 0.5)  drops.push({ item: "leather", qty: 1 });
+      break;
+    default: break; // neutrals (whales, seaOtter) — discourage killing
   }
   return drops;
 }
@@ -310,6 +352,8 @@ export class GameRoom {
   // playerId → epoch ms they entered deep water (for the float/drown timer).
   private deepSince = new Map<string, number>();
   private lastDrink = new Map<string, number>(); // throttle freshwater sips
+  private speedBoostUntil = new Map<string, number>(); // playerId → boost expiry ms
+  private lootDrops = new Map<string, LootDrop>(); // ground loot waiting to be picked up
   // accountName → logbook: speciesKey → { count (encounters), firstAt }.
   private discoveries = new Map<string, Record<string, { count: number; firstAt: number }>>();
   // Role tallies, keyed by player name (live this session).
@@ -729,6 +773,7 @@ export class GameRoom {
       dead: false,
       equipped: "stick",
       titles: [],
+      speedBoosted: false,
     };
 
     // Account flow. The `secret` is now the player's chosen passphrase, so an
@@ -742,20 +787,20 @@ export class GameRoom {
       if (row) {
         const claimed = (row.secret as string | null) || "";
         if (claimed && claimed !== (msg.secret ?? "")) {
-          // Wrong passphrase for an existing account — refuse the sign-in.
+          // Wrong password for an existing account — refuse the sign-in.
           this.send(ws, {
             t: "joinDenied",
-            reason: `"${name}" is already registered. Wrong passphrase — try again, or pick a new name.`,
+            reason: `"${name}" is already registered. Wrong password — try again, or pick a new name.`,
           });
           return;
         }
         this.applySave(player, row);
         this.savedNames.set(s.playerId, name);
         restored = true;
-        if (!claimed && msg.secret) await this.savePlayer(player, msg.secret); // claim a legacy unclaimed name
+        if (!claimed && msg.secret) await this.savePlayer(player, msg.secret, msg.email); // claim a legacy unclaimed name
       } else {
         this.savedNames.set(s.playerId, name);
-        await this.savePlayer(player, msg.secret ?? null); // register & claim the name now
+        await this.savePlayer(player, msg.secret ?? null, msg.email); // register & claim the name now
       }
     } catch { /* DB unavailable — play in-memory only */ }
 
@@ -808,18 +853,19 @@ export class GameRoom {
     }
   }
 
-  private async savePlayer(p: PlayerState, secret: string | null) {
+  private async savePlayer(p: PlayerState, secret: string | null, email?: string) {
     if (!this.env.DB) return;
     const now = Date.now();
     try {
       const discoveries = JSON.stringify(this.discoveries.get(p.name) ?? {});
       await this.env.DB.prepare(
         `INSERT INTO players
-           (name, secret, region, x, y, money, banfielder_pts, hp, max_hp, hunger,
+           (name, secret, email, region, x, y, money, banfielder_pts, hp, max_hp, hunger,
             skills, inventory, appearance, discoveries, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(name) DO UPDATE SET
            secret=COALESCE(players.secret, excluded.secret),
+           email=COALESCE(excluded.email, players.email),
            region=excluded.region, x=excluded.x, y=excluded.y,
            money=excluded.money, banfielder_pts=excluded.banfielder_pts,
            hp=excluded.hp, max_hp=excluded.max_hp, hunger=excluded.hunger,
@@ -827,7 +873,7 @@ export class GameRoom {
            appearance=excluded.appearance, discoveries=excluded.discoveries,
            updated_at=excluded.updated_at`,
       ).bind(
-        p.name, secret, p.region, p.x, p.y, p.money, p.banfielderPts,
+        p.name, secret, email ?? null, p.region, p.x, p.y, p.money, p.banfielderPts,
         p.hp, p.maxHp, p.hunger,
         JSON.stringify(p.skills), JSON.stringify(p.inventory), JSON.stringify(p.appearance),
         discoveries, now, now,
@@ -1055,8 +1101,11 @@ export class GameRoom {
       if (swimStroke) this.giveXP(p, "swimming", XP_SWIM_PER_SEC * dt);
 
       const tired = p.swimming && p.stamina <= 0;
-      const speed = p.swimming ? SWIM_SPEED * swimBonus * (tired ? SWIM_TIRED_MULT : 1)
-                               : sprinting ? PLAYER_SPEED * SPRINT_MULT : PLAYER_SPEED;
+      const wingsActive = (this.speedBoostUntil.get(p.id) ?? 0) > now;
+      p.speedBoosted = wingsActive;
+      const wingsMult = wingsActive ? 5 : 1;
+      const speed = (p.swimming ? SWIM_SPEED * swimBonus * (tired ? SWIM_TIRED_MULT : 1)
+                               : sprinting ? PLAYER_SPEED * SPRINT_MULT : PLAYER_SPEED) * wingsMult;
       const imp = this.kb.get(p.id);
       const nx = p.x + (s.dx * speed + (imp?.x ?? 0)) * dt;
       const ny = p.y + (s.dy * speed + (imp?.y ?? 0)) * dt;
@@ -1087,6 +1136,16 @@ export class GameRoom {
 
       // Walk onto a road gate at the map edge and you cross to the next region.
       if (moved) this.autoTravelOnFoot(p);
+
+      // Pick up ground loot by walking over it (within 1.2 tiles).
+      for (const drop of this.lootDrops.values()) {
+        if (drop.region !== p.region) continue;
+        const dx = drop.x - p.x, dy = drop.y - p.y;
+        if (dx * dx + dy * dy > 1.44) continue; // 1.2 tile radius
+        this.addItem(p.inventory, drop.item, drop.qty);
+        this.tell(p, `Picked up ${drop.qty}× ${ITEM_LABEL[drop.item]}.`);
+        this.lootDrops.delete(drop.id);
+      }
     }
     this.decayKnockback(dt);
   }
@@ -1288,7 +1347,8 @@ export class GameRoom {
     bestNode.hp -= 1;
     let respawnMs = ORE_RESPAWN_MS;
     if (bestNode.kind === "tree") {
-      this.addItem(p.inventory, "wood", 1);
+      const woodType = treeWoodItem(bestNode.variety);
+      this.addItem(p.inventory, woodType, 1);
       this.giveXP(p, "woodcutting", XP_CHOP);
       respawnMs = bestNode.variety === "arbutus" ? ARBUTUS_RESPAWN_MS : TREE_RESPAWN_MS;
     } else if (bestNode.kind === "berryBush") {
@@ -1297,6 +1357,9 @@ export class GameRoom {
       respawnMs = BERRY_RESPAWN_MS;
     } else if (bestNode.kind === "ironOre") {
       this.addItem(p.inventory, "iron", 1);
+      this.giveXP(p, "mining", XP_MINE);
+    } else if (bestNode.kind === "clayDeposit") {
+      this.addItem(p.inventory, "clay", 1);
       this.giveXP(p, "mining", XP_MINE);
     } else {
       this.addItem(p.inventory, "stone", 1);
@@ -1560,6 +1623,26 @@ export class GameRoom {
     // food you have, rather than fixed ingredients. Handle before the cost check.
     if (recipeId === "cook") {
       this.doCook(p);
+      return;
+    }
+
+    // Plank can be crafted from ANY wood species (3 pieces = 1 plank).
+    if (recipeId === "plank") {
+      const woodIds: ItemId[] = ["wood","cedarwood","sprucewood","firwood","hemwood","pinewood","yewwood","alderwood","mapwood"];
+      let need = 3;
+      for (const wid of woodIds) {
+        const have = p.inventory[wid] ?? 0;
+        if (have <= 0) continue;
+        const use = Math.min(have, need);
+        p.inventory[wid] = have - use;
+        if (p.inventory[wid] === 0) delete p.inventory[wid];
+        need -= use;
+        if (need <= 0) break;
+      }
+      if (need > 0) { this.tell(p, `Need 3 wood total (any species) to make a plank.`); return; }
+      this.addItem(p.inventory, "plank", 1);
+      this.giveXP(p, "woodcutting", 12);
+      this.tell(p, "Crafted 1 plank.");
       return;
     }
 
@@ -1898,6 +1981,12 @@ export class GameRoom {
         else { target = parts[0]; qty = isNaN(n1) ? 1 : n1; }
       } else { target = parts[0] ?? ""; }
       const sk = target.toLowerCase();
+      if (sk === "wings") {
+        const secs = isNaN(qty) ? 30 : Math.min(qty, 600);
+        this.speedBoostUntil.set(p.id, Date.now() + secs * 1000);
+        this.tell(p, `Wings active for ${secs}s — 5× speed!`);
+        return;
+      }
       const matchSkill = SKILL_NAMES.find((s) => s.toLowerCase() === sk);
       const matchItem = ITEM_IDS.find((id) => id.toLowerCase() === sk);
       if (matchSkill) {
@@ -1907,7 +1996,25 @@ export class GameRoom {
         this.addItem(p.inventory, matchItem, qty);
         this.tell(p, `Gave ${qty}× ${ITEM_LABEL[matchItem]}.`);
       } else {
-        this.tell(p, `Unknown: "${target}". Items: ${ITEM_IDS.join(" ")} | Skills: ${SKILL_NAMES.join(" ")}`);
+        this.tell(p, `Unknown: "${target}". Items: ${ITEM_IDS.join(" ")} | Skills: ${SKILL_NAMES.join(" ")} | wings`);
+      }
+      return;
+    }
+    if (msg.startsWith("/remove ")) {
+      const target = msg.slice(8).trim().toLowerCase();
+      if (target === "wings") {
+        this.speedBoostUntil.delete(p.id);
+        p.speedBoosted = false;
+        this.tell(p, "Wings removed.");
+      } else {
+        const matchItem = ITEM_IDS.find((id) => id.toLowerCase() === target);
+        if (matchItem) {
+          const had = p.inventory[matchItem] ?? 0;
+          delete p.inventory[matchItem];
+          this.tell(p, `Removed ${had}× ${ITEM_LABEL[matchItem]} from inventory.`);
+        } else {
+          this.tell(p, `Unknown target: "${target}". Try /remove wings or /remove [item].`);
+        }
       }
       return;
     }
@@ -1955,11 +2062,28 @@ export class GameRoom {
       return;
     }
     if (msg.startsWith("/spawn ")) {
-      const kind = msg.slice(7).trim() as CreatureKind;
+      const kind = msg.slice(7).trim().toLowerCase();
       const region = this.regions.get(p.region);
       if (!region) return;
-      const id = `spawn-${kind}-${Date.now()}`;
-      this.creatures.set(id, { id, kind, region: p.region, x: p.x + 2, y: p.y + 2, hp: creatureHp(kind) });
+      // Spawn vehicle (car or boat) right in front of the player.
+      if (kind === "car" || kind === "boat") {
+        const fwd = kind === "boat" ? 3 : 2;
+        const vx = p.x + Math.cos(p.dir) * fwd;
+        const vy = p.y + Math.sin(p.dir) * fwd;
+        const vid = `spawn-${kind}-${++this.idCounter}`;
+        this.vehicles.set(vid, {
+          id: vid, kind, region: p.region,
+          x: vx, y: vy, dir: p.dir,
+          hp: 100, maxHp: 100,
+          fuel: 100, maxFuel: 100,
+          driverId: null,
+          lastDriven: Date.now(),
+        });
+        this.tell(p, `Spawned a ${kind} in front of you. Press E to board.`);
+        return;
+      }
+      const id = `spawn-${kind}-${++this.idCounter}`;
+      this.creatures.set(id, { id, kind: kind as CreatureKind, region: p.region, x: p.x + 2, y: p.y + 2, hp: creatureHp(kind as CreatureKind) });
       this.tell(p, `Spawned a ${kind} at (${Math.round(p.x + 2)}, ${Math.round(p.y + 2)}).`);
       return;
     }
@@ -1977,7 +2101,7 @@ export class GameRoom {
       return;
     }
     if (msg === "/help" || msg === "/commands") {
-      this.tell(p, "Commands: /give [qty] [item|skill] | /money [n] | /tp [x] [y] | /god | /tide [tsunami|king|none] | /spawn [creature] | /kill | /heal | /where | /who | /team [name]");
+      this.tell(p, "Commands: /give [qty] [item|skill|wings] | /remove [item|wings] | /money [n] | /tp [x] [y] | /god | /tide [tsunami|king|none] | /spawn [creature|car|boat] | /kill | /heal | /where | /who | /team [name]");
       return;
     }
     // ---- End admin commands -------------------------------------------------
@@ -2099,7 +2223,23 @@ export class GameRoom {
     this.applyKnockback(c.id, c.x - p.x, c.y - p.y, knockback);
     if (c.hp <= 0) {
       this.giveXP(p, "combat", creatureHp(c.kind) * XP_KILL_PER_HP);
-      for (const drop of rollLoot(c.kind)) this.addItem(p.inventory, drop.item, drop.qty);
+      const drops = rollLoot(c.kind);
+      if (drops.length > 0) {
+        // Scatter drops around the creature's death position.
+        const angle0 = Math.random() * Math.PI * 2;
+        for (let i = 0; i < drops.length; i++) {
+          const ang = angle0 + (i / drops.length) * Math.PI * 2;
+          const dist = 0.5 + Math.random() * 0.8;
+          const id = `drop-${++this.idCounter}`;
+          this.lootDrops.set(id, {
+            id, region: c.region,
+            x: c.x + Math.cos(ang) * dist,
+            y: c.y + Math.sin(ang) * dist,
+            item: drops[i].item,
+            qty: drops[i].qty,
+          });
+        }
+      }
       this.creatures.delete(c.id);
       this.kb.delete(c.id);
     }
@@ -2853,6 +2993,7 @@ export class GameRoom {
       campfires: [...this.campfires.values()].filter((f) => f.region === regionId),
       furnaces:  [...this.furnaces.values()].filter((f) => f.region === regionId),
       npcs: this.npcs.filter((n) => n.region === regionId),
+      lootDrops: [...this.lootDrops.values()].filter((d) => d.region === regionId && near(d.x, d.y)),
     };
   }
 

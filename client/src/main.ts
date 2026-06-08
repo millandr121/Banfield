@@ -6,6 +6,7 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 
 const nameInput = $<HTMLInputElement>("name");
 const passInput = $<HTMLInputElement>("pass");
+const emailInput = $<HTMLInputElement>("email");
 const skinInput = $<HTMLInputElement>("skin");
 const hairInput = $<HTMLInputElement>("hair");
 const shirtInput = $<HTMLInputElement>("shirt");
@@ -63,6 +64,7 @@ function setMode(m: "new" | "return") {
   tabNew.classList.toggle("active", m === "new");
   tabReturn.classList.toggle("active", m === "return");
   designBox.classList.toggle("hidden", m === "return"); // returning players keep their look
+  document.getElementById("email-row")!.classList.toggle("hidden", m === "return");
   playBtn.textContent = m === "new" ? "Wash ashore" : "Sign in";
   nameStatus.textContent = "";
   nameStatus.className = "status";
@@ -111,7 +113,7 @@ function submit() {
   const pass = passInput.value;
   authError.classList.add("hidden");
   if (name.length < 2) { showError("Pick a name (at least 2 characters)."); return; }
-  if (pass.length < 4) { showError("Choose a passphrase of at least 4 characters — it's how you log back in."); return; }
+  if (pass.length < 4) { showError("Choose a password of at least 4 characters — it's how you log back in."); return; }
   if (mode === "new" && nameStatus.classList.contains("taken")) {
     showError("That name's taken. Pick another, or switch to “Returning”."); return;
   }
@@ -120,7 +122,7 @@ function submit() {
 
   playBtn.disabled = true;
   playBtn.textContent = "Connecting…";
-  game.start(name, app, pass, mode === "new");
+  game.start(name, app, pass, mode === "new", emailInput.value.trim() || undefined);
 
   // Reveal the HUD; if the join is denied, onJoinDenied re-enables the form.
   $("creator").classList.add("hidden");

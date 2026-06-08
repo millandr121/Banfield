@@ -107,9 +107,16 @@ export function defaultSkills(): Skills {
 
 // --- Inventory --------------------------------------------------------------
 export const ITEM_IDS = [
-  "wood", "iron", "stone", "plank", "scrap", "rod",
+  // generic wood (for crafting when species doesn't matter)
+  "wood",
+  // species-specific lumber — each tree drops its own kind
+  "cedarwood", "sprucewood", "firwood", "hemwood", "pinewood",
+  "yewwood", "alderwood", "mapwood",
+  "iron", "stone", "plank", "scrap", "rod",
+  "clay", "pottery",
   "crabmeat", "fish", "liveFish", "salmon", "lingcod", "halibut", "tuna",
-  "venison", "poultry",
+  "venison", "poultry", "bearMeat", "sealMeat",
+  "bones", "leather",
   "berry", "cookedcrab", "cookedfish", "cookedsalmon", "cookedlingcod",
   "cookedvenison", "cookedpoultry",
   "ironBar", "shinyLure", "jerryCan",
@@ -122,10 +129,15 @@ export type ItemId = (typeof ITEM_IDS)[number];
 export type Inventory = Partial<Record<ItemId, number>>;
 export const ITEM_LABEL: Record<ItemId, string> = {
   wood: "Wood", iron: "Iron ore", stone: "Stone", plank: "Plank", scrap: "Scrap", rod: "Rod",
+  clay: "Clay", pottery: "Pottery",
+  cedarwood: "Cedar wood", sprucewood: "Spruce wood", firwood: "Fir wood",
+  hemwood: "Hemlock wood", pinewood: "Shore pine wood", yewwood: "Yew wood",
+  alderwood: "Alder wood", mapwood: "Maple wood",
   crabmeat: "Crab meat",
   fish: "Raw fish", liveFish: "Live fish",
   salmon: "Salmon", lingcod: "Lingcod", halibut: "Halibut", tuna: "Tuna",
-  venison: "Venison", poultry: "Game bird",
+  venison: "Venison", poultry: "Game bird", bearMeat: "Bear meat", sealMeat: "Seal meat",
+  bones: "Bones", leather: "Leather",
   berry: "Berries",
   cookedcrab: "Cooked crab", cookedfish: "Cooked fish",
   cookedsalmon: "Cooked salmon", cookedlingcod: "Cooked lingcod",
@@ -147,6 +159,8 @@ export const FOOD_VALUE: Partial<Record<ItemId, { hunger: number; hp: number }>>
   tuna:          { hunger: 28, hp: 14 },
   venison:       { hunger: 16, hp: 6  },
   poultry:       { hunger: 10, hp: 4  },
+  bearMeat:      { hunger: 20, hp: 8  },
+  sealMeat:      { hunger: 18, hp: 7  },
   berry:         { hunger: 15, hp: 6  },
   cookedcrab:    { hunger: 36, hp: 20 },
   cookedfish:    { hunger: 42, hp: 24 },
@@ -166,7 +180,7 @@ export const COOK_MAP: Partial<Record<ItemId, ItemId>> = {
 
 // --- Resource nodes ---------------------------------------------------------
 // Trees, ore veins, and native berry bushes — all harvest-and-respawn.
-export type ResourceKind = "tree" | "ironOre" | "stoneOre" | "berryBush";
+export type ResourceKind = "tree" | "ironOre" | "stoneOre" | "clayDeposit" | "berryBush";
 export interface ResourceNode {
   id: string;
   kind: ResourceKind;
@@ -231,7 +245,8 @@ export interface FurnaceState {
 export type CraftRecipeId =
   | "plank" | "rod" | "campfire" | "cook"
   | "smelt" | "furnace" | "shinyLure"
-  | "repairVehicle" | "repairBuilding";
+  | "repairVehicle" | "repairBuilding"
+  | "pottery";
 
 // Shared recipe data — used by server for logic AND by client for the craft panel.
 export interface RecipeInfo {
@@ -243,7 +258,8 @@ export interface RecipeInfo {
 }
 
 export const CRAFT_RECIPES: RecipeInfo[] = [
-  { id: "plank",         name: "Plank",              needs: { wood: 3 },                gives: { plank: 1 },     note: "3 timber → 1 plank" },
+  { id: "plank",         name: "Plank",              needs: { wood: 3 },                gives: { plank: 1 },     note: "3 timber → 1 plank (any wood type)" },
+  { id: "pottery",      name: "Pottery",             needs: { clay: 3 },                gives: { pottery: 1 },   note: "3 clay → 1 pottery vessel (fire in a furnace)" },
   { id: "rod",           name: "Fishing Rod",         needs: { wood: 3, iron: 2 },       gives: { rod: 1 },       note: "3 wood + 2 iron ore → fishing rod" },
   { id: "campfire",      name: "Campfire",             needs: { wood: 4 },                gives: {},               note: "4 wood — light a fire to cook on" },
   { id: "cook",          name: "Cook (at a fire)",     needs: {},                         gives: {},               note: "Cook raw meat/fish on a nearby fire" },
@@ -253,6 +269,16 @@ export const CRAFT_RECIPES: RecipeInfo[] = [
   { id: "repairVehicle", name: "Repair Vehicle",       needs: { plank: 2, scrap: 2 },     gives: {},               note: "2 plank + 2 scrap → +50 HP nearest vehicle" },
   { id: "repairBuilding",name: "Repair Building",      needs: { wood: 5, stone: 3 },      gives: {},               note: "5 wood + 3 stone → +80 HP nearest building" },
 ];
+
+// A loot item dropped on the ground after a creature death.
+export interface LootDrop {
+  id: string;
+  region: RegionId;
+  x: number;
+  y: number;
+  item: ItemId;
+  qty: number;
+}
 
 export interface PlayerState {
   id: string;
@@ -283,6 +309,7 @@ export interface PlayerState {
   dead: boolean;
   equipped: ItemId | null; // currently wielded weapon (null = bare hands)
   titles: string[]; // earned community roles (Mayor, BMSC President, Nurse, ...)
+  speedBoosted: boolean; // /give wings active — 5× speed
 }
 
 export type CreatureKind =
@@ -420,7 +447,7 @@ export interface LeaderboardData {
 }
 
 export type ClientMessage =
-  | { t: "join"; name: string; appearance: Appearance; secret?: string; register?: boolean }
+  | { t: "join"; name: string; appearance: Appearance; secret?: string; register?: boolean; email?: string }
   | { t: "checkName"; name: string } // login screen: is this name already taken?
   | { t: "scan" } // fire the discovery radius — log nearby species
   | { t: "equip"; item: ItemId | null } // wield a weapon (null = bare hands)
@@ -456,6 +483,7 @@ export interface Snapshot {
   campfires: CampfireState[];
   furnaces: FurnaceState[];
   npcs: NpcState[];
+  lootDrops: LootDrop[];
 }
 
 export type ServerMessage =

@@ -9,6 +9,7 @@ import {
   ITEM_IDS,
   ITEM_LABEL,
   ItemId,
+  LootDrop,
   NpcState,
   PlantState,
   PlayerState,
@@ -121,10 +122,10 @@ export class Game {
   }
 
   // Submit a sign-in / registration. `secret` is the player's passphrase, which
-  // doubles as the cross-device account claim (real recovery, no email yet).
-  start(name: string, appearance: Appearance, secret: string, register = false) {
+  // doubles as the cross-device account claim (email is optional, stored for recovery).
+  start(name: string, appearance: Appearance, secret: string, register = false, email?: string) {
     this.net.connect();
-    this.net.send({ t: "join", name, appearance, secret, register });
+    this.net.send({ t: "join", name, appearance, secret, register, email });
     if (this.started) return; // a retry after a denied sign-in — loop already runs
     this.started = true;
 
@@ -654,6 +655,11 @@ export class Game {
 
     for (const p of this.snap.players)
       items.push({ baseY: p.y + 0.375, z: 3, draw: () => this.drawPlayer(p, p.id === this.myId) });
+
+    for (const d of this.snap.lootDrops ?? []) {
+      const { sx, sy } = this.toScreen(d.x, d.y);
+      items.push({ baseY: d.y, z: 0, draw: () => drawLootDrop(this.ctx, d, sx, sy) });
+    }
 
     items.sort((a, b) => a.baseY - b.baseY || a.z - b.z);
     for (const it of items) it.draw();
@@ -1755,6 +1761,7 @@ export class Game {
       phase: gait.phase,
       moving: gait.moving,
       submerge,
+      weapon: p.equipped,
     });
 
     // HP / stamina bar floating above the head (oblique-friendly, not a ring).
@@ -1785,6 +1792,19 @@ export class Game {
       ctx.textAlign = "left";
       const zt = Math.floor(performance.now() / 400) % 3;
       ctx.fillText("z".repeat(zt + 1), sx + R, sy - R);
+    }
+
+    // Wings speed boost — streaky trail + feather glints.
+    if (p.speedBoosted) {
+      const t = performance.now();
+      for (let i = 0; i < 4; i++) {
+        const ang = (i / 4) * Math.PI * 2 + t / 120;
+        const r2 = R * (0.9 + 0.4 * Math.sin(t / 200 + i));
+        ctx.beginPath();
+        ctx.arc(sx + Math.cos(ang) * r2, sy + Math.sin(ang) * r2 * 0.55, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = `hsla(${(t / 8 + i * 60) % 360},90%,80%,0.8)`;
+        ctx.fill();
+      }
     }
 
     // Name (with a title tag for role-holders).
@@ -1989,10 +2009,17 @@ const TRAVEL_COLOR: Record<TravelNode["kind"], string> = {
 
 // Inventory swatch colours, by item.
 const ITEM_COLORS: Record<string, string> = {
-  wood: "#6b4423", iron: "#8a6040", stone: "#8a8a8a", plank: "#a0783c",
+  wood: "#6b4423", cedarwood: "#5c3a1e", sprucewood: "#4a7a3a", firwood: "#3d6a30",
+  hemwood: "#5a7e50", pinewood: "#7a8a45", yewwood: "#4a2e20", alderwood: "#8a7a38", mapwood: "#9a7820",
+  iron: "#8a6040", stone: "#8a8a8a", plank: "#a0783c", clay: "#b5651d", pottery: "#a0522d",
   scrap: "#607d8b", rod: "#4a6a80", crabmeat: "#d4824a", fish: "#4a9abf",
   liveFish: "#2eafd4", berry: "#3a59c0", cookedcrab: "#e05c20", cookedfish: "#c8a040",
+  venison: "#c0392b", bearMeat: "#6d2b1a", sealMeat: "#8e5fa0", poultry: "#d4a52a",
+  bones: "#c8d0d4", leather: "#8d6e50",
   ironBar: "#b0b0c0", shinyLure: "#ffd54f", jerryCan: "#e07020",
+  stick: "#8d6e63", huntingKnife: "#cfd8dc", bow: "#8d6e63", crossbow: "#5d4037",
+  speargun: "#455a64", rifle: "#3e2723",
+  arrow: "#8d6e63", bolt: "#78909c", spear: "#607d8b", bullet: "#90a4ae",
 };
 
 // NPC display name + body colour + dialogue, keyed by kind.
@@ -2102,14 +2129,14 @@ interface TreeSpec {
   shape?: ConShape;
 }
 const TREE_SPECS: Record<string, TreeSpec> = {
-  redcedar:    { type:"conifer", trunk:"#6b4a2b", canopy:["#2c6230","#367a35","#49923f"], base:1.10, vary:0.70, shape:"broad" },
-  sitkaspruce: { type:"conifer", trunk:"#5e4a34", canopy:["#1f5742","#27684e","#368063"], base:1.18, vary:0.70, shape:"column" },
-  douglasfir:  { type:"conifer", trunk:"#5a3f28", canopy:["#234b25","#2d5d2d","#3c7339"], base:1.05, vary:0.60, shape:"cone" },
-  hemlock:     { type:"conifer", trunk:"#5a4632", canopy:["#356b3a","#418347","#57a55e"], base:0.82, vary:0.30, shape:"droop" },
-  shorepine:   { type:"conifer", trunk:"#6b5436", canopy:["#4f6f33","#5f8038","#74974a"], base:0.72, vary:0.25, shape:"scrub" },
-  yew:         { type:"conifer", trunk:"#7a3b2a", canopy:["#1b3d29","#244e33","#2f6040"], base:0.66, vary:0.20, shape:"dense" },
-  redalder:    { type:"broadleaf", trunk:"#8a8170", canopy:["#4a7d3a","#5b9146","#73a857"], base:0.9,  vary:0.35 },
-  bigleafmaple:{ type:"broadleaf", trunk:"#7a6b54", canopy:["#5a8a32","#6fa23e","#88b955"], base:1.1,  vary:0.55 },
+  redcedar:    { type:"conifer", trunk:"#6b4a2b", canopy:["#2c6230","#367a35","#49923f"], base:1.80, vary:1.10, shape:"broad" },
+  sitkaspruce: { type:"conifer", trunk:"#5e4a34", canopy:["#1f5742","#27684e","#368063"], base:1.90, vary:1.10, shape:"column" },
+  douglasfir:  { type:"conifer", trunk:"#5a3f28", canopy:["#234b25","#2d5d2d","#3c7339"], base:1.70, vary:0.95, shape:"cone" },
+  hemlock:     { type:"conifer", trunk:"#5a4632", canopy:["#356b3a","#418347","#57a55e"], base:1.30, vary:0.55, shape:"droop" },
+  shorepine:   { type:"conifer", trunk:"#6b5436", canopy:["#4f6f33","#5f8038","#74974a"], base:1.10, vary:0.45, shape:"scrub" },
+  yew:         { type:"conifer", trunk:"#7a3b2a", canopy:["#1b3d29","#244e33","#2f6040"], base:1.00, vary:0.40, shape:"dense" },
+  redalder:    { type:"broadleaf", trunk:"#8a8170", canopy:["#4a7d3a","#5b9146","#73a857"], base:1.40, vary:0.60 },
+  bigleafmaple:{ type:"broadleaf", trunk:"#7a6b54", canopy:["#5a8a32","#6fa23e","#88b955"], base:1.70, vary:0.85 },
 };
 
 // A layered conifer: trunk + stacked tiers of foliage tapering to a crown.
@@ -2247,6 +2274,22 @@ function drawResourceSprite(ctx: CanvasRenderingContext2D, n: ResourceNode, x: n
       ctx.arc(x + ox, y + oy, 2.1, 0, Math.PI * 2);
       ctx.fill();
     }
+  } else if (n.kind === "clayDeposit") {
+    // Clay deposit: earthy reddish mound near water.
+    ctx.fillStyle = "#b5651d";
+    ctx.beginPath();
+    ctx.ellipse(x, y + R * 0.2, R * 1.0, R * 0.55, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#cd8a40";
+    ctx.beginPath();
+    ctx.ellipse(x - R * 0.2, y - R * 0.1, R * 0.5, R * 0.3, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#a0522d";
+    ctx.strokeStyle = "rgba(0,0,0,0.2)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(x, y, R, 0, Math.PI * 2);
+    ctx.stroke();
   } else {
     // Ore vein: rough rock cluster
     const col = n.kind === "ironOre" ? "#8a6040" : "#8a8a8a";
@@ -2437,6 +2480,48 @@ function drawFurnaceSprite(ctx: CanvasRenderingContext2D, x: number, y: number) 
   }
 }
 
+// --- ground loot drop --------------------------------------------------------
+const LOOT_COLORS: Partial<Record<string, string>> = {
+  venison: "#c0392b", bearMeat: "#6d2b1a", sealMeat: "#8e5fa0", poultry: "#d4a52a",
+  fish: "#3498db", salmon: "#e67e22", lingcod: "#2ecc71", halibut: "#1abc9c",
+  crabmeat: "#e74c3c", bones: "#ecf0f1", leather: "#795548",
+  wood: "#8d6e63", cedarwood: "#6d4c41", sprucewood: "#5d8a4e", firwood: "#4e7a3d",
+  hemwood: "#7b9a6d", pinewood: "#9e9e6a", yewwood: "#5c4033", alderwood: "#a8a055", mapwood: "#b8860b",
+  arrow: "#8d6e63", bolt: "#78909c", spear: "#607d8b", bullet: "#90a4ae",
+  clay: "#b5651d", pottery: "#a0522d",
+  iron: "#607d8b", stone: "#9e9e9e",
+};
+function drawLootDrop(ctx: CanvasRenderingContext2D, drop: LootDrop, x: number, y: number) {
+  const bob = Math.sin(performance.now() / 500 + drop.x * 7.3 + drop.y * 3.1) * 2;
+  const r = TILE_SIZE * 0.22;
+  // Glow
+  const pulse = 0.4 + 0.3 * Math.abs(Math.sin(performance.now() / 700));
+  ctx.save();
+  ctx.globalAlpha = pulse;
+  ctx.beginPath();
+  ctx.arc(x, y + bob, r * 1.8, 0, Math.PI * 2);
+  ctx.fillStyle = "#fff";
+  ctx.fill();
+  ctx.restore();
+  // Item circle
+  ctx.beginPath();
+  ctx.arc(x, y + bob, r, 0, Math.PI * 2);
+  ctx.fillStyle = LOOT_COLORS[drop.item] ?? "#aaa";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,0.7)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  // Qty label if >1
+  if (drop.qty > 1) {
+    ctx.fillStyle = "#fff";
+    ctx.font = `bold ${Math.max(7, r * 0.9)}px system-ui`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(drop.qty), x, y + bob);
+  }
+  ctx.textBaseline = "alphabetic";
+}
+
 // --- vehicle sprites (top-down) ---------------------------------------------
 function drawVehicleSprite(ctx: CanvasRenderingContext2D, v: VehicleState, x: number, y: number) {
   ctx.save();
@@ -2584,11 +2669,62 @@ function facingFromDir(dir: number): Facing {
 
 interface CharLook { skin: string; hair: string; shirt: string; pants?: string }
 
+function drawWeaponInHand(ctx: CanvasRenderingContext2D, weapon: ItemId, hx: number, hy: number, side: -1 | 1, u: number) {
+  const ang = side === 1 ? -Math.PI * 0.3 : Math.PI * 0.3; // tilt away from body
+  ctx.save();
+  ctx.translate(hx, hy);
+  ctx.rotate(ang);
+  switch (weapon) {
+    case "stick": {
+      ctx.strokeStyle = "#8d6e63"; ctx.lineWidth = 1.4 * u; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -9 * u); ctx.stroke();
+      break;
+    }
+    case "huntingKnife": {
+      // Handle
+      ctx.fillStyle = "#5d4037"; ctx.fillRect(-0.8 * u, 0, 1.6 * u, 3 * u);
+      // Blade
+      ctx.fillStyle = "#cfd8dc";
+      ctx.beginPath(); ctx.moveTo(-0.9 * u, -6 * u); ctx.lineTo(0.9 * u, 0); ctx.lineTo(-0.9 * u, 0); ctx.closePath(); ctx.fill();
+      break;
+    }
+    case "bow": {
+      ctx.strokeStyle = "#8d6e63"; ctx.lineWidth = 1.2 * u; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.arc(0, -4 * u, 5 * u, Math.PI * 0.55, Math.PI * 1.45); ctx.stroke();
+      ctx.strokeStyle = "rgba(200,220,240,0.8)"; ctx.lineWidth = 0.5 * u;
+      ctx.beginPath(); ctx.moveTo(-4.8 * u, -7.2 * u); ctx.lineTo(-4.8 * u, -0.8 * u); ctx.stroke();
+      break;
+    }
+    case "crossbow": {
+      ctx.strokeStyle = "#5d4037"; ctx.lineWidth = 1.5 * u; ctx.lineCap = "square";
+      ctx.beginPath(); ctx.moveTo(0, 1 * u); ctx.lineTo(0, -7 * u); ctx.stroke();
+      ctx.strokeStyle = "#78909c"; ctx.lineWidth = 1.2 * u;
+      ctx.beginPath(); ctx.moveTo(-5 * u, -5 * u); ctx.lineTo(5 * u, -5 * u); ctx.stroke();
+      break;
+    }
+    case "speargun": {
+      ctx.strokeStyle = "#455a64"; ctx.lineWidth = 1.6 * u; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(0, 2 * u); ctx.lineTo(0, -8 * u); ctx.stroke();
+      ctx.fillStyle = "#cfd8dc"; // tip
+      ctx.beginPath(); ctx.moveTo(-1 * u, -8 * u); ctx.lineTo(1 * u, -8 * u); ctx.lineTo(0, -11 * u); ctx.closePath(); ctx.fill();
+      break;
+    }
+    case "rifle": {
+      ctx.strokeStyle = "#3e2723"; ctx.lineWidth = 1.8 * u; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(-1 * u, 2 * u); ctx.lineTo(0, -9 * u); ctx.stroke();
+      ctx.strokeStyle = "#78909c"; ctx.lineWidth = 1.2 * u;
+      ctx.beginPath(); ctx.moveTo(-1 * u, -3 * u); ctx.lineTo(-4 * u, -3 * u); ctx.stroke(); // mag
+      break;
+    }
+  }
+  ctx.restore();
+}
+
 function drawCharacter(
   ctx: CanvasRenderingContext2D,
   sx: number, sy: number,
   look: CharLook,
-  o: { facing: Facing; phase: number; moving: boolean; submerge?: number },
+  o: { facing: Facing; phase: number; moving: boolean; submerge?: number; weapon?: ItemId | null },
 ) {
   const u = TILE_SIZE / 24;                    // scale unit (1 at 24px tiles)
   const face = o.facing;
@@ -2675,7 +2811,14 @@ function drawCharacter(
     ctx.fillStyle = shade(look.shirt, 0.8); // lower-torso shading
     roundRect(ctx, sx - bodyW / 2, hipY - 1 * u, bodyW, 4 * u, 2.5 * u);
     ctx.fill();
-    drawArm(face === "right" ? -1 : 1);     // front arm
+    const frontSide: -1 | 1 = face === "right" ? -1 : 1;
+    drawArm(frontSide);                     // front arm
+    // Weapon held in the front hand.
+    if (o.weapon) {
+      const ax = sx + frontSide * (bodyW / 2 - 0.5 * u);
+      const handY = hipY + (frontSide === -1 ? armPhase : -armPhase);
+      drawWeaponInHand(ctx, o.weapon, ax + frontSide * 1.5 * u, handY, frontSide, u);
+    }
   }
 
   // ---- head (shifts slightly toward the facing side for a clearer profile) ----
@@ -3076,7 +3219,7 @@ function drawWhale(ctx: CanvasRenderingContext2D, x: number, y: number, color: s
 }
 
 function drawDeer(ctx: CanvasRenderingContext2D, x: number, y: number) {
-  const r = TILE_SIZE * 0.3;
+  const r = TILE_SIZE * 0.52;
   // Body — slender golden tan
   ctx.fillStyle = "#c08848";
   ctx.beginPath();
@@ -3124,7 +3267,7 @@ function drawDeer(ctx: CanvasRenderingContext2D, x: number, y: number) {
 }
 
 function drawElk(ctx: CanvasRenderingContext2D, x: number, y: number) {
-  const r = TILE_SIZE * 0.38;
+  const r = TILE_SIZE * 0.70;
   // Body — large dark brown
   ctx.fillStyle = "#5a3a1a";
   ctx.beginPath();
@@ -3177,7 +3320,7 @@ function drawElk(ctx: CanvasRenderingContext2D, x: number, y: number) {
 }
 
 function drawGrouse(ctx: CanvasRenderingContext2D, x: number, y: number) {
-  const r = TILE_SIZE * 0.22;
+  const r = TILE_SIZE * 0.38;
   // Round body — speckled brown
   ctx.fillStyle = "#7a6038";
   ctx.beginPath();
@@ -3222,7 +3365,7 @@ function drawGrouse(ctx: CanvasRenderingContext2D, x: number, y: number) {
 }
 
 function drawBear(ctx: CanvasRenderingContext2D, x: number, y: number) {
-  const r = TILE_SIZE * 0.4;
+  const r = TILE_SIZE * 0.72;
   // Massive body — very dark brown
   ctx.fillStyle = "#251810";
   ctx.beginPath();
@@ -3275,7 +3418,7 @@ function drawBear(ctx: CanvasRenderingContext2D, x: number, y: number) {
 }
 
 function drawCougar(ctx: CanvasRenderingContext2D, x: number, y: number) {
-  const r = TILE_SIZE * 0.33;
+  const r = TILE_SIZE * 0.58;
   // Sleek elongated tawny body
   ctx.fillStyle = "#c88040";
   ctx.beginPath();
@@ -3332,7 +3475,7 @@ function drawCougar(ctx: CanvasRenderingContext2D, x: number, y: number) {
 }
 
 function drawWolf(ctx: CanvasRenderingContext2D, x: number, y: number) {
-  const r = TILE_SIZE * 0.32;
+  const r = TILE_SIZE * 0.55;
   // Body — medium grey with darker back saddle
   ctx.fillStyle = "#8a8878";
   ctx.beginPath();
