@@ -362,6 +362,45 @@ function floodFill(g, sx, sy, target, replace) {
   }
 }
 
+// Flood the open ocean inward from every map edge, but SEAL hairline gaps in the
+// coastal barrier first so the sea can't pour through a 1-3 tile break and drown
+// a whole enclosed landmass (this is what turned all of Pachena Bay / Anacla
+// into water). We temporarily fatten every non-Grass "solid" tile (coastline
+// sand, beach, forest, tagged water edges) into the surrounding grass by `seal`
+// tiles — closing any gap up to 2*seal wide — flood, then peel the temp layer
+// back to Grass. Real bay mouths are far wider than the seal, so genuine water
+// still floods in; only the rounding cracks between coastline ways get plugged.
+function floodOceanFromEdges(g, seaSeed) {
+  const { W, H, t } = g;
+  const seal = Math.max(2, Math.round(W / 1000)); // ~2 at 2200 wide, 3 at 3300
+  // Mark the current barrier (everything that isn't bare Grass).
+  const temp = new Uint8Array(W * H);
+  let frontier = [];
+  for (let i = 0; i < W * H; i++) if (t[i] !== T.Grass) frontier.push(i);
+  // Grow the barrier into adjacent Grass `seal` times, tagging the temp tiles.
+  for (let step = 0; step < seal; step++) {
+    const next = [];
+    for (const i of frontier) {
+      const x = i % W, y = (i / W) | 0;
+      for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const ni = ny * W + nx;
+        if (t[ni] === T.Grass && !temp[ni]) { temp[ni] = 1; next.push(ni); }
+      }
+    }
+    frontier = next;
+  }
+  // Turn the temp halo into a barrier (Sand) so the flood can't cross it.
+  for (let i = 0; i < W * H; i++) if (temp[i]) t[i] = T.Sand;
+  // Flood the sea in from all four edges.
+  for (let x = 0; x < W; x++) { floodFill(g, x, 0, T.Grass, T.Water); floodFill(g, x, H - 1, T.Grass, T.Water); }
+  for (let y = 0; y < H; y++) { floodFill(g, 0, y, T.Grass, T.Water); floodFill(g, W - 1, y, T.Grass, T.Water); }
+  if (seaSeed) floodFill(g, seaSeed.x, seaSeed.y, T.Grass, T.Water);
+  // Peel the temporary halo back to Grass — it was never really sea or barrier.
+  for (let i = 0; i < W * H; i++) if (temp[i]) t[i] = T.Grass;
+}
+
 function beachify(g) {
   const out = g.t.slice();
   for (let y = 0; y < g.H; y++) for (let x = 0; x < g.W; x++) {
@@ -475,32 +514,85 @@ function demToGameElevation(demGrid, tileGrid, W, H) {
 const BERRY_VARIETIES = ["huckleberry", "salmonberry", "salal", "thimbleberry", "trailing blackberry"];
 const INVASIVE_KINDS  = ["scotchBroom", "himalayanBlackberry", "foxglove"];
 
+// Deterministic 0..1 hash for a cell (stable across re-runs).
+const hash2 = (x, y, salt = 0) => {
+  const n = Math.sin(x * 12.9898 + y * 78.233 + salt * 37.719) * 43758.5453;
+  return n - Math.floor(n);
+};
+// Smooth value-noise (bilinear over a coarse hash grid) → clumpy, organic
+// density fields instead of a rigid grid. `cell` = how many tiles per noise cell.
+function valueNoise(x, y, cell, salt) {
+  const gx = Math.floor(x / cell), gy = Math.floor(y / cell);
+  const fx = x / cell - gx, fy = y / cell - gy;
+  const a = hash2(gx, gy, salt),     b = hash2(gx + 1, gy, salt);
+  const c = hash2(gx, gy + 1, salt), d = hash2(gx + 1, gy + 1, salt);
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  return (a + (b - a) * sx) * (1 - sy) + (c + (d - c) * sx) * sy;
+}
+
+// Pick a NW-coast tree species for a spot. Species ride in the node's `variety`.
+// Rarity & habitat are true to Bamfield: cedar/hemlock/spruce/fir dominate the
+// rainforest, alder & shore pine fringe the water, Pacific yew is a rare
+// understorey prize, and arbutus is a super-rare rocky-shore find that does NOT
+// grow back once felled (handled server-side).
+function pickTreeSpecies(x, y, d) {
+  const r = hash2(x, y, 7);
+  if (d > 18 && r > 0.972) return "yew";                                    // rare understorey
+  if (d <= 6)  return r < 0.55 ? "redalder" : "shorepine";                  // waterfront fringe
+  if (d <= 14) return r < 0.4 ? "sitkaspruce" : r < 0.7 ? "redalder" : "hemlock";
+  // interior old-growth coastal rainforest
+  if (r < 0.34) return "redcedar";
+  if (r < 0.58) return "hemlock";
+  if (r < 0.78) return "douglasfir";
+  if (r < 0.9)  return "sitkaspruce";
+  return "bigleafmaple";
+}
+
 function autoPlaceResources(g, regionId) {
   const { W, H, t } = g;
   const nodes = [], plants = [];
-  let ni = 0, pi = 0;
+  let ni = 0;
+  const dw = distanceToWater(g);
 
-  // Spacing: every ~8 tiles for trees, ~20 for ore, ~12 for berry.
-  // Deterministic pseudo-random jitter so trees scatter naturally instead of
-  // landing on a rigid grid. (Hash of the cell coords → stable across re-runs.)
-  const jitter = (x, y, salt) => {
-    const n = Math.sin((x * 12.9898 + y * 78.233 + salt * 37.719)) * 43758.5453;
-    return n - Math.floor(n); // 0..1
-  };
-  // Spacing 8 + jitter gives a full, natural forest without flooding the world
-  // with tens of thousands of harvest nodes now that the back-country is wooded.
+  // --- TREES: organic, clumpy density (dense stands + open glades), scattered
+  //     off-grid so it never reads as rows. A coarse value-noise field decides
+  //     local density; a fine scan + jitter places the trunks. ---
+  const coastalTrees = []; // candidates for the super-rare arbutus sprinkle
+  const STEP = 4; // scan resolution; noise + hash gate the actual placements
+  for (let y = 2; y < H - 2; y += STEP) {
+    for (let x = 2; x < W - 2; x += STEP) {
+      if (t[y * W + x] !== T.Forest) continue;
+      // Density 0.10 (glade) .. ~0.4 (deep dense stand); denser further inland.
+      const dens = valueNoise(x, y, 22, 3);
+      const d = dw[y * W + x] < 0 ? 9999 : dw[y * W + x];
+      const deepBonus = Math.min(0.12, d * 0.004);
+      const prob = 0.10 + dens * 0.30 + deepBonus;
+      if (hash2(x, y, 5) > prob) continue;
+      // Jitter the trunk up to ±2 tiles off the scan point.
+      const jx = Math.max(0, Math.min(W - 1, x + Math.round((hash2(x, y, 1) - 0.5) * 4)));
+      const jy = Math.max(0, Math.min(H - 1, y + Math.round((hash2(x, y, 2) - 0.5) * 4)));
+      if (t[jy * W + jx] !== T.Forest) continue;
+      const dj = dw[jy * W + jx] < 0 ? 9999 : dw[jy * W + jx];
+      const node = { id: `${regionId}-t${ni++}`, kind: "tree", x: jx, y: jy, variety: pickTreeSpecies(jx, jy, dj) };
+      nodes.push(node);
+      if (dj >= 3 && dj <= 9) coastalTrees.push(node); // rocky-shore band
+    }
+  }
+  // Arbutus is impossibly rare — only a handful cling to rocky bluffs near the
+  // shore, and they're gone for good once felled. Sprinkle ~7 deterministically
+  // across the coastal band so they're a genuine "did you find one?" event.
+  coastalTrees.sort((a, b) => hash2(b.x, b.y, 11) - hash2(a.x, a.y, 11));
+  const ARBUTUS = Math.min(7, coastalTrees.length);
+  for (let k = 0; k < ARBUTUS; k++) {
+    // Spread the picks across the (hash-shuffled) coastal band so they don't clump.
+    coastalTrees[Math.floor((k + 0.5) / ARBUTUS * coastalTrees.length)].variety = "arbutus";
+  }
+
+  // --- BERRIES, ORE: coarser scan over the same grid. ---
   for (let y = 2; y < H - 2; y += 8) {
     for (let x = 2; x < W - 2; x += 8) {
       const tile = t[y * W + x];
       if (tile === T.Forest) {
-        // Nudge the tree up to ±2 tiles off the grid point (staying in bounds).
-        const jx = Math.max(0, Math.min(W - 1, x + Math.round((jitter(x, y, 1) - 0.5) * 4)));
-        const jy = Math.max(0, Math.min(H - 1, y + Math.round((jitter(x, y, 2) - 0.5) * 4)));
-        // Skip the odd cell so density varies (clearings, denser stands).
-        if (t[jy * W + jx] === T.Forest && jitter(x, y, 3) > 0.12) {
-          nodes.push({ id: `${regionId}-t${ni++}`, kind: "tree", x: jx, y: jy });
-        }
-        // Chance of a berry bush in the forest understorey.
         if ((x + y) % 24 === 0) {
           const v = BERRY_VARIETIES[(x * 3 + y) % BERRY_VARIETIES.length];
           nodes.push({ id: `${regionId}-b${ni++}`, kind: "berryBush", x: x + 2, y: y + 1, variety: v });
@@ -509,7 +601,6 @@ function autoPlaceResources(g, regionId) {
         if ((x + y) % 20 === 0) nodes.push({ id: `${regionId}-i${ni++}`, kind: "ironOre", x, y });
         if ((x + y) % 20 === 10) nodes.push({ id: `${regionId}-s${ni++}`, kind: "stoneOre", x, y });
       } else if (tile === T.Grass) {
-        // Sparse berry on grass edges near forest.
         if ((x + y) % 32 === 4) {
           const hasNearbyForest = [-1,0,1].some(dx => [-1,0,1].some(dy => {
             const ni2 = (y+dy)*W+(x+dx);
@@ -525,7 +616,7 @@ function autoPlaceResources(g, regionId) {
   }
 
   // Place a few invasive plants in disturbed/open sandy zones.
-  let plantCount = 0;
+  let plantCount = 0, pi = 0;
   for (let y = 3; y < H - 3 && plantCount < 6; y += 15) {
     for (let x = 3; x < W - 3 && plantCount < 6; x += 18) {
       if (t[y * W + x] === T.Sand || t[y * W + x] === T.Grass) {
@@ -685,24 +776,15 @@ async function main() {
     }
   }
 
-  // 7. Flood the open ocean INWARD from every map edge. In a coastal bbox the
-  //    border is almost all sea; the coastline drawn above is the barrier, so
-  //    any grass the flood can't reach from the border stays as inland ground.
-  //    (A single interior seed left huge bays unfilled — see issue with the NW
-  //    and SW corners reading as land.)
-  for (let x = 0; x < gridW; x++) {
-    floodFill(g, x, 0, T.Grass, T.Water);
-    floodFill(g, x, gridH - 1, T.Grass, T.Water);
-  }
-  for (let y = 0; y < gridH; y++) {
-    floodFill(g, 0, y, T.Grass, T.Water);
-    floodFill(g, gridW - 1, y, T.Grass, T.Water);
-  }
-  // Optional explicit seed too, for an interior basin the border can't reach.
+  // 7. Flood the open ocean INWARD from every map edge — with hairline gaps in
+  //    the coastal barrier sealed first, so the sea can't leak through a 1-3 tile
+  //    crack between coastline ways and drown an entire enclosed landmass.
+  let seaSeed = null;
   if (args["sea-seed"]) {
     const [sx, sy] = args["sea-seed"].split(",").map(Number);
-    floodFill(g, sx, sy, T.Grass, T.Water);
+    seaSeed = { x: sx, y: sy };
   }
+  floodOceanFromEdges(g, seaSeed);
 
   // 7b. Clothe the remaining bare grass (untagged interior) in rainforest so
   //     the back-country reads as real coastal forest, not a flat lawn.
@@ -855,6 +937,46 @@ async function main() {
     vehicles.push({ id: `${args.id}-boat-2`, kind: "boat", x: boatAt.x, y: Math.min(gridH - 1, boatAt.y + 2) });
   }
 
+  // --- In-world travel: the $3 West Coast Trail bus ------------------------
+  // This is ONE big world (Anacla & Pachena Bay are the SE corner of the same
+  // map, not a separate region). The bus is a paid fast-travel between the
+  // Bamfield market and the Anacla road — for when you can't be bothered with
+  // the long walk and don't have a car/boat. Both ends teleport WITHIN this map.
+  const findNearestTo = (tx, ty, wantTiles) => {
+    tx = Math.round(tx); ty = Math.round(ty);
+    if (tx >= 0 && ty >= 0 && tx < gridW && ty < gridH && wantTiles.includes(g.t[ty * gridW + tx])) return { x: tx, y: ty };
+    for (let r = 1; r < Math.max(gridW, gridH); r++) {
+      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const x = tx + dx, y = ty + dy;
+        if (x < 0 || y < 0 || x >= gridW || y >= gridH) continue;
+        if (wantTiles.includes(g.t[y * gridW + x])) return { x, y };
+      }
+    }
+    return null;
+  };
+  const travelNodes = [];
+  if (args.id === "bamfield") {
+    // Anacla village sits by the road on the NE shore of Pachena Bay.
+    const anaclaTile = toTile(-125.1156, 48.7935);
+    const anaclaStop = findNearestTo(anaclaTile.x, anaclaTile.y, [T.Road]) ||
+                       findNearestTo(anaclaTile.x, anaclaTile.y, [T.Grass]);
+    if (anaclaStop) {
+      const FARE = 3;
+      travelNodes.push({
+        id: "bf-bus-anacla", kind: "bus", x: spawnX, y: spawnY, w: 2, h: 1, fare: FARE,
+        label: `Catch the bus to Anacla ($${FARE})`,
+        toRegion: args.id, toSpawn: { x: anaclaStop.x, y: anaclaStop.y },
+      });
+      travelNodes.push({
+        id: "bf-bus-bamfield", kind: "bus", x: anaclaStop.x, y: anaclaStop.y, w: 2, h: 1, fare: FARE,
+        label: `Catch the bus to Bamfield ($${FARE})`,
+        toRegion: args.id, toSpawn: { x: spawnX, y: spawnY },
+      });
+      console.log(`  Bus: market (${spawnX},${spawnY}) <-> Anacla (${anaclaStop.x},${anaclaStop.y})`);
+    }
+  }
+
   // --- Output JSON ----------------------------------------------------------
   const out = {
     id: args.id,
@@ -865,7 +987,7 @@ async function main() {
     ...(elevation ? { elevation } : {}),
     buildings,
     spawn: { x: spawnX, y: spawnY },
-    travelNodes: [],      // derived dynamically at runtime by applyImported()
+    travelNodes,
     vehicles,
     resourceNodes,
     plants,

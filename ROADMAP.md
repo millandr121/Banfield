@@ -21,21 +21,29 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
 - [x] **Tide stays within the mapped water** — land tiles now sit at/above the
       high-tide line, so only king tides & tsunamis spill onto land.
 - [x] Ostrom's Gas Bar named correctly (was "Pachena Bay / Anacla Gas Bar").
-- [~] Grappler Bay east shore — coastline barrier widened to 3px to stop the
-      flood leak; needs a re-import to take effect (see PLAYBOOK.md §5).
-- [ ] **Bigger scale** — re-import at `--width 1100` (see PLAYBOOK.md §5).
+- [x] **Flood leak fixed for good** — the ocean flood now seals hairline gaps in
+      the coastline *before* flooding, so it can't pour through a 1-3 tile crack
+      and drown a whole bay. Pachena Bay / Anacla read as land again.
+- [x] Grappler Bay east shore — fixed by the gap-sealing flood above.
+- [x] **Bigger scale** — one big world at `--width 3300` (13.2 M tiles).
+- [x] **ONE WORLD** — Anacla & Pachena Bay are the SE corner of the Bamfield map
+      now (no separate region). Pressing **M** anywhere shows the whole world.
 - [x] Scale up so the townsite isn't cluttered (Bamfield 480 wide)
 - [x] Real building names on sign plaques (all 20 BMSC buildings, Flora's, etc.)
 - [ ] **Roads two tiles wide** (two-lane, realistic)
-- [ ] **Bus stop on the road right in front of the market** (real West Coast
-      Trail bus pickup spot). Catching the bus = instant travel to Anacla.
+- [x] **$3 in-world bus** — pads at the market and Anacla; press **T** to ride
+      across the world (charges $3, for when the walk's too long & you've no car).
 - [x] **Whole-area map**: Bamfield now covers the islands (Diana, Helby, Edward
       King, Dixon, Seppings, Wizard, Bordelais) + open ocean you can sail.
 - [x] **Chunked / buffered loading** + interest management so the 480k-tile map
       runs in HTML5 (chunks stream around the player; far entities aren't sent).
 - [ ] Better building footprints — rasterize the actual OSM polygon shape, not
       just a bounding box, for more detailed/accurate buildings.
-- [ ] Travel: walk/sail the ocean to Anacla, or catch the bus (instant).
+- [x] Travel: walk/drive/sail across the one world to Anacla, or catch the $3 bus.
+- [x] **Performance** — resource nodes use a spatial bucket index + a depleted-set
+      so the per-tick snapshot/respawn cost stays flat even with 62k trees.
+- [ ] **Trunk collision** — make just the trunk tile solid so you weave through
+      dense forest (canopy never blocks). Deferred: needs careful nav testing.
 
 ## 2. ART / VISUALS
 - [x] Oblique 3/4 characters (head/body/arms/legs, walk cycle)
@@ -53,8 +61,13 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
 - [ ] **Swim stamina** — tire out swimming like running/sprinting (throttle).
 - [ ] Kelp beds: grow along waist-high water, mostly **out in the ocean**, NOT
       really in the inlet (the odd one). Sea otters live in kelp beds.
-- [x] **Bigger trees** — taller canopy in the renderer; importer now scatters
-      them with jitter (denser, less grid-like) on the next re-import.
+- [x] **Real NW-coast tree species** — western redcedar & Sitka spruce
+      old-growth giants, Douglas fir, western hemlock (young), shore pine, red
+      alder & bigleaf maple (broadleaf), rare **Pacific yew**, and super-rare
+      **arbutus** (only ~7 on the whole coast, on rocky bluffs — and once felled
+      it's gone for GOOD). Each drawn to its own silhouette; per-tree size varies
+      so old-growth towers over saplings. Placed in organic clumps (dense stands
+      + open glades), never a grid.
 - [ ] Shoreline foam, water gradient polish, palette tuning (Eastward tones).
 - [ ] **Nova Harvest** (oysters/shell creatures) shop just south of Buchanan
       Lodge + Seaside Dormitory; **shovel** for clam digging (buy at hardware);

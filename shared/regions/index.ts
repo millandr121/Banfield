@@ -2,9 +2,7 @@
 import type { RegionData } from "../map";
 
 import bamfieldData from "./bamfield.json";
-import anaclaData from "./anacla.json";
 
 export const IMPORTED_REGIONS: RegionData[] = [
   bamfieldData as unknown as RegionData,
-  anaclaData as unknown as RegionData,
 ];

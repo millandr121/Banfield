@@ -1912,9 +1912,104 @@ function waterDepthColor(depth: number): string {
 }
 
 // --- resource node sprites --------------------------------------------------
+// Deterministic 0..1 hash from a node's tile coords (stable per tree).
+function nodeHash(n: ResourceNode, salt = 0): number {
+  const v = Math.sin(n.x * 12.9898 + n.y * 78.233 + salt * 37.719) * 43758.5453;
+  return v - Math.floor(v);
+}
+
+// NW-coast tree species: trunk + canopy palette, crown shape, and a base size.
+// `giant` species can grow into old-growth monsters (size varies per tree).
+type ConShape = "broad" | "column" | "cone" | "droop" | "scrub" | "dense";
+interface TreeSpec {
+  type: "conifer" | "broadleaf";
+  trunk: string;
+  canopy: string[]; // dark → light
+  base: number;     // base size multiplier
+  vary: number;     // extra size from per-tree hash (old-growth spread)
+  shape?: ConShape;
+}
+const TREE_SPECS: Record<string, TreeSpec> = {
+  redcedar:    { type:"conifer", trunk:"#6b4a2b", canopy:["#2c6230","#367a35","#49923f"], base:1.10, vary:0.70, shape:"broad" },
+  sitkaspruce: { type:"conifer", trunk:"#5e4a34", canopy:["#1f5742","#27684e","#368063"], base:1.18, vary:0.70, shape:"column" },
+  douglasfir:  { type:"conifer", trunk:"#5a3f28", canopy:["#234b25","#2d5d2d","#3c7339"], base:1.05, vary:0.60, shape:"cone" },
+  hemlock:     { type:"conifer", trunk:"#5a4632", canopy:["#356b3a","#418347","#57a55e"], base:0.82, vary:0.30, shape:"droop" },
+  shorepine:   { type:"conifer", trunk:"#6b5436", canopy:["#4f6f33","#5f8038","#74974a"], base:0.72, vary:0.25, shape:"scrub" },
+  yew:         { type:"conifer", trunk:"#7a3b2a", canopy:["#1b3d29","#244e33","#2f6040"], base:0.66, vary:0.20, shape:"dense" },
+  redalder:    { type:"broadleaf", trunk:"#8a8170", canopy:["#4a7d3a","#5b9146","#73a857"], base:0.9,  vary:0.35 },
+  bigleafmaple:{ type:"broadleaf", trunk:"#7a6b54", canopy:["#5a8a32","#6fa23e","#88b955"], base:1.1,  vary:0.55 },
+};
+
+// A layered conifer: trunk + stacked tiers of foliage tapering to a crown.
+function drawConifer(ctx: CanvasRenderingContext2D, x: number, y: number, R: number, spec: TreeSpec) {
+  const shape = spec.shape ?? "cone";
+  const wide = shape === "broad" ? 1.15 : shape === "scrub" ? 1.2 : shape === "column" ? 0.75 : shape === "dense" ? 1.0 : 0.95;
+  const tall = shape === "column" ? 1.35 : shape === "scrub" ? 0.7 : shape === "dense" ? 0.8 : 1.1;
+  // shadow
+  ctx.fillStyle = "rgba(0,0,0,0.20)";
+  ctx.beginPath();
+  ctx.ellipse(x, y + R * 0.78, R * 0.85 * wide, R * 0.3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // trunk
+  const trunkH = R * 0.9;
+  const tw = Math.max(2, R * 0.16);
+  ctx.fillStyle = spec.trunk;
+  ctx.fillRect(x - tw / 2, y, tw, trunkH);
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  ctx.fillRect(x + tw * 0.1, y, tw * 0.4, trunkH);
+  // foliage tiers (bottom widest), drawn as triangles, dark→light up the tree
+  const tiers = shape === "scrub" ? 2 : 4;
+  const topY = y - R * (0.35 + tall * 0.5);
+  const botY = y + R * 0.18;
+  const halfW = R * 0.95 * wide;
+  for (let i = 0; i < tiers; i++) {
+    const f = i / tiers;
+    const cy = botY + (topY - botY) * f;
+    const w = halfW * (1 - f * 0.78);
+    const h = (botY - topY) / tiers * 1.5;
+    ctx.fillStyle = spec.canopy[Math.min(spec.canopy.length - 1, Math.floor(f * spec.canopy.length))];
+    ctx.beginPath();
+    ctx.moveTo(x, cy - h);
+    ctx.lineTo(x - w, cy + h * 0.5);
+    ctx.lineTo(x + w, cy + h * 0.5);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // sunlit crown tip
+  ctx.fillStyle = spec.canopy[spec.canopy.length - 1];
+  ctx.beginPath();
+  ctx.arc(x, topY, R * 0.18, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// A rounded broadleaf (alder/maple): trunk + clustered blob crown.
+function drawBroadleaf(ctx: CanvasRenderingContext2D, x: number, y: number, R: number, spec: TreeSpec) {
+  ctx.fillStyle = "rgba(0,0,0,0.20)";
+  ctx.beginPath();
+  ctx.ellipse(x, y + R * 0.78, R * 0.85, R * 0.3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  const trunkH = R * 0.85;
+  const tw = Math.max(2, R * 0.16);
+  ctx.fillStyle = spec.trunk;
+  ctx.fillRect(x - tw / 2, y, tw, trunkH);
+  const top = y - R * 0.55;
+  for (const [ox, oy, r, ci] of [
+    [0, 0, R * 1.0, 0], [-R * 0.45, -R * 0.1, R * 0.66, 1], [R * 0.45, -R * 0.05, R * 0.62, 1],
+    [-R * 0.15, -R * 0.5, R * 0.66, 2], [R * 0.22, -R * 0.42, R * 0.56, 2],
+  ] as const) {
+    ctx.fillStyle = spec.canopy[ci];
+    ctx.beginPath();
+    ctx.arc(x + ox, top + oy, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 function drawResourceSprite(ctx: CanvasRenderingContext2D, n: ResourceNode, x: number, y: number) {
   // Trees stand taller than ground resources, for a proper forest canopy.
-  const R = TILE_SIZE * (n.kind === "tree" ? 0.66 : 0.44);
+  // Per-tree size: species base × old-growth spread (giants tower over saplings).
+  const spec = n.kind === "tree" ? TREE_SPECS[n.variety ?? ""] : undefined;
+  const treeScale = spec ? spec.base + nodeHash(n, 4) * spec.vary : 1;
+  const R = n.kind === "tree" ? TILE_SIZE * 0.6 * treeScale : TILE_SIZE * 0.44;
   if (n.depleted) {
     // Ghost outline: stump or empty pit.
     ctx.strokeStyle = n.kind === "tree" ? "#3a5c28" : "#5a4e3a";
@@ -1952,32 +2047,10 @@ function drawResourceSprite(ctx: CanvasRenderingContext2D, n: ResourceNode, x: n
     ctx.arc(x - R * 0.2, y - R * 0.4, R * 0.35, 0, Math.PI * 2);
     ctx.fill();
   } else if (n.kind === "tree") {
-    // Ground shadow at the base.
-    ctx.fillStyle = "rgba(0,0,0,0.2)";
-    ctx.beginPath();
-    ctx.ellipse(x, y + R * 0.75, R * 0.9, R * 0.32, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // Trunk — taller so the canopy rises well above the base (oblique height).
-    const trunkH = R * 0.95;
-    ctx.fillStyle = "#5a3a1f";
-    ctx.fillRect(x - 3, y, 6, trunkH);
-    ctx.fillStyle = "rgba(0,0,0,0.25)"; // bark shadow on the right
-    ctx.fillRect(x + 1, y, 2, trunkH);
-    // Canopy lifted up off the trunk, layered for volume.
-    const top = y - R * 0.5;
-    for (const [ox, oy, r, col] of [
-      [0, 0, R * 1.05, "#256b1c"],
-      [-R * 0.42, -R * 0.1, R * 0.72, "#2f7d22"],
-      [R * 0.42, -R * 0.05, R * 0.68, "#2a7820"],
-      [-R * 0.15, -R * 0.5, R * 0.7, "#3a9a2c"],
-      [R * 0.2, -R * 0.45, R * 0.6, "#43a832"],
-      [0, -R * 0.85, R * 0.5, "#4eb83a"], // sunlit crown
-    ] as const) {
-      ctx.fillStyle = col;
-      ctx.beginPath();
-      ctx.arc(x + ox, top + oy, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    // Real NW-coast species, each drawn to its own silhouette & palette.
+    const s = spec ?? TREE_SPECS.hemlock;
+    if (s.type === "conifer") drawConifer(ctx, x, y, R, s);
+    else drawBroadleaf(ctx, x, y, R, s);
   } else if (n.kind === "berryBush") {
     // Low leafy bush dotted with berries; colour hints at the variety.
     const v = n.variety ?? "";

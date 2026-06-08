@@ -278,6 +278,12 @@ export class GameRoom {
   private creatures = new Map<string, CreatureState>();
   private vehicles = new Map<string, VehicleRecord>();
   private resourceNodes = new Map<string, ResourceNode>();
+  // Static spatial index of resource nodes (they never move), so the per-tick
+  // snapshot only scans nodes near each viewer instead of all 50k+ of them.
+  private nodeBuckets = new Map<string, ResourceNode[]>();
+  // Only currently-depleted nodes that will regrow — the respawn loop scans
+  // just these, not every node in the world.
+  private depletedNodeIds = new Set<string>();
   private plants = new Map<string, PlantState>();
   private campfires = new Map<string, CampfireState>();
   private furnaces  = new Map<string, FurnaceState>();
@@ -332,16 +338,25 @@ export class GameRoom {
         });
       }
       for (const n of def.resourceNodes) {
-        this.resourceNodes.set(n.id, this.mkNode(n, def.id));
+        const node = this.mkNode(n, def.id);
+        this.resourceNodes.set(n.id, node);
+        this.indexNode(node);
       }
       for (const pl of def.plants) {
         this.plants.set(pl.id, this.mkPlant(pl, def.id, now));
       }
     }
-    // Pre-place the forge at Ostrom's Gas Bar in Bamfield (full-extent map coords).
-    this.furnaces.set("forge-ostroms", { id: "forge-ostroms", region: "bamfield", x: 842, y: 470 });
-    // Pre-place a forge at the Anacla gas bar too.
-    this.furnaces.set("forge-anacla",  { id: "forge-anacla",  region: "anacla",   x: 223, y: 52 });
+    // Forges live at the gas bars. Look the spots up by building so they track
+    // the imported map at any scale (no more stale hand-typed coordinates).
+    const bf = this.regions.get("bamfield");
+    if (bf) {
+      const gas = this.buildingAnchor(bf, "gas") ?? this.buildingAnchor(bf, "ostrom") ?? bf.spawn;
+      this.furnaces.set("forge-ostroms", { id: "forge-ostroms", region: "bamfield", x: gas.x, y: gas.y });
+      // It's one world now — Anacla is the SE corner of Bamfield. The second
+      // forge sits by the Anacla bus stop.
+      const an = this.anaclaAnchor();
+      this.furnaces.set("forge-anacla", { id: "forge-anacla", region: "bamfield", x: an.x, y: an.y });
+    }
 
     // Static townsfolk — flavour, lore, and local hints. They don't move.
     this.placeNpcs();
@@ -351,7 +366,9 @@ export class GameRoom {
   // populated town no matter how the imported map is shaped (positions are
   // looked up from building names, with a fall-back to the region spawn).
   private placeNpcs() {
-    const cfg: Array<{ id: string; kind: NpcState["kind"]; region: RegionId; near: string }> = [
+    // `near` is a building name/id substring; `atAnacla` pins the NPC by the
+    // Anacla bus stop (it's the SE corner of the one big Bamfield world now).
+    const cfg: Array<{ id: string; kind: NpcState["kind"]; region: RegionId; near?: string; atAnacla?: boolean }> = [
       { id: "npc-naturalist", kind: "naturalist", region: "bamfield", near: "Marine Sciences" },
       { id: "npc-scientist",  kind: "scientist",  region: "bamfield", near: "Whale Lab" },
       { id: "npc-historian",  kind: "historian",  region: "bamfield", near: "Mercantile" },
@@ -359,9 +376,9 @@ export class GameRoom {
       { id: "npc-boatdealer", kind: "boatdealer", region: "bamfield", near: "Breakers" },
       { id: "npc-eastsider",  kind: "eastsider",  region: "bamfield", near: "East Dock" },
       { id: "npc-westsider",  kind: "westsider",  region: "bamfield", near: "West Dock" },
-      { id: "npc-mayor",      kind: "mayor",      region: "anacla",   near: "Gas Bar" },
-      { id: "npc-huuayaht",   kind: "huuayaht",   region: "anacla",   near: "Huu-ay-aht" },
-      { id: "npc-icevendor",  kind: "icevendor",  region: "anacla",   near: "Gas Bar" },
+      { id: "npc-mayor",      kind: "mayor",      region: "bamfield", atAnacla: true },
+      { id: "npc-huuayaht",   kind: "huuayaht",   region: "bamfield", near: "Huu-ay-aht" },
+      { id: "npc-icevendor",  kind: "icevendor",  region: "bamfield", atAnacla: true },
     ];
     this.npcs = [];
     for (let i = 0; i < cfg.length; i++) {
@@ -369,14 +386,66 @@ export class GameRoom {
       const region = this.regions.get(c.region);
       if (!region) continue;
       let tx = region.spawn.x, ty = region.spawn.y;
-      const key = c.near.toLowerCase();
-      const b = region.buildings.find(
-        (b) => (b.name || "").toLowerCase().includes(key) || b.id.toLowerCase().includes(key),
-      );
-      if (b) { tx = b.x + Math.floor(b.w / 2); ty = b.y + b.h + 1; }
+      if (c.atAnacla) {
+        const a = this.anaclaAnchor();
+        tx = a.x; ty = a.y;
+      } else if (c.near) {
+        const a = this.buildingAnchor(region, c.near);
+        if (a) { tx = a.x; ty = a.y; }
+      }
       const spot = this.landSpawn(region, tx + ((i % 3) - 1), ty + (i % 2));
       this.npcs.push({ id: c.id, kind: c.kind, region: c.region, x: Math.floor(spot.x), y: Math.floor(spot.y) });
     }
+  }
+
+  // A walkable tile just off a building matched by name/id substring.
+  private buildingAnchor(region: Region, key: string): { x: number; y: number } | null {
+    const k = key.toLowerCase();
+    const b = region.buildings.find(
+      (b) => (b.name || "").toLowerCase().includes(k) || b.id.toLowerCase().includes(k),
+    );
+    if (!b) return null;
+    return { x: b.x + Math.floor(b.w / 2), y: b.y + b.h + 1 };
+  }
+
+  // The Anacla end of the bus line, in the big Bamfield map. Falls back to the
+  // gas bar, then the map centre.
+  private anaclaAnchor(): { x: number; y: number } {
+    const bf = this.regions.get("bamfield");
+    if (bf) {
+      const bus = bf.travelNodes.find((n) => n.id === "bf-bus-anacla");
+      if (bus) return { x: bus.toSpawn.x, y: bus.toSpawn.y };
+      return { x: Math.floor(bf.map.width / 2), y: Math.floor(bf.map.height / 2) };
+    }
+    return { x: 0, y: 0 };
+  }
+
+  // --- resource-node spatial index (16-tile buckets) ------------------------
+  private static readonly NODE_BUCKET = 16;
+  private nodeBucketKey(region: string, x: number, y: number): string {
+    const b = GameRoom.NODE_BUCKET;
+    return region + "|" + Math.floor(x / b) + "|" + Math.floor(y / b);
+  }
+  private indexNode(n: ResourceNode) {
+    const k = this.nodeBucketKey(n.region, n.x, n.y);
+    let arr = this.nodeBuckets.get(k);
+    if (!arr) { arr = []; this.nodeBuckets.set(k, arr); }
+    arr.push(n);
+  }
+  private nodesNear(region: string, x: number, y: number, radius: number): ResourceNode[] {
+    const b = GameRoom.NODE_BUCKET;
+    const out: ResourceNode[] = [];
+    const minbx = Math.floor((x - radius) / b), maxbx = Math.floor((x + radius) / b);
+    const minby = Math.floor((y - radius) / b), maxby = Math.floor((y + radius) / b);
+    const r2 = radius * radius;
+    for (let bx = minbx; bx <= maxbx; bx++) {
+      for (let by = minby; by <= maxby; by++) {
+        const arr = this.nodeBuckets.get(region + "|" + bx + "|" + by);
+        if (!arr) continue;
+        for (const n of arr) if ((n.x - x) ** 2 + (n.y - y) ** 2 <= r2) out.push(n);
+      }
+    }
+    return out;
   }
 
   private mkNode(def: ResourceNodeDef, regionId: string): ResourceNode {
@@ -1179,7 +1248,12 @@ export class GameRoom {
     if (bestNode.hp <= 0) {
       bestNode.depleted = true;
       bestNode.hp = 0;
-      bestNode.respawnAt = now + respawnMs;
+      // Arbutus is dead for good once felled — it does not regrow (respawnAt
+      // stays null so updateResourceRespawn never revives it). A real loss.
+      const permanent = bestNode.kind === "tree" && bestNode.variety === "arbutus";
+      bestNode.respawnAt = permanent ? null : now + respawnMs;
+      if (permanent) this.tell(p, "You felled an arbutus — that one's gone for good.");
+      else this.depletedNodeIds.add(bestNode.id); // only regrowable nodes get tracked
       // Felling a tree opens a clearcut — invasives love disturbed ground.
       if (bestNode.kind === "tree" && Math.random() < CLEARCUT_INVASIVE_CHANCE) {
         this.spawnInvasiveNear(bestNode.region, bestNode.x, bestNode.y, now);
@@ -1765,12 +1839,15 @@ export class GameRoom {
   }
 
   private updateResourceRespawn(now: number) {
-    for (const n of this.resourceNodes.values()) {
-      if (!n.depleted) continue;
+    // Scan only the handful of depleted nodes, not every node in the world.
+    for (const id of this.depletedNodeIds) {
+      const n = this.resourceNodes.get(id);
+      if (!n || !n.depleted) { this.depletedNodeIds.delete(id); continue; }
       if (n.respawnAt !== null && now >= n.respawnAt) {
         n.depleted = false;
         n.hp = n.maxHp;
         n.respawnAt = null;
+        this.depletedNodeIds.delete(id);
       }
     }
   }
@@ -1985,14 +2062,22 @@ export class GameRoom {
   private footTravel(ws: WebSocket, p: PlayerState, node: TravelNode) {
     const dest = this.regions.get(node.toRegion);
     if (!dest) return;
+    // Bus fare: charge the rider (can't afford it = no ride).
+    if (node.fare && node.fare > 0) {
+      if (p.money < node.fare) { this.tell(p, `The bus is $${node.fare}. You're short.`); return; }
+      p.money -= node.fare;
+    }
     const arrive = this.landSpawn(dest, node.toSpawn.x, node.toSpawn.y);
+    const sameRegion = p.region === dest.id;
     p.region = dest.id;
     p.x = arrive.x;
     p.y = arrive.y;
     const s = this.sessionFor(p.id);
     if (s) s.travelCdUntil = Date.now() + 1500; // grace so you don't bounce back
     this.sendInit(ws, p);
-    this.broadcastLog(`${p.name} arrived in ${dest.name}.`);
+    if (node.fare) this.tell(p, `You rode the bus${node.fare > 0 ? ` (-$${node.fare})` : ""}.`);
+    // Only shout a region change to everyone; an in-world hop is the rider's business.
+    if (!sameRegion) this.broadcastLog(`${p.name} arrived in ${dest.name}.`);
   }
 
   // Auto-travel on foot: just WALK onto a road gate and you cross over — no key.
@@ -2570,7 +2655,9 @@ export class GameRoom {
       creatures: [...this.creatures.values()].filter((c) => c.region === regionId && near(c.x, c.y)),
       buildings: region.buildings,
       vehicles: [...this.vehicles.values()].filter((v) => v.region === regionId),
-      resourceNodes: [...this.resourceNodes.values()].filter((n) => n.region === regionId && near(n.x, n.y)),
+      resourceNodes: viewer
+        ? this.nodesNear(regionId, viewer.x, viewer.y, VIEW_RADIUS)
+        : [...this.resourceNodes.values()].filter((n) => n.region === regionId),
       plants: [...this.plants.values()].filter((pl) => pl.region === regionId && pl.dormantUntil === null),
       campfires: [...this.campfires.values()].filter((f) => f.region === regionId),
       furnaces:  [...this.furnaces.values()].filter((f) => f.region === regionId),

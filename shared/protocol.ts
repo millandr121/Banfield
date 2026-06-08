@@ -385,6 +385,7 @@ export interface TravelNode {
   label: string; // e.g. "Catch the bus to Anacla"
   toRegion: RegionId;
   toSpawn: { x: number; y: number };
+  fare?: number; // dollars charged to ride (bus only); omitted/0 = free
 }
 
 // Static, per-region info the client needs once on entry.

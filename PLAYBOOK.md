@@ -147,9 +147,9 @@ scattered trees**) only take effect when the map is regenerated from the OSM
 data. I improved the importer; you regenerate like this:
 
 The current `bamfield.json` was already regenerated at the **full extent** of
-your OSM export (`48.7573,-125.2356 → 48.8606,-125.1061`) at `--width 2200`, so
-it now covers the whole coast from Tapaltos around into Pachena Bay and Anacla
-at 2× the original scale (2200×2665 = 5.86 M tiles, ~13 MB JSON).
+your OSM export (`48.7573,-125.2356 → 48.8606,-125.1061`) at `--width 3300`, so
+it's **one big world** covering the whole coast from Tapaltos around into Pachena
+Bay and Anacla (3300×3997 = 13.2 M tiles, ~30 MB JSON / **0.8 MB gzipped**).
 The command that produced it (re-run if you tweak the OSM file or want to
 change the `--width`):
 
@@ -157,7 +157,7 @@ change the `--width`):
 node tools/import-osm.mjs \
   --osm-xml <your-bamfield-export>.osm \
   --bbox 48.7573,-125.2356,48.8606,-125.1061 \
-  --width 2200 --id bamfield --name "Bamfield" \
+  --width 3300 --id bamfield --name "Bamfield" \
   --spawn-near "Tides & Trails Market" \
   --no-dem \
   --out shared/regions/bamfield.json
@@ -165,15 +165,20 @@ node tools/import-osm.mjs \
 
 - `--no-dem` skips the elevation download (needs internet; the game computes a
   sensible heightmap itself, with the tide-safe land floor).
-- Each tile is ~4 m at this scale; roads are two tiles wide; inlets feel like
-  real waterways you sail across.
+- The ocean flood now **seals hairline gaps** in the coastline first, so the sea
+  can't leak in and drown a whole bay (that's what had flooded Pachena/Anacla).
+- Trees are placed as real NW-coast species (cedar, hemlock, spruce, fir, alder,
+  maple, rare yew, super-rare arbutus) in organic clumps, not a grid.
+- The $3 in-world bus links the market and Anacla (it's one world, no region
+  switch). Press **T** standing on a bus pad.
 - If a specific bay still reads wrong, add `--sea-seed X,Y` pointing at a tile
   inside that bay's water to force-flood it.
 
 After it runs, `npm run dev` to see the new map.
 
-> Heads-up: at 2200 wide the JSON is ~13 MB. The chunked loading handles it —
-> only the 32×32 chunk around the player is ever in memory on the client.
+> Heads-up: the raw JSON is ~30 MB but gzips to ~0.8 MB, so it deploys fine. The
+> chunked loading streams only the 32×32 chunk around the player to the browser,
+> and the server now uses a spatial index so dense forests stay smooth.
 
 ---
 

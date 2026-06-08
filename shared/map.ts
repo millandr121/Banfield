@@ -391,133 +391,6 @@ function bamfieldBuildings(): BuildingState[] {
   ]);
 }
 
-// ---------------------------------------------------------------------------
-// ANACLA / PACHENA BAY  (300 × 180 tiles)
-//
-// Real geography:
-//   • Bamfield Main road arrives from the NORTH at x≈220.
-//   • Anacla village sits on the NE shore of Pachena Bay, just off the road.
-//   • Pachena Beach: long (~3 km) gently-curving sandy beach that sweeps
-//     from the NE shore all the way around to the west. The tidal flat is huge.
-//   • Keeha Beach: around the headland to the WEST, exposed open Pacific.
-//     This is where the sea-crossing trigger zone is (sail north to Bamfield).
-//   • Pachena River enters from the NE, meanders down to the bay mouth.
-//   • Cape Beale (lighthouse) is at the southern tip — represented as rocky
-//     headland at the very south edge of the map.
-//   • Barkley Sound fills the deep south (y ≥ 160).
-// ---------------------------------------------------------------------------
-function generateAnaclaMap(): WorldMap {
-  const W = MAP_WIDTH, H = MAP_HEIGHT;
-  const tiles: Tile[] = fill(Tile.Grass);
-
-  // --- PACHENA BAY (deep bay opening SOUTH; long beach at its head) ---
-  // The bay is a basin between two headlands (E & W). Its north shore is a
-  // gentle arc — that arc is the long Pachena Beach at the head of the bay.
-  // South of y=152 it opens into the true Pacific (deep ocean tiers).
-  const BAY_W0 = 48, BAY_W1 = 252;
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      if (y >= 152) { tiles[y * W + x] = Tile.Water; continue; } // open Pacific
-      if (x >= BAY_W0 && x <= BAY_W1) {
-        // north shore dips deepest (furthest north) at the bay centre
-        const shore = 100 - 28 * Math.sin(Math.PI * (x - BAY_W0) / (BAY_W1 - BAY_W0));
-        if (y > shore) tiles[y * W + x] = Tile.Water;
-      }
-    }
-  }
-
-  // --- PACHENA RIVER (enters from the north into the NE corner of the bay) ---
-  // Lower Anacla sits on the EAST bank of this river.
-  for (let y = 0; y < 92; y++) {
-    const rx = 162 + Math.round(7 * Math.sin(y * 0.08));
-    for (let x = rx - 2; x <= rx + 2; x++) if (x >= 0 && x < W) tiles[y * W + x] = Tile.Water;
-  }
-
-  // --- NATURAL LANDCOVER ---
-  applyLandcover(tiles, W, H);
-
-  // Lower Anacla village flat — clear the bench east of the river, by the bay.
-  for (let y = 38; y <= 92; y++)
-    for (let x = 172; x <= 224; x++)
-      if (tiles[y * W + x] === Tile.Forest || tiles[y * W + x] === Tile.Hill)
-        tiles[y * W + x] = Tile.Grass;
-
-  // --- UPPER ANACLA (a hill bench ESE of the village, up a steep bank) ---
-  // No road or trail climbs it — it reads as a plateau ringed by steep rock.
-  rect(tiles, 234, 22, 288, 74, Tile.Hill);
-  for (let x = 232; x <= 290; x++) {
-    setTile(tiles, x, 20, Tile.Rock); setTile(tiles, x, 21, Tile.Rock);
-    setTile(tiles, x, 75, Tile.Rock); setTile(tiles, x, 76, Tile.Rock);
-  }
-  for (let y = 20; y <= 76; y++) {
-    setTile(tiles, 232, y, Tile.Rock); setTile(tiles, 233, y, Tile.Rock);
-  }
-  // Grass streets across the plateau top.
-  for (let y = 26; y <= 70; y++)
-    for (let x = 240; x <= 284; x++)
-      tiles[y * W + x] = Tile.Grass;
-
-  // --- LONG SANDY BEACH (Pachena Beach, all along the bay head) ---
-  const dwBay = distanceToWater(tiles, W, H);
-  for (let y = 58; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const i = y * W + x;
-      const t = tiles[i];
-      if ((t === Tile.Grass || t === Tile.Forest) && dwBay[i] > 0 && dwBay[i] <= 16) {
-        tiles[i] = Tile.Sand;
-      }
-    }
-  }
-
-  // --- THE ONE ROAD INTO LOWER ANACLA (arrives from the north) ---
-  // This is the road players spawn on and walk/drive in along.
-  const ROAD_X = 195;
-  vLine(tiles, ROAD_X, 0, 72, Tile.Road);
-  hLine(tiles, 176, 214, 60, Tile.Road); // short village street off the road
-  clearRoadMargins(tiles, 2, W, H);
-
-  // --- RIVER DOCK (boat landing on the river's east bank by the village) ---
-  hLine(tiles, 158, 166, 66, Tile.Dock);
-  hLine(tiles, 158, 166, 67, Tile.Dock);
-
-  return worldMap(beachify(tiles));
-}
-
-function anaclaBuildings(): BuildingState[] {
-  return mkBuildings("an", [
-    // ==== LOWER ANACLA (the flat by the river & bay, off the one road) ====
-    // The reopened gas bar — right beside a house, just as it used to be.
-    { kind:"shop",      x:200, y: 46, w:4, h:3, hp:180, shop:SHOP_ANACLA_GAS },
-    { kind:"house",     x:205, y: 46, w:3, h:2, hp:100 }, // the house beside the gas bar
-    // A couple of streets of houses.
-    { kind:"house",     x:178, y: 44, w:3, h:2, hp:100 },
-    { kind:"house",     x:184, y: 44, w:3, h:2, hp:100 },
-    { kind:"house",     x:178, y: 52, w:3, h:2, hp:100 },
-    { kind:"house",     x:184, y: 52, w:3, h:2, hp:100 },
-    // The fellow who sells food out of his house.
-    { kind:"house",     x:178, y: 64, w:3, h:2, hp:100, shop:SHOP_ANACLA_HOME },
-    { kind:"house",     x:184, y: 64, w:3, h:2, hp:100 },
-    { kind:"house",     x:206, y: 64, w:3, h:2, hp:100 },
-    { kind:"house",     x:212, y: 64, w:3, h:2, hp:100 },
-    // Boat seller on the river's east bank, by the dock.
-    { kind:"boathouse", x:168, y: 60, w:5, h:4, hp:160 },
-    // ---- PACHENA BAY CAMPGROUND (above the high-tide line, west of village) ----
-    { kind:"house",     x:120, y: 78, w:3, h:2, hp: 80 }, // shelter
-    { kind:"house",     x:128, y: 78, w:3, h:2, hp: 80 },
-    { kind:"boathouse", x:110, y: 80, w:4, h:3, hp:120 }, // boat launch
-
-    // ==== UPPER ANACLA (the hill bench — government, gym, a few homes) ====
-    // Huu-ay-aht government office.
-    { kind:"shop",      x:246, y: 32, w:5, h:3, hp:220, shop:SHOP_ANACLA_GOV },
-    // House of Huu-ay-aht — the big community hall / gym for sport & culture.
-    { kind:"boathouse", x:256, y: 44, w:8, h:5, hp:300 },
-    // A few houses down the street.
-    { kind:"house",     x:270, y: 32, w:3, h:2, hp:100 },
-    { kind:"house",     x:276, y: 32, w:3, h:2, hp:100 },
-    { kind:"house",     x:246, y: 60, w:3, h:2, hp:100 },
-    { kind:"house",     x:252, y: 60, w:3, h:2, hp:100 },
-  ]);
-}
 
 // ---------------------------------------------------------------------------
 // Region assembly helpers
@@ -865,68 +738,13 @@ export function buildRegions(): RegionDef[] {
     ],
   };
 
-  const anacla: RegionDef = {
-    id: "anacla",
-    name: "Anacla / Pachena Bay",
-    map: generateAnaclaMap(),
-    buildings: anaclaBuildings(),
-    spawn: { x: 195, y: 6 }, // top of the one road into Lower Anacla
-    travelNodes: [
-      {
-        id: "an-bus", kind: "bus",
-        x: 193, y: 58, w: 4, h: 2,
-        label: "Catch the bus back to Bamfield",
-        toRegion: "bamfield", toSpawn: { x: 183, y: 72 },
-      },
-      {
-        id: "an-gate", kind: "gate",
-        x: 194, y: 0, w: 3, h: 1,
-        label: "Drive the road back to Bamfield",
-        toRegion: "bamfield", toSpawn: { x: 185, y: 8 },
-      },
-      {
-        // Sea crossing: head out the bay mouth and round the coast to Bamfield.
-        id: "an-sea", kind: "sea",
-        x: 0, y: 158, w: 150, h: 22,
-        label: "Sail out the bay and round the coast to Bamfield",
-        toRegion: "bamfield", toSpawn: { x: 90, y: 155 }, // Barkley Sound, south of inlet
-      },
-    ],
-    vehicles: [
-      { id:"an-car-1",  kind:"car",  x:195, y: 20 }, // on the road in
-      { id:"an-car-2",  kind:"car",  x:198, y: 50 }, // by the gas bar
-      { id:"an-boat-1", kind:"boat", x:120, y:130 }, // Pachena Bay
-      { id:"an-boat-2", kind:"boat", x:160, y:140 }, // bay, mid-water
-      { id:"an-boat-3", kind:"boat", x: 60, y:160 }, // out toward the open coast
-    ],
-    resourceNodes: [
-      { id:"an-t1",  kind:"tree",      x: 30, y: 30 },
-      { id:"an-t2",  kind:"tree",      x: 28, y: 60 },
-      { id:"an-t3",  kind:"tree",      x: 34, y: 95 },
-      { id:"an-t4",  kind:"tree",      x:262, y: 90 },
-      { id:"an-t5",  kind:"tree",      x:268, y:110 },
-      { id:"an-t6",  kind:"tree",      x:150, y: 30 },
-      { id:"an-i1",  kind:"ironOre",   x: 10, y: 40 },
-      { id:"an-s1",  kind:"stoneOre",  x: 12, y: 70 },
-      { id:"an-s2",  kind:"stoneOre",  x:288, y: 30 }, // upper bench rock
-      { id:"an-b1",  kind:"berryBush", x: 45, y: 35, variety:"salmonberry" },
-      { id:"an-b2",  kind:"berryBush", x:255, y: 95, variety:"huckleberry" },
-      { id:"an-b3",  kind:"berryBush", x: 50, y: 75, variety:"thimbleberry" },
-      { id:"an-b4",  kind:"berryBush", x:170, y: 95, variety:"salal" },
-      { id:"an-b5",  kind:"berryBush", x:225, y: 90, variety:"trailing blackberry" },
-      // Arbutus trees — rocky coastal spots & the upper bench
-      { id:"an-arbutus-1", kind:"tree", x:240, y:28, variety:"arbutus" },
-      { id:"an-arbutus-2", kind:"tree", x:284, y:50, variety:"arbutus" },
-      { id:"an-arbutus-3", kind:"tree", x:243, y:66, variety:"arbutus" },
-    ],
-    plants: [
-      { id:"an-inv1", kind:"scotchBroom",         x:210, y: 50 },
-      { id:"an-inv2", kind:"foxglove",             x:180, y: 70 },
-      { id:"an-inv3", kind:"himalayanBlackberry",  x:215, y: 70 },
-    ],
-  };
-
-  return applyImported([bamfield, anacla]);
+  // ONE WORLD: Anacla & Pachena Bay are the south-east corner of the Bamfield
+  // map now (the importer carves the whole coast in a single region and adds a
+  // $3 in-world bus between the townsite and Anacla). The old separate Anacla
+  // region is retired — returning players who were saved there fall back to the
+  // Bamfield spawn. The handcrafted Anacla generators below are kept only as a
+  // reference fallback if the imported map is ever absent.
+  return applyImported([bamfield]);
 }
 
 export const DEFAULT_REGION = "bamfield";
