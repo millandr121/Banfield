@@ -78,7 +78,9 @@ function appearance(): Appearance {
   };
 }
 
-// ── Full-body face-on standing character preview (shared art) ─────────────────
+// ── Full-body face-on standing character preview (shared art module) ──────────
+// Uses the same drawAvatar() the in-game equip paper-doll uses, so the person on
+// the login screen looks exactly like they will in their inventory.
 function drawPreview() {
   drawAvatar(pctx, appearance(), previewCanvas.width, previewCanvas.height);
 }
@@ -153,9 +155,10 @@ function submit() {
   playBtn.textContent = "Connecting…";
   game.start(name, app, pass, mode === "new", emailInput.value.trim() || undefined);
 
-  // Reveal the HUD; if the join is denied, onJoinDenied re-enables the form.
+  // Reveal the HUD & chat log; if the join is denied, onJoinDenied re-enables the form.
+  // (Help lives in the side-panel "?" tab now — there is no #help element.)
   $("creator").classList.add("hidden");
-  for (const id of ["hud", "help", "log"]) $(id).classList.remove("hidden");
+  for (const id of ["hud", "log"]) $(id).classList.remove("hidden");
 }
 
 function showError(msg: string) {
@@ -167,7 +170,7 @@ function showError(msg: string) {
 const origDenied = game.onJoinDenied!;
 game.onJoinDenied = (reason) => {
   $("creator").classList.remove("hidden");
-  for (const id of ["hud", "help", "log"]) $(id).classList.add("hidden");
+  for (const id of ["hud", "log"]) $(id).classList.add("hidden");
   origDenied(reason);
 };
 
