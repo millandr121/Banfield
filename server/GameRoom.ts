@@ -198,9 +198,9 @@ const SLEEP_FIRE_RANGE = 2.2;
 
 // Hunger ---------------------------------------------------------------------
 const MAX_HUNGER = 100;
-const HUNGER_DECAY = 100 / (9 * 60); // empties in ~9 min of normal play
-const HUNGER_WORK_EXTRA = 0.5; // extra drain/sec while actively moving
-const STARVE_DPS = 2.5; // hp/sec lost at 0 hunger
+const HUNGER_DECAY = 100 / (20 * 60); // empties in ~20 min standing still
+const HUNGER_WORK_EXTRA = 0.04; // a little extra drain/sec while actively moving (~14 min if always running)
+const STARVE_DPS = 1.5; // hp/sec lost at 0 hunger (you've got time to find food)
 
 // Invasive plants ------------------------------------------------------------
 const PLANT_CAP_PER_REGION = 14; // stop runaway spread

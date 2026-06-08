@@ -2627,9 +2627,9 @@ function drawCreatureSprite(
     else drawRipple(ctx, x, y);
   };
 
-  // Far away OR in deep water: ONLY the surface telltale, never the full body.
-  // (Fixes the "fin plus a ghost of the whole body" double-render.)
-  if (distToPlayer > 13 || sub > 0.55) {
+  // Swimming depth or deeper: ONLY the surface telltale, no body visible.
+  // Shallow/wading water (< DEPTH_SWIM): you can see the animal beneath.
+  if (distToPlayer > 13 || depth >= DEPTH_SWIM) {
     surface();
     return;
   }
