@@ -20,7 +20,7 @@ const SW        = 20;   // sprite width  (px)
 const SH        = 26;   // sprite height (px)
 const CX        = 10;   // sprite center-X
 const FEET_ROW  = 24;   // row that lands on the ground contact point
-const BLT       = 2;    // exact 2× blit → crisp integer zoom
+const BLT       = 3;    // 3× blit → crisp 60×78 px — large enough for Eastward detail
 const FOOT_OFF  = Math.round(TILE_SIZE * 0.375);  // screen-px offset below tile centre
 
 // Eastward's signature warm outline
@@ -120,10 +120,10 @@ function paint(a: Appearance, o: CharOpts) {
   const boot  = "#1a1410"; // dark chunky boots, signature Eastward
 
   // ── Body Y landmarks ─────────────────────────────────────────────────────────
-  const HEAD_R  = 4;
-  const HEAD_CY = 5;
-  const SHOU_Y  = HEAD_CY + HEAD_R + 2;  // 11 — shoulder line
-  const BELT_Y  = SHOU_Y + 7;            // 18 — belt / waist
+  const HEAD_R  = 5;   // bigger head — ~38% of sprite height at 3× blit (Eastward proportion)
+  const HEAD_CY = 6;
+  const SHOU_Y  = HEAD_CY + HEAD_R + 2;  // 13 — shoulder line
+  const BELT_Y  = SHOU_Y + 5;            // 18 — belt / waist
   const HIP_Y   = BELT_Y + 1;            // 19
   const KNEE_Y  = HIP_Y  + 3;            // 22
   const FEET_R  = FEET_ROW;              // 24

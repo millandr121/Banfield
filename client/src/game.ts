@@ -46,128 +46,200 @@ const CHARGE_MAX_MS = 600; // hold Space this long for a full-power swing
 const HARVEST_RANGE_PX = 1.8 * TILE_SIZE; // client-side prompt range (cosmetic only)
 
 const TILE_COLORS: Record<Tile, string> = {
-  [Tile.Water]: "#1c5f86",
-  [Tile.FreshWater]: "#2f7d6a", // teal-green: a calm freshwater lake
-  [Tile.Sand]: "#d8c98c",
-  [Tile.Grass]: "#4f7d3a",
-  [Tile.Forest]: "#2f5a28",
-  [Tile.Hill]: "#6b6f57",
-  [Tile.Rock]: "#7d7d7d",
-  [Tile.Road]: "#5b524a",
-  [Tile.Dock]: "#7a5a36",
+  [Tile.Water]: "#287ab0",
+  [Tile.FreshWater]: "#2a8878",
+  [Tile.Sand]: "#d4c070",
+  [Tile.Grass]: "#88b040",   // warm yellow-green — Eastward vibe
+  [Tile.Forest]: "#3a6228",
+  [Tile.Hill]: "#8a7850",
+  [Tile.Rock]: "#8a8278",
+  [Tile.Road]: "#606050",
+  [Tile.Dock]: "#8a6038",
 };
 
 // ── Eastward-style tile texture helpers ──────────────────────────────────────
-// All use a deterministic hash of (x,y) for stable decoration without flicker.
+// Deterministic per-tile hash — stable decoration, never flickers.
 function tileHash(x: number, y: number): number {
   let h = (x * 374761393 + y * 1234567891) | 0;
   h ^= h >>> 13; h = Math.imul(h, 1540483477); h ^= h >>> 15;
   return (h >>> 0) / 0xffffffff;
 }
 
+// Grass: sunlit patches, individual blade clusters, stones, rare flowers.
 function drawGrassTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
-  const h = tileHash(tx, ty);
+  const h1 = tileHash(tx, ty);
   const h2 = tileHash(tx + 97, ty + 13);
+  const h3 = tileHash(tx * 3 + 1, ty * 5 + 7);
   const T = TILE_SIZE;
-  // darker fleck cluster
-  ctx.fillStyle = "rgba(30,60,10,0.28)";
-  const fx = sx + 3 + (h * (T - 6)) | 0;
-  const fy = sy + 3 + (h2 * (T - 6)) | 0;
-  ctx.fillRect(fx, fy, 2, 2);
-  ctx.fillRect(fx + 5, fy + 3, 1, 2);
-  // lighter streak — blade of grass highlight
-  ctx.fillStyle = "rgba(140,210,80,0.22)";
-  const lx = sx + 2 + (tileHash(tx + 7, ty) * (T - 5)) | 0;
-  const ly = sy + 1 + (tileHash(tx, ty + 5) * (T - 4)) | 0;
-  ctx.fillRect(lx, ly, 1, 4);
-  ctx.fillRect(lx + 3, ly + 2, 1, 3);
-}
 
-function drawForestTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
-  const h = tileHash(tx, ty);
-  const h2 = tileHash(tx + 31, ty + 71);
-  const T = TILE_SIZE;
-  // dappled light patches
-  ctx.fillStyle = "rgba(90,180,50,0.18)";
-  ctx.beginPath();
-  ctx.ellipse(sx + 4 + (h * (T - 8)) | 0, sy + 4 + (h2 * (T - 8)) | 0, 3, 2, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // floor shadow dots
-  ctx.fillStyle = "rgba(10,28,5,0.32)";
-  const dx = sx + 2 + (tileHash(tx + 53, ty) * (T - 4)) | 0;
-  const dy = sy + 2 + (tileHash(tx, ty + 43) * (T - 4)) | 0;
-  ctx.fillRect(dx, dy, 2, 2);
-  ctx.fillRect(dx + 4, dy + 5, 2, 2);
-}
+  // Sunlit patch (~35% of tiles) — bright warm area
+  if (h1 > 0.65) {
+    ctx.fillStyle = "#a0c848";
+    const pw = (5 + h1 * 7) | 0;
+    const ph = (3 + h2 * 5) | 0;
+    ctx.fillRect(sx + (h2 * (T - pw - 2) | 0) + 1, sy + (h3 * (T - ph - 2) | 0) + 1, pw, ph);
+  }
 
-function drawSandTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
-  const h = tileHash(tx, ty);
-  const T = TILE_SIZE;
-  // subtle wavy drift line
-  ctx.strokeStyle = "rgba(160,130,60,0.3)";
-  ctx.lineWidth = 1;
-  const wy = sy + 5 + (h * (T - 10)) | 0;
-  ctx.beginPath();
-  ctx.moveTo(sx + 2, wy);
-  ctx.quadraticCurveTo(sx + T * 0.4, wy - 2, sx + T * 0.7, wy);
-  ctx.quadraticCurveTo(sx + T * 0.85, wy + 1, sx + T - 2, wy);
-  ctx.stroke();
-}
+  // Shadow patch opposite corner (~30%)
+  if (h2 > 0.7) {
+    ctx.fillStyle = "#527830";
+    ctx.fillRect(sx + (h3 * (T - 6) | 0), sy + (h1 * (T - 5) | 0), 5, 4);
+  }
 
-function drawRoadTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
-  const h = tileHash(tx, ty);
-  const T = TILE_SIZE;
-  // faint tire-track groove pair
-  ctx.fillStyle = "rgba(30,20,10,0.22)";
-  if (h < 0.5) {
-    // horizontal track hints
-    ctx.fillRect(sx + 3, sy + T * 0.35 | 0, T - 6, 1);
-    ctx.fillRect(sx + 3, sy + T * 0.65 | 0, T - 6, 1);
-  } else {
-    // vertical
-    ctx.fillRect(sx + T * 0.35 | 0, sy + 3, 1, T - 6);
-    ctx.fillRect(sx + T * 0.65 | 0, sy + 3, 1, T - 6);
+  // 2–3 grass blade clusters
+  const blades = 2 + (h1 > 0.5 ? 1 : 0);
+  for (let i = 0; i < blades; i++) {
+    const bh = tileHash(tx * 7 + i * 3, ty + i * 11);
+    const bh2 = tileHash(tx + i * 13, ty * 5 + i * 7);
+    const gx = sx + 1 + (bh * (T - 5) | 0);
+    const gy = sy + 2 + (bh2 * (T - 7) | 0);
+    ctx.fillStyle = "#527830";
+    ctx.fillRect(gx, gy, 1, 3);           // left blade
+    ctx.fillRect(gx + 2, gy - 1, 1, 4);   // right blade
+    ctx.fillRect(gx - 1, gy + 2, 4, 1);   // base spread
+    ctx.fillStyle = "#90c040";
+    ctx.fillRect(gx, gy, 1, 1);           // tip highlight
+    ctx.fillRect(gx + 2, gy - 1, 1, 1);
+  }
+
+  // Stone (~20% of tiles) — round pebble with highlight
+  if (h3 < 0.2) {
+    const stx = sx + 2 + (h1 * (T - 8) | 0);
+    const sty = sy + 3 + (h2 * (T - 7) | 0);
+    ctx.fillStyle = "#8a8068"; ctx.fillRect(stx, sty + 1, 5, 2);  // shadow
+    ctx.fillStyle = "#c8c0a8"; ctx.fillRect(stx, sty, 5, 2);      // body
+    ctx.fillStyle = "#e0d8c0"; ctx.fillRect(stx + 1, sty, 2, 1);  // highlight
+  }
+
+  // Small clover/flower (~8% of tiles)
+  if (h1 > 0.92) {
+    const flx = sx + 3 + (h2 * (T - 7) | 0);
+    const fly = sy + 3 + (h3 * (T - 7) | 0);
+    ctx.fillStyle = "#d8e890";
+    ctx.fillRect(flx, fly, 1, 1); ctx.fillRect(flx + 2, fly, 1, 1); ctx.fillRect(flx + 1, fly - 1, 1, 1);
+    ctx.fillStyle = "#c0d860"; ctx.fillRect(flx + 1, fly + 1, 1, 1);
   }
 }
 
-function drawRockTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, tile: Tile) {
-  const h = tileHash(tx, ty);
-  const h2 = tileHash(tx + 19, ty + 83);
+// Forest floor: tree-shadow patches, dappled light, fallen leaves, root hints.
+function drawForestTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
+  const h1 = tileHash(tx, ty);
+  const h2 = tileHash(tx + 31, ty + 71);
+  const h3 = tileHash(tx * 5, ty * 3 + 17);
   const T = TILE_SIZE;
-  // crack line
-  ctx.strokeStyle = tile === Tile.Rock ? "rgba(40,30,20,0.4)" : "rgba(50,45,30,0.35)";
-  ctx.lineWidth = 1;
-  const cx1 = sx + 3 + (h * (T - 6)) | 0;
-  const cy1 = sy + 3 + (h2 * (T - 10)) | 0;
-  ctx.beginPath();
-  ctx.moveTo(cx1, cy1);
-  ctx.lineTo(cx1 + 4, cy1 + 3);
-  ctx.lineTo(cx1 + 3, cy1 + 6);
-  ctx.stroke();
-  // top highlight
-  ctx.fillStyle = tile === Tile.Rock ? "rgba(200,200,195,0.18)" : "rgba(190,190,160,0.15)";
-  ctx.fillRect(sx + 2, sy + 2, T - 4, 2);
+
+  // Dark canopy-shadow patch
+  ctx.fillStyle = "#283a1e";
+  ctx.fillRect(sx + (h1 * (T - 9) | 0), sy + (h2 * (T - 7) | 0), 8, 5);
+
+  // Dappled-light ellipse (~60% of tiles)
+  if (h1 > 0.4) {
+    ctx.fillStyle = "#70a840";
+    ctx.beginPath();
+    ctx.ellipse(sx + 3 + (h2 * (T - 7) | 0), sy + 3 + (h3 * (T - 7) | 0), 4, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Fallen leaves — warm brown/orange
+  if (h3 < 0.6) {
+    ctx.fillStyle = "#6a4820"; ctx.fillRect(sx + (h1 * (T - 5) | 0), sy + (h2 * (T - 5) | 0), 3, 1);
+    ctx.fillStyle = "#885028"; ctx.fillRect(sx + (h3 * (T - 4) | 0), sy + (h1 * (T - 4) | 0), 2, 1);
+  }
+
+  // Root hint (~35% of tiles)
+  if (h2 < 0.35) {
+    ctx.strokeStyle = "#3a2a14"; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(sx + T / 2, sy + T - 3);
+    ctx.quadraticCurveTo(sx + T / 2 + 4, sy + T - 5, sx + T - 2, sy + T - 2);
+    ctx.stroke();
+  }
 }
 
+// Sand: wavy drift lines, pebbles, shell highlights.
+function drawSandTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
+  const h1 = tileHash(tx, ty);
+  const h2 = tileHash(tx + 17, ty + 43);
+  const h3 = tileHash(tx * 7, ty * 11);
+  const T = TILE_SIZE;
+
+  ctx.strokeStyle = "#b0984a"; ctx.lineWidth = 1;
+  for (let i = 0; i < 2; i++) {
+    const wy = sy + 4 + (tileHash(tx + i, ty + i * 7) * (T - 8) | 0);
+    ctx.beginPath();
+    ctx.moveTo(sx + 1, wy);
+    ctx.quadraticCurveTo(sx + T * 0.35, wy - 1, sx + T * 0.65, wy + 1);
+    ctx.quadraticCurveTo(sx + T * 0.82, wy + 1, sx + T - 1, wy);
+    ctx.stroke();
+  }
+
+  if (h1 < 0.3) { // pebble
+    ctx.fillStyle = "#c0b070"; ctx.fillRect(sx + (h2 * (T - 5) | 0), sy + (h3 * (T - 4) | 0), 3, 2);
+  }
+  if (h2 > 0.8) { // shell / bright speck
+    ctx.fillStyle = "#ece8d0"; ctx.fillRect(sx + (h1 * (T - 4) | 0), sy + (h2 * (T - 4) | 0), 2, 1);
+  }
+}
+
+// Road: visible tyre-track pair + gravel scatter.
+function drawRoadTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
+  const T = TILE_SIZE;
+  ctx.fillStyle = "#3e3028";
+  ctx.fillRect(sx + 2, sy + (T * 0.3 | 0), T - 4, 1);
+  ctx.fillRect(sx + 2, sy + (T * 0.7 | 0), T - 4, 1);
+  ctx.fillStyle = "#706558";
+  for (let i = 0; i < 4; i++) {
+    ctx.fillRect(sx + (tileHash(tx + i, ty + i * 3) * (T - 2) | 0), sy + (tileHash(tx + i * 5, ty + i) * (T - 2) | 0), 1, 1);
+  }
+}
+
+// Rock/Hill: highlight strip, shadow patch, crack line, pebble.
+function drawRockTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, tile: Tile) {
+  const h1 = tileHash(tx, ty);
+  const h2 = tileHash(tx + 19, ty + 83);
+  const h3 = tileHash(tx * 11, ty * 7);
+  const T = TILE_SIZE;
+  const isRock = tile === Tile.Rock;
+
+  ctx.fillStyle = isRock ? "#585048" : "#504838";
+  ctx.fillRect(sx + (h1 * (T - 10) | 0), sy + T - 6, 8, 5); // shadow patch
+  ctx.fillStyle = isRock ? "#b0a898" : "#a09880";
+  ctx.fillRect(sx + 2, sy + 2, T - 4, 2);                    // top highlight
+
+  ctx.strokeStyle = isRock ? "#484038" : "#504030"; ctx.lineWidth = 1;
+  ctx.beginPath();
+  const cx = sx + 3 + (h1 * (T - 8) | 0);
+  const cy = sy + 5 + (h2 * (T - 12) | 0);
+  ctx.moveTo(cx, cy); ctx.lineTo(cx + 3, cy + 4); ctx.lineTo(cx + 2, cy + 7); ctx.stroke();
+
+  if (h3 > 0.6) {
+    ctx.fillStyle = isRock ? "#888078" : "#807860";
+    ctx.fillRect(sx + (h2 * (T - 5) | 0), sy + (h3 * (T - 5) | 0), 3, 2);
+  }
+}
+
+// Water: bright animated ripple stripes + dark wave troughs — visible shimmer.
 function drawWaterShimmer(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, now: number, col: string) {
   const T = TILE_SIZE;
   const r1 = parseInt(col.slice(1, 3), 16);
   const g1 = parseInt(col.slice(3, 5), 16);
   const b1 = parseInt(col.slice(5, 7), 16);
-  // Two animated sin-wave shimmer rows per tile, offset by position for variety.
-  const phase1 = now * 1.4 + tx * 0.7 + ty * 1.1;
-  const phase2 = now * 1.1 + tx * 1.3 + ty * 0.6;
-  const a1 = (0.13 + 0.10 * Math.sin(phase1)).toFixed(3);
-  const a2 = (0.10 + 0.08 * Math.sin(phase2)).toFixed(3);
-  const row1 = sy + ((tileHash(tx, ty) * (T - 6)) | 0) + 2;
-  const row2 = sy + ((tileHash(tx + 3, ty + 7) * (T - 6)) | 0) + 2;
-  const shimW = 3 + ((tileHash(tx * 7, ty * 3) * 6) | 0);
-  const shimX1 = sx + 2 + ((tileHash(tx + 1, ty) * (T - shimW - 4)) | 0);
-  const shimX2 = sx + 2 + ((tileHash(tx, ty + 1) * (T - shimW - 4)) | 0);
-  ctx.fillStyle = `rgba(${r1},${g1},${b1},${a1})`;
-  ctx.fillRect(shimX1, row1, shimW, 1);
-  ctx.fillStyle = `rgba(${r1},${g1},${b1},${a2})`;
-  ctx.fillRect(shimX2, row2, shimW + 2, 1);
+
+  const p1 = (now * 0.9 + tx * 0.6 + ty * 0.8) % 1;
+  const p2 = (now * 0.7 + tx * 1.1 + ty * 0.4 + 0.5) % 1;
+  const row1 = sy + (p1 * T | 0);
+  const row2 = sy + (p2 * T | 0);
+  const w1 = 5 + (tileHash(tx * 7, ty * 3) * 8 | 0);
+  const w2 = 4 + (tileHash(tx + 3, ty * 9) * 7 | 0);
+  const x1 = sx + 1 + (tileHash(tx + 1, ty) * (T - w1 - 2) | 0);
+  const x2 = sx + 1 + (tileHash(tx, ty + 1) * (T - w2 - 2) | 0);
+
+  ctx.fillStyle = `rgba(${Math.min(255, r1 + 80)},${Math.min(255, g1 + 80)},${Math.min(255, b1 + 80)},0.65)`;
+  ctx.fillRect(x1, row1, w1, 1);
+  ctx.fillStyle = `rgba(${Math.min(255, r1 + 50)},${Math.min(255, g1 + 50)},${Math.min(255, b1 + 50)},0.45)`;
+  ctx.fillRect(x2, row2, w2, 1);
+  ctx.fillStyle = `rgba(${Math.max(0, r1 - 30)},${Math.max(0, g1 - 30)},${Math.max(0, b1 - 30)},0.3)`;
+  ctx.fillRect(sx + 2, sy + ((p1 + 0.3) % 1 * T | 0), T - 4, 1);
 }
 
 export class Game {
