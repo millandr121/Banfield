@@ -1913,7 +1913,8 @@ function waterDepthColor(depth: number): string {
 
 // --- resource node sprites --------------------------------------------------
 function drawResourceSprite(ctx: CanvasRenderingContext2D, n: ResourceNode, x: number, y: number) {
-  const R = TILE_SIZE * 0.44;
+  // Trees stand taller than ground resources, for a proper forest canopy.
+  const R = TILE_SIZE * (n.kind === "tree" ? 0.66 : 0.44);
   if (n.depleted) {
     // Ghost outline: stump or empty pit.
     ctx.strokeStyle = n.kind === "tree" ? "#3a5c28" : "#5a4e3a";

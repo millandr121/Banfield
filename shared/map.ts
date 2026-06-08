@@ -1,4 +1,4 @@
-import { BuildingState, InvasiveKind, ResourceKind, ShopDef, Tile, TravelNode, VehicleKind, WorldMap } from "./protocol";
+import { BuildingState, InvasiveKind, ResourceKind, ShopDef, Tile, TravelNode, VehicleKind, WorldMap, WATERLINE_HIGH } from "./protocol";
 import { IMPORTED_REGIONS } from "./regions";
 
 // Where a driveable vehicle starts life in a region.
@@ -27,7 +27,14 @@ export interface PlantDef {
 }
 
 // Build a sloped heightmap from the tile grid so the tide sweeps gradually.
-const SHORE_ELEV = 8;
+//
+// KEY INVARIANT (so normal tides never flood real land): every LAND tile sits
+// at or above WATERLINE_HIGH, the highest a normal tide can reach. The whole
+// intertidal sweep therefore happens INSIDE the mapped water footprint — the
+// shore-most water rides high in the tidal band (bare mudflat at low tide,
+// covered near high tide) and the sea floor drops away offshore. Only the king
+// tide (+KING_TIDE_SURGE) and tsunami (+TSUNAMI_SURGE) surges, which push the
+// waterline past WATERLINE_HIGH, can ever spill onto land.
 const BEACH_SLOPE = 2;
 export function computeElevation(tiles: Tile[], w: number, h: number): number[] {
   const isWater = (i: number) => tiles[i] === Tile.Water;
@@ -54,19 +61,24 @@ export function computeElevation(tiles: Tile[], w: number, h: number): number[] 
   const elev = new Array(w * h).fill(0);
   for (let i = 0; i < w * h; i++) {
     if (isWater(i)) {
+      // Distance (in tiles) from this water cell out to the nearest land.
       const wd = fromLand[i] <= 0 ? 1 : fromLand[i];
-      elev[i] = SHORE_ELEV - wd * BEACH_SLOPE;
+      // Shore-most water rides just below the high-tide line (covered only near
+      // high tide, exposed as mudflat at low tide); each step offshore the
+      // floor drops away toward the deep channels.
+      elev[i] = (WATERLINE_HIGH - 2) - (wd - 1) * BEACH_SLOPE;
     } else {
       const ld = fromWater[i] < 0 ? 20 : fromWater[i];
       const t = tiles[i];
-      // Sand beaches rise very gently so the tide sweeps far across the flat.
-      const slope = t === Tile.Sand ? 0.75 : BEACH_SLOPE;
-      let e = SHORE_ELEV + ld * slope;
+      // Land begins AT the high-tide line. Sand beaches rise gently so a king
+      // tide still washes a few tiles up the flat; other ground climbs faster.
+      const slope = t === Tile.Sand ? 0.9 : BEACH_SLOPE;
+      let e = WATERLINE_HIGH + ld * slope;
       if (t === Tile.Hill) e += 34;
       else if (t === Tile.Rock) e += 50;
       else if (t === Tile.Forest) e += 8;
-      else if (t === Tile.Dock) e -= 4;
-      elev[i] = Math.min(100, e);
+      // Never let a land tile dip below the high-tide line.
+      elev[i] = Math.min(120, Math.max(WATERLINE_HIGH, e));
     }
   }
   return elev;
@@ -589,7 +601,7 @@ const SHOP_OSTROMS: ShopDef = {
   ],
 };
 const SHOP_ANACLA_GAS: ShopDef = {
-  name: "Anacla Gas Bar",
+  name: "Ostrom's Gas Bar",
   buys: [
     { item: "berry", price: 3 },
     { item: "fish", price: 2 },

@@ -425,11 +425,24 @@ function autoPlaceResources(g, regionId) {
   let ni = 0, pi = 0;
 
   // Spacing: every ~8 tiles for trees, ~20 for ore, ~12 for berry.
-  for (let y = 2; y < H - 2; y += 8) {
-    for (let x = 2; x < W - 2; x += 8) {
+  // Deterministic pseudo-random jitter so trees scatter naturally instead of
+  // landing on a rigid grid. (Hash of the cell coords → stable across re-runs.)
+  const jitter = (x, y, salt) => {
+    const n = Math.sin((x * 12.9898 + y * 78.233 + salt * 37.719)) * 43758.5453;
+    return n - Math.floor(n); // 0..1
+  };
+  // Tighter spacing (6) + jitter gives a fuller, more natural-looking forest.
+  for (let y = 2; y < H - 2; y += 6) {
+    for (let x = 2; x < W - 2; x += 6) {
       const tile = t[y * W + x];
       if (tile === T.Forest) {
-        nodes.push({ id: `${regionId}-t${ni++}`, kind: "tree", x, y });
+        // Nudge the tree up to ±2 tiles off the grid point (staying in bounds).
+        const jx = Math.max(0, Math.min(W - 1, x + Math.round((jitter(x, y, 1) - 0.5) * 4)));
+        const jy = Math.max(0, Math.min(H - 1, y + Math.round((jitter(x, y, 2) - 0.5) * 4)));
+        // Skip the odd cell so density varies (clearings, denser stands).
+        if (t[jy * W + jx] === T.Forest && jitter(x, y, 3) > 0.12) {
+          nodes.push({ id: `${regionId}-t${ni++}`, kind: "tree", x: jx, y: jy });
+        }
         // Chance of a berry bush in the forest understorey.
         if ((x + y) % 24 === 0) {
           const v = BERRY_VARIETIES[(x * 3 + y) % BERRY_VARIETIES.length];
@@ -489,7 +502,9 @@ function buildingKind(tags) {
 function stableId(regionId, tags) {
   const name = (tags.name || "").toLowerCase();
   const am   = (tags.amenity || "").toLowerCase();
-  // Gas bar lives on the Bamfield→Anacla road — it shows up in whichever bbox it falls in.
+  // Ostrom's Gas Bar lives on the Bamfield→Anacla road — it shows up in
+  // whichever bbox it falls in. (OSM may label it "Pachena Bay Gas Bar"; locally
+  // it's Ostrom's — NAME_OVERRIDE below fixes the displayed name.)
   if (am === "fuel" || name.includes("gas bar") || name.includes("gas station")) return "an-shop-gas";
   if (regionId === "bamfield") {
     if (name.includes("breakers"))                                       return "bf-shop-breakers";
@@ -509,6 +524,15 @@ function stableId(regionId, tags) {
     if (name.includes("hacas") || name.includes("inn") || name.includes("lodge")) return "an-house-food";
   }
   return null;
+}
+
+// Force the displayed name for certain landmarks regardless of how OSM labels
+// them (OSM data is sometimes stale or uses a different local name).
+const NAME_OVERRIDE = {
+  "an-shop-gas": "Ostrom's Gas Bar",
+};
+function displayName(stableIdValue, tags) {
+  return NAME_OVERRIDE[stableIdValue] ?? tags.name;
 }
 
 // Returns true for ways that represent a building footprint (has polygon + is a structure).
@@ -588,11 +612,12 @@ async function main() {
     if (tag(e,"leisure")==="campsite" || tag(e,"leisure")==="campground")
       fillPolygon(g, geom(e), T.Grass); // stays grass, spawn players here
 
-  // 5. Coastline as a sand shoreline barrier (2px so the flood can't leak
-  //    through diagonal gaps between segments).
+  // 5. Coastline as a sand shoreline barrier (3px so the ocean flood-fill can't
+  //    leak through diagonal gaps between segments — a leak here is what made
+  //    Grappler Bay's east shore read as water instead of forested land).
   for (const e of ways)
     if (tag(e,"natural")==="coastline")
-      drawLine(g, geom(e), T.Sand, 2);
+      drawLine(g, geom(e), T.Sand, 3);
 
   // 6. Waterways as water lines (rivers, streams, the main inlet as a way)
   for (const e of ways) {
@@ -696,7 +721,8 @@ async function main() {
     const bx = Math.max(0, Math.min(gridW - rw, Math.round(cx - rw / 2)));
     const by = Math.max(0, Math.min(gridH - rh, Math.round(cy - rh / 2)));
     const tags = e.tags || {};
-    addBuilding(stableId(args.id, tags) ?? `${args.id}-b${bi++}`, buildingKind(tags), bx, by, rw, rh, tags.name);
+    const sid = stableId(args.id, tags);
+    addBuilding(sid ?? `${args.id}-b${bi++}`, buildingKind(tags), bx, by, rw, rh, displayName(sid, tags));
   }
 
   // b. Amenity/shop/tourism/office NODES — POI pins with no footprint polygon.
@@ -708,7 +734,8 @@ async function main() {
     const p = toTile(n.lon, n.lat);
     const bx = Math.round(p.x), by = Math.round(p.y);
     if (bx < 0 || bx >= gridW || by < 0 || by >= gridH) continue;
-    addBuilding(stableId(args.id, tags) ?? `${args.id}-poi${bi++}`, buildingKind(tags), bx, by, 1, 1, tags.name);
+    const sid = stableId(args.id, tags);
+    addBuilding(sid ?? `${args.id}-poi${bi++}`, buildingKind(tags), bx, by, 1, 1, displayName(sid, tags));
   }
 
   // --- Spawn ---------------------------------------------------------------

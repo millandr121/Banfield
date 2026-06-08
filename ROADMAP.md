@@ -18,6 +18,12 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
 ## 1. MAP
 - [x] Real OSM geography for Bamfield + Anacla (from openstreetmap.org export)
 - [x] Fix water/land flood (ocean floods in from map edges; coastline barrier)
+- [x] **Tide stays within the mapped water** — land tiles now sit at/above the
+      high-tide line, so only king tides & tsunamis spill onto land.
+- [x] Ostrom's Gas Bar named correctly (was "Pachena Bay / Anacla Gas Bar").
+- [~] Grappler Bay east shore — coastline barrier widened to 3px to stop the
+      flood leak; needs a re-import to take effect (see PLAYBOOK.md §5).
+- [ ] **Bigger scale** — re-import at `--width 1100` (see PLAYBOOK.md §5).
 - [x] Scale up so the townsite isn't cluttered (Bamfield 480 wide)
 - [x] Real building names on sign plaques (all 20 BMSC buildings, Flora's, etc.)
 - [ ] **Roads two tiles wide** (two-lane, realistic)
@@ -47,7 +53,13 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
 - [ ] **Swim stamina** — tire out swimming like running/sprinting (throttle).
 - [ ] Kelp beds: grow along waist-high water, mostly **out in the ocean**, NOT
       really in the inlet (the odd one). Sea otters live in kelp beds.
+- [x] **Bigger trees** — taller canopy in the renderer; importer now scatters
+      them with jitter (denser, less grid-like) on the next re-import.
 - [ ] Shoreline foam, water gradient polish, palette tuning (Eastward tones).
+- [ ] **Nova Harvest** (oysters/shell creatures) shop just south of Buchanan
+      Lodge + Seaside Dormitory; **shovel** for clam digging (buy at hardware);
+      dive for oysters later. (Queued for the next session — items + shop need
+      wiring; deferred to keep this build stable.)
 
 ## 3. COMBAT (skill-based)
 - [x] Weapon system: stick, hunting knife (melee); bow, crossbow, speargun,
