@@ -6,9 +6,10 @@
 // and save / export to JSON or a PNG sprite sheet.
 
 import {
-  Facing, FACINGS, SpriteDoc, SpriteFrame,
-  newSpriteDoc, emptyFrame, emptyPixels, compositeFrame, normalizeLayers,
+  Facing, FACINGS, SpriteDoc, SpriteFrame, DyeRole, DYE_ROLES, Tints,
+  newSpriteDoc, emptyFrame, emptyPixels, compositeFrame, normalizeLayers, renderFrame,
 } from "../../../shared/sprite";
+import baseChar from "../assets/base-character.json";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -16,7 +17,11 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 type Tool = "pencil" | "eraser" | "fill" | "pick";
 const STORAGE_KEY = "banfield-sprite-doc";
 
-let doc: SpriteDoc = loadFromStorage() ?? newSpriteDoc("character");
+// Sample dye colours for the live tint preview (don't change the painted art).
+let tints: Tints = { skin: "#d8a870", hair: "#5a4632", shirt: "#3f8a44", pants: "#36507e", accent: "#ffd54f" };
+let tintPreview = false;
+
+let doc: SpriteDoc = loadFromStorage() ?? normalizeLayers(JSON.parse(JSON.stringify(baseChar)) as SpriteDoc);
 let facing: Facing = "down";
 let frameIdx = 0;
 let layerIdx = 0;
@@ -80,8 +85,10 @@ function drawStage() {
     }
   }
 
-  // Composite all visible layers of the current frame.
-  const comp = compositeFrame(curFrame(), layerVisible, doc.w, doc.h);
+  // Composite all visible layers of the current frame (tinted when previewing dyes).
+  const comp = tintPreview
+    ? renderFrame(doc, facing, frameIdx, tints, layerVisible)
+    : compositeFrame(curFrame(), layerVisible, doc.w, doc.h);
   paintPixels(sctx, comp, zoom);
 
   if (showGrid && zoom >= 8) {
@@ -118,7 +125,9 @@ function previewLoop(t: number) {
     lastTick = t;
   }
   const pf = playing ? previewFrame % frames.length : frameIdx;
-  const comp = compositeFrame(frames[pf], layerVisible, doc.w, doc.h);
+  const comp = tintPreview
+    ? renderFrame(doc, facing, pf, tints, layerVisible)
+    : compositeFrame(frames[pf], layerVisible, doc.w, doc.h);
   const scale = Math.min(preview.width / doc.w, preview.height / doc.h) | 0;
   const ox = (preview.width - doc.w * scale) / 2;
   const oy = (preview.height - doc.h * scale) / 2;
@@ -254,10 +263,61 @@ function buildLayers() {
     const nm = document.createElement("span");
     nm.className = "nm";
     nm.textContent = doc.layerNames[li];
-    row.appendChild(vis); row.appendChild(nm);
+    // Dye role selector — decides how this layer re-tints at runtime.
+    const sel = document.createElement("select");
+    sel.style.cssText = "font-size:10px;padding:2px;max-width:74px";
+    for (const role of DYE_ROLES) {
+      const opt = document.createElement("option");
+      opt.value = role; opt.textContent = role;
+      if ((doc.layerDye[li] ?? "none") === role) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.addEventListener("click", (e) => e.stopPropagation());
+    sel.addEventListener("change", () => {
+      doc.layerDye[li] = sel.value as DyeRole;
+      doc.layerRefLum = undefined; // recompute on next tint
+      saveToStorage(); drawStage();
+    });
+    row.appendChild(vis); row.appendChild(nm); row.appendChild(sel);
     row.addEventListener("click", () => { layerIdx = li; buildLayers(); });
     wrap.appendChild(row);
   }
+}
+
+// Live dye-preview panel: toggle tinting and sample each role's colour.
+function buildDyePanel() {
+  let g = document.getElementById("dyepanel");
+  if (g) g.remove();
+  g = document.createElement("div");
+  g.className = "group";
+  g.id = "dyepanel";
+  const roles: (keyof Tints)[] = ["skin", "hair", "shirt", "pants", "accent"];
+  g.innerHTML = `<h2>Dye preview</h2>
+    <label style="display:flex;gap:6px;align-items:center;margin-bottom:7px">
+      <input type="checkbox" id="tintToggle" ${tintPreview ? "checked" : ""}/> show dyed colours
+    </label>`;
+  for (const role of roles) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.marginBottom = "4px";
+    const input = document.createElement("input");
+    input.type = "color";
+    input.value = tints[role] ?? "#888888";
+    input.addEventListener("input", () => {
+      tints[role] = input.value;
+      if (tintPreview) drawStage();
+    });
+    const lbl = document.createElement("span");
+    lbl.textContent = role;
+    lbl.style.cssText = "font-size:11px;color:var(--muted)";
+    row.appendChild(input); row.appendChild(lbl);
+    g.appendChild(row);
+  }
+  document.querySelector(".right")!.appendChild(g);
+  $<HTMLInputElement>("tintToggle").addEventListener("change", (e) => {
+    tintPreview = (e.target as HTMLInputElement).checked;
+    drawStage();
+  });
 }
 
 // ── Tool buttons ─────────────────────────────────────────────────────────────
@@ -415,7 +475,7 @@ function refreshAll() {
   $<HTMLInputElement>("docname").value = doc.name;
   $<HTMLInputElement>("fps").value = String(doc.fps);
   sizeStage();
-  buildPalette(); buildFacings(); buildFrames(); buildLayers();
+  buildPalette(); buildFacings(); buildFrames(); buildLayers(); buildDyePanel();
   setColor(color);
   drawStage();
 }
