@@ -12,7 +12,9 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const W = 20, H = 26;
-const FACINGS = ["down", "up", "left", "right"];
+const FACINGS = [
+  "down", "downright", "right", "upright", "up", "upleft", "left", "downleft",
+];
 
 // Layer order, bottom → top. Dye role decides runtime tinting.
 const LAYERS = [
@@ -56,9 +58,13 @@ const SHOU_Y = 13, BELT_Y = 18, HIP_Y = 19, KNEE_Y = 22, FEET_Y = 24;
 // Paint one (facing, phase) into a fresh set of fill layers; returns layers[].
 function paintFrame(facing, phase) {
   const L = LAYERS.map(emptyLayer);
-  const prof = facing === "left" || facing === "right";
-  const dir = facing === "right" ? 1 : -1; // profile forward direction
-  const up = facing === "up";
+  const hasRight = facing.includes("right");
+  const hasLeft = facing.includes("left");
+  const hasDown = facing.includes("down");
+  const diag = (hasLeft || hasRight) && (facing.includes("up") || hasDown);
+  const prof = hasLeft || hasRight;          // profile body for side & diagonals
+  const dir = hasRight ? 1 : -1;             // profile forward direction
+  const up = facing === "up" || facing === "upleft" || facing === "upright"; // back of head
 
   // Walk cycle: phase 0/2 = passing, 1 = step-A, 3 = step-B.
   const stride = phase === 1 ? 2 : phase === 3 ? -2 : 0;
@@ -145,21 +151,25 @@ function paintFrame(facing, phase) {
   }
 
   // ── Face (eyes / nose / mouth) ──
-  if (facing === "down") {
-    for (const ex of [CX - 3, CX + 1]) {
+  if (facing === "down" || (diag && hasDown)) {
+    // Frontal / 3-4-front face: two eyes, nudged toward the facing side on diagonals.
+    const sh = diag ? dir : 0;
+    for (const ex of [CX - 3 + sh, CX + 1 + sh]) {
       rect(L[LI.face], ex, HEAD_CY, 2, 2, C.eyeDark);
       pset(L[LI.face], ex, HEAD_CY, C.eyeWhite);
       pset(L[LI.face], ex + 1, HEAD_CY + 1, C.eyeGlint);
     }
-    pset(L[LI.face], CX, HEAD_CY + 2, C.nose);
-    rect(L[LI.face], CX - 1, HEAD_CY + 3, 3, 1, C.mouth);
-  } else if (prof) {
+    pset(L[LI.face], CX + sh, HEAD_CY + 2, C.nose);
+    rect(L[LI.face], CX - 1 + sh, HEAD_CY + 3, 3, 1, C.mouth);
+  } else if (facing === "left" || facing === "right") {
+    // Pure profile: single eye + nose bump.
     const ex = dir > 0 ? CX + 1 : CX - 3;
     rect(L[LI.face], ex, HEAD_CY, 2, 2, C.eyeDark);
     pset(L[LI.face], dir > 0 ? ex + 1 : ex, HEAD_CY, C.eyeWhite);
     pset(L[LI.face], CX + dir * (HEAD_R - 1), HEAD_CY + 1, C.nose);
     pset(L[LI.face], CX + dir * (HEAD_R - 1), HEAD_CY + 3, C.mouth);
   }
+  // up / up-diagonals: back of head, no face.
 
   // ── Derive the outline layer from the union silhouette ──
   const solid = new Array(W * H).fill(false);

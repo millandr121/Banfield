@@ -220,7 +220,10 @@ function buildPalette() {
 function buildFacings() {
   const wrap = $<HTMLDivElement>("facings");
   wrap.innerHTML = "";
-  const labels: Record<Facing, string> = { down: "↓ Down", up: "↑ Up", left: "← Left", right: "→ Right" };
+  const labels: Record<Facing, string> = {
+    down: "↓", downright: "↘", right: "→", upright: "↗",
+    up: "↑", upleft: "↖", left: "←", downleft: "↙",
+  };
   for (const f of FACINGS) {
     const b = document.createElement("button");
     b.textContent = labels[f];

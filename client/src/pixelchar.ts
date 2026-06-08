@@ -13,7 +13,9 @@
 
 import { Appearance, ItemId, TILE_SIZE } from "../../shared/protocol";
 
-export type Facing = "down" | "up" | "left" | "right";
+export type Facing =
+  | "down" | "up" | "left" | "right"
+  | "downleft" | "downright" | "upleft" | "upright";
 
 // ── Sprite space constants ────────────────────────────────────────────────────
 const SW        = 20;   // sprite width  (px)
@@ -95,11 +97,17 @@ function paint(a: Appearance, o: CharOpts) {
   b.clearRect(0, 0, SW, SH);
 
   const f   = o.facing;
-  const dn  = f === "down";
-  const up  = f === "up";
-  const lt  = f === "left";
-  const rt  = f === "right";
-  const prof = lt || rt;
+  const hasDown = f.includes("down");
+  const hasUp   = f.includes("up");
+  const lt   = f.includes("left");
+  const rt   = f.includes("right");
+  const prof = lt || rt;                       // profile body for side & diagonals
+  const diag = prof && (hasDown || hasUp);     // a diagonal facing
+  const dn   = f === "down";                   // pure front (full frontal face/body)
+  const up   = f === "up" || f === "upleft" || f === "upright"; // back of head
+  // Frontal-ish face on pure-down and down-diagonals; profile face on pure side.
+  const frontFace   = dn || (diag && hasDown);
+  const profileFace = f === "left" || f === "right";
 
   const fr   = wf(o.phase);
   const run  = o.running ?? false;
@@ -387,19 +395,20 @@ function paint(a: Appearance, o: CharOpts) {
   // ─────────────────────────────────────────────────────────────────────────────
   // FACE DETAILS
   // ─────────────────────────────────────────────────────────────────────────────
-  if (dn) {
-    // Two 2×2 eyes with white specular — the signature Eastward look.
-    for (const ex of [hcx - 3, hcx + 1]) {
+  if (frontFace) {
+    // Two 2×2 eyes with white specular — nudged toward the facing on diagonals.
+    const sh = diag ? (rt ? 1 : -1) : 0;
+    for (const ex of [hcx - 3 + sh, hcx + 1 + sh]) {
       F(b, OL, ex - 1, HEAD_CY - 1, 4, 4);          // eye socket outline
       F(b, "#0d1a2a", ex, HEAD_CY, 2, 2);            // dark iris
       F(b, "#ffffff", ex, HEAD_CY, 1, 1);            // specular catch-light
       F(b, "#3a6ea8", ex + 1, HEAD_CY + 1, 1, 1);   // iris colour glint
     }
     // Nose: tiny 1px shadow dot
-    F(b, dk(skin, 0.84), hcx, HEAD_CY + 2, 1, 1);
+    F(b, dk(skin, 0.84), hcx + sh, HEAD_CY + 2, 1, 1);
     // Mouth: subtle 3-px line
-    F(b, dk(skin, 0.76), hcx - 1, HEAD_CY + 3, 3, 1);
-  } else if (lt) {
+    F(b, dk(skin, 0.76), hcx - 1 + sh, HEAD_CY + 3, 3, 1);
+  } else if (profileFace && lt) {
     // Profile left eye
     F(b, OL, hcx - 3, HEAD_CY - 1, 4, 4);
     F(b, "#0d1a2a", hcx - 3, HEAD_CY, 2, 2);
@@ -408,7 +417,7 @@ function paint(a: Appearance, o: CharOpts) {
     F(b, dk(skin, 0.8), hcx - HEAD_R + 1, HEAD_CY + 1, 1, 1);
     // Mouth
     F(b, dk(skin, 0.76), hcx - HEAD_R + 1, HEAD_CY + 3, 1, 1);
-  } else if (rt) {
+  } else if (profileFace && rt) {
     // Profile right eye
     F(b, OL, hcx + 1, HEAD_CY - 1, 4, 4);
     F(b, "#0d1a2a", hcx + 1, HEAD_CY, 2, 2);

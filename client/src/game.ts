@@ -3436,12 +3436,17 @@ function wrapText(
 // Anchored near the feet at (sx, sy); the body rises above so taller things
 // naturally overlap shorter ones in a Y-sorted scene.
 // ---------------------------------------------------------------------------
-type Facing = "down" | "up" | "left" | "right";
+type Facing =
+  | "down" | "up" | "left" | "right"
+  | "downleft" | "downright" | "upleft" | "upright";
 
 function facingFromDir(dir: number): Facing {
-  const dx = Math.cos(dir), dy = Math.sin(dir);
-  if (Math.abs(dx) >= Math.abs(dy)) return dx > 0 ? "right" : "left";
-  return dy > 0 ? "down" : "up";
+  // 8-way: snap the movement angle to the nearest 45°.
+  const TAU = Math.PI * 2;
+  const oct = Math.round(((dir % TAU) + TAU) % TAU / (Math.PI / 4)) % 8;
+  // octants from angle 0 (east) going clockwise (screen y is down)
+  return (["right", "downright", "down", "downleft",
+           "left", "upleft", "up", "upright"] as Facing[])[oct];
 }
 
 // --- creature sprites (top-down, recognizable silhouettes) ------------------

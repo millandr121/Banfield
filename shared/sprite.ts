@@ -8,8 +8,18 @@
 // stack of layers (skin, hair, shirt, …) painted independently so outfits and
 // recolours can be composited or swapped without repainting the body.
 
-export type Facing = "down" | "up" | "left" | "right";
-export const FACINGS: Facing[] = ["down", "up", "left", "right"];
+export type Facing =
+  | "down" | "up" | "left" | "right"
+  | "downleft" | "downright" | "upleft" | "upright";
+export const FACINGS: Facing[] = [
+  "down", "downright", "right", "upright", "up", "upleft", "left", "downleft",
+];
+
+/** Nearest cardinal facing to copy art from when a diagonal is missing. */
+export const FACING_FALLBACK: Record<Facing, Facing> = {
+  down: "down", up: "up", left: "left", right: "right",
+  downright: "right", downleft: "left", upright: "right", upleft: "left",
+};
 
 /** Flat row-major pixel buffer; "" = transparent, else "#rrggbb". */
 export type Pixels = string[];
@@ -173,6 +183,15 @@ export function compositeFrame(
 /** Re-shape an old doc so it has exactly `layerNames` layers (for migrations). */
 export function normalizeLayers(doc: SpriteDoc): SpriteDoc {
   const n = doc.layerNames.length;
+  // Back-fill missing facings (e.g. diagonals) by cloning the nearest cardinal.
+  for (const f of FACINGS) {
+    if (!doc.facings[f] || doc.facings[f].length === 0) {
+      const src = doc.facings[FACING_FALLBACK[f]] ?? doc.facings.down;
+      doc.facings[f] = (src ?? [emptyFrame(doc.w, doc.h, n)]).map((fr) => ({
+        layers: fr.layers.map((l) => [...l]),
+      }));
+    }
+  }
   // Back-fill dye roles for docs authored before the dye system existed.
   if (!doc.layerDye) {
     doc.layerDye = doc.layerNames.map((nm) =>
