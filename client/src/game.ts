@@ -57,6 +57,119 @@ const TILE_COLORS: Record<Tile, string> = {
   [Tile.Dock]: "#7a5a36",
 };
 
+// ── Eastward-style tile texture helpers ──────────────────────────────────────
+// All use a deterministic hash of (x,y) for stable decoration without flicker.
+function tileHash(x: number, y: number): number {
+  let h = (x * 374761393 + y * 1234567891) | 0;
+  h ^= h >>> 13; h = Math.imul(h, 1540483477); h ^= h >>> 15;
+  return (h >>> 0) / 0xffffffff;
+}
+
+function drawGrassTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
+  const h = tileHash(tx, ty);
+  const h2 = tileHash(tx + 97, ty + 13);
+  const T = TILE_SIZE;
+  // darker fleck cluster
+  ctx.fillStyle = "rgba(30,60,10,0.28)";
+  const fx = sx + 3 + (h * (T - 6)) | 0;
+  const fy = sy + 3 + (h2 * (T - 6)) | 0;
+  ctx.fillRect(fx, fy, 2, 2);
+  ctx.fillRect(fx + 5, fy + 3, 1, 2);
+  // lighter streak — blade of grass highlight
+  ctx.fillStyle = "rgba(140,210,80,0.22)";
+  const lx = sx + 2 + (tileHash(tx + 7, ty) * (T - 5)) | 0;
+  const ly = sy + 1 + (tileHash(tx, ty + 5) * (T - 4)) | 0;
+  ctx.fillRect(lx, ly, 1, 4);
+  ctx.fillRect(lx + 3, ly + 2, 1, 3);
+}
+
+function drawForestTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
+  const h = tileHash(tx, ty);
+  const h2 = tileHash(tx + 31, ty + 71);
+  const T = TILE_SIZE;
+  // dappled light patches
+  ctx.fillStyle = "rgba(90,180,50,0.18)";
+  ctx.beginPath();
+  ctx.ellipse(sx + 4 + (h * (T - 8)) | 0, sy + 4 + (h2 * (T - 8)) | 0, 3, 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // floor shadow dots
+  ctx.fillStyle = "rgba(10,28,5,0.32)";
+  const dx = sx + 2 + (tileHash(tx + 53, ty) * (T - 4)) | 0;
+  const dy = sy + 2 + (tileHash(tx, ty + 43) * (T - 4)) | 0;
+  ctx.fillRect(dx, dy, 2, 2);
+  ctx.fillRect(dx + 4, dy + 5, 2, 2);
+}
+
+function drawSandTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
+  const h = tileHash(tx, ty);
+  const T = TILE_SIZE;
+  // subtle wavy drift line
+  ctx.strokeStyle = "rgba(160,130,60,0.3)";
+  ctx.lineWidth = 1;
+  const wy = sy + 5 + (h * (T - 10)) | 0;
+  ctx.beginPath();
+  ctx.moveTo(sx + 2, wy);
+  ctx.quadraticCurveTo(sx + T * 0.4, wy - 2, sx + T * 0.7, wy);
+  ctx.quadraticCurveTo(sx + T * 0.85, wy + 1, sx + T - 2, wy);
+  ctx.stroke();
+}
+
+function drawRoadTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
+  const h = tileHash(tx, ty);
+  const T = TILE_SIZE;
+  // faint tire-track groove pair
+  ctx.fillStyle = "rgba(30,20,10,0.22)";
+  if (h < 0.5) {
+    // horizontal track hints
+    ctx.fillRect(sx + 3, sy + T * 0.35 | 0, T - 6, 1);
+    ctx.fillRect(sx + 3, sy + T * 0.65 | 0, T - 6, 1);
+  } else {
+    // vertical
+    ctx.fillRect(sx + T * 0.35 | 0, sy + 3, 1, T - 6);
+    ctx.fillRect(sx + T * 0.65 | 0, sy + 3, 1, T - 6);
+  }
+}
+
+function drawRockTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, tile: Tile) {
+  const h = tileHash(tx, ty);
+  const h2 = tileHash(tx + 19, ty + 83);
+  const T = TILE_SIZE;
+  // crack line
+  ctx.strokeStyle = tile === Tile.Rock ? "rgba(40,30,20,0.4)" : "rgba(50,45,30,0.35)";
+  ctx.lineWidth = 1;
+  const cx1 = sx + 3 + (h * (T - 6)) | 0;
+  const cy1 = sy + 3 + (h2 * (T - 10)) | 0;
+  ctx.beginPath();
+  ctx.moveTo(cx1, cy1);
+  ctx.lineTo(cx1 + 4, cy1 + 3);
+  ctx.lineTo(cx1 + 3, cy1 + 6);
+  ctx.stroke();
+  // top highlight
+  ctx.fillStyle = tile === Tile.Rock ? "rgba(200,200,195,0.18)" : "rgba(190,190,160,0.15)";
+  ctx.fillRect(sx + 2, sy + 2, T - 4, 2);
+}
+
+function drawWaterShimmer(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, now: number, col: string) {
+  const T = TILE_SIZE;
+  const r1 = parseInt(col.slice(1, 3), 16);
+  const g1 = parseInt(col.slice(3, 5), 16);
+  const b1 = parseInt(col.slice(5, 7), 16);
+  // Two animated sin-wave shimmer rows per tile, offset by position for variety.
+  const phase1 = now * 1.4 + tx * 0.7 + ty * 1.1;
+  const phase2 = now * 1.1 + tx * 1.3 + ty * 0.6;
+  const a1 = (0.13 + 0.10 * Math.sin(phase1)).toFixed(3);
+  const a2 = (0.10 + 0.08 * Math.sin(phase2)).toFixed(3);
+  const row1 = sy + ((tileHash(tx, ty) * (T - 6)) | 0) + 2;
+  const row2 = sy + ((tileHash(tx + 3, ty + 7) * (T - 6)) | 0) + 2;
+  const shimW = 3 + ((tileHash(tx * 7, ty * 3) * 6) | 0);
+  const shimX1 = sx + 2 + ((tileHash(tx + 1, ty) * (T - shimW - 4)) | 0);
+  const shimX2 = sx + 2 + ((tileHash(tx, ty + 1) * (T - shimW - 4)) | 0);
+  ctx.fillStyle = `rgba(${r1},${g1},${b1},${a1})`;
+  ctx.fillRect(shimX1, row1, shimW, 1);
+  ctx.fillStyle = `rgba(${r1},${g1},${b1},${a2})`;
+  ctx.fillRect(shimX2, row2, shimW + 2, 1);
+}
+
 export class Game {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -906,6 +1019,7 @@ export class Game {
     const startY = Math.max(0, Math.floor(this.cam.y / TILE_SIZE));
     const endX = Math.min(map.width, startX + Math.ceil(this.canvas.width / TILE_SIZE) + 1);
     const endY = Math.min(map.height, startY + Math.ceil(this.canvas.height / TILE_SIZE) + 1);
+    const now = performance.now() / 1000;
 
     for (let y = startY; y < endY; y++) {
       for (let x = startX; x < endX; x++) {
@@ -920,10 +1034,12 @@ export class Game {
           // not the same body as the salt inlet. Always wet (never mudflat).
           ctx.fillStyle = freshWaterColor(Math.max(2, depth));
           ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
+          drawWaterShimmer(ctx, sx, sy, x, y, now, "#7dd4c4");
         } else if (depth > 0) {
           // Colour by depth tier — ankle turquoise → abyss near-black.
           ctx.fillStyle = waterDepthColor(depth);
           ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
+          drawWaterShimmer(ctx, sx, sy, x, y, now, "#7fcfe8");
         } else if (tile === Tile.Water) {
           // Seabed the tide has receded from: exposed wet mudflat at low tide.
           ctx.fillStyle = "#6c5b3e";
@@ -937,6 +1053,12 @@ export class Game {
             ctx.fillStyle = `rgba(86,58,33,${(0.1 + 0.3 * wet).toFixed(3)})`;
             ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
           }
+          // Eastward-style tile textures.
+          if (tile === Tile.Grass) drawGrassTexture(ctx, sx, sy, x, y);
+          else if (tile === Tile.Forest) drawForestTexture(ctx, sx, sy, x, y);
+          else if (tile === Tile.Sand) drawSandTexture(ctx, sx, sy, x, y);
+          else if (tile === Tile.Road) drawRoadTexture(ctx, sx, sy, x, y);
+          else if (tile === Tile.Rock || tile === Tile.Hill) drawRockTexture(ctx, sx, sy, x, y, tile);
         }
       }
     }
