@@ -12,6 +12,7 @@ import {
   LootDrop,
   NpcState,
   PlantState,
+  PlayerMode,
   PlayerState,
   ResourceNode,
   ServerMessage,
@@ -67,6 +68,7 @@ export class Game {
   private keys = new Set<string>();
   private lastDir = { x: 0, y: 0 };
   private cam = { x: 0, y: 0 };
+  private zoom = 1.6; // pushed-in camera so you see the person & their moves up close
   private logLines: string[] = [];
   private chatLines: Array<{ from: string; msg: string; channel: "global" | "team" | "private"; ts: number }> = [];
   private chargeStart: number | null = null; // when Space went down (for charged swings)
@@ -141,6 +143,10 @@ export class Game {
         document.getElementById(`ptab-${tab}`)?.classList.add("active");
       });
     }
+    // Mode switch buttons (combat / research / profession).
+    for (const mode of ["combat", "research", "profession"] as const) {
+      document.getElementById(`mode-${mode}`)?.addEventListener("click", () => this.setMode(mode));
+    }
 
     requestAnimationFrame(() => this.frame());
 
@@ -194,6 +200,18 @@ export class Game {
       if (k === " ") {
         // Start charging on first press; the swing fires on release.
         if (this.chargeStart === null) this.chargeStart = performance.now();
+        e.preventDefault();
+      } else if (k === "tab") {
+        this.cycleMode();
+        e.preventDefault();
+      } else if (k === "alt") {
+        // Toggle combat stance (high punch ↔ low kick).
+        const cur = this.me?.stance ?? "high";
+        this.net.send({ t: "setStance", stance: cur === "high" ? "low" : "high" });
+        e.preventDefault();
+      } else if (k === "/") {
+        // Grab a target ahead — or, if already holding, throw them.
+        this.net.send({ t: "grab" });
         e.preventDefault();
       } else if (!e.repeat) {
         if (k === "shift") {
@@ -260,8 +278,11 @@ export class Game {
           this.inspectKey = null;
           e.preventDefault();
         } else if (k === "b") {
-          // Toggle the shop panel for the nearest shop building.
-          if (this.shopId) {
+          // In combat mode, B is BLOCK (break a grab in high stance / soften hits).
+          // Otherwise it toggles the nearest shop.
+          if (this.me?.mode === "combat" && !this.shopId) {
+            this.net.send({ t: "block" });
+          } else if (this.shopId) {
             this.shopId = null;
           } else {
             const shop = this.nearbyShop();
@@ -314,6 +335,10 @@ export class Game {
   }
 
   private lastSprint = false;
+
+  private get me(): PlayerState | undefined {
+    return this.snap?.players.find((p) => p.id === this.myId);
+  }
 
   private sendInput() {
     let dx = 0;
@@ -400,12 +425,19 @@ export class Game {
     if (!this.map || !this.snap) return;
 
     const me = this.snap.players.find((p) => p.id === this.myId);
+    const z = this.zoom;
     if (me) {
-      // Centre player in the visible area (left of the right panel).
-      const visW = this.canvas.width - Game.PANEL_W;
+      // Centre player in the visible area (left of the right panel), accounting
+      // for the zoom so the camera frames the same world point however far in.
+      const visW = (this.canvas.width - Game.PANEL_W) / z;
+      const visH = this.canvas.height / z;
       this.cam.x += (me.x * TILE_SIZE - visW / 2 - this.cam.x) * 0.15;
-      this.cam.y += (me.y * TILE_SIZE - this.canvas.height / 2 - this.cam.y) * 0.15;
+      this.cam.y += (me.y * TILE_SIZE - visH / 2 - this.cam.y) * 0.15;
     }
+
+    // === World pass: drawn under a zoom transform (everything via toScreen) ===
+    ctx.save();
+    ctx.scale(z, z);
 
     // --- Ground layer (flat, always beneath the standing world) ---
     this.drawTiles();
@@ -424,8 +456,6 @@ export class Game {
     this.drawTracers();
     if (me) this.drawSelfOverlay(me);
     if (me) this.drawScanRing(me);
-    this.drawHud(this.snap, me);
-    this.updateSidePanel(me);
     this.drawTravelPrompt(me);
     this.drawBoardPrompt(me);
     this.drawShopPrompt(me);
@@ -433,6 +463,12 @@ export class Game {
     this.drawRefuelPrompt(me);
     this.drawHarvestPrompt(this.snap.resourceNodes, this.snap.plants, me);
     this.drawFishPrompt(me);
+
+    ctx.restore();
+    // === Screen pass: HUD & modals at 1:1 (unscaled) ===
+
+    this.drawHud(this.snap, me);
+    this.updateSidePanel(me);
     if (this.craftOpen) this.drawCraftPanel(me);
     if (this.shopId) this.drawShopPanel(me);
     if (this.invOpen) this.drawInventoryPanel(me);
@@ -508,6 +544,19 @@ export class Game {
     if (!item) return;
     const me = this.snap?.players.find((p) => p.id === this.myId);
     if (me && (me.inventory[item] ?? 0) > 0) this.net.send({ t: "equip", item });
+  }
+
+  // Cycle combat → research → profession → combat (2 s transform server-side).
+  private cycleMode() {
+    const order: PlayerMode[] = ["combat", "research", "profession"];
+    const cur = this.me?.mode ?? "combat";
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    this.net.send({ t: "setMode", mode: next });
+  }
+
+  // Switch directly to a mode (panel buttons).
+  setMode(mode: PlayerMode) {
+    if (this.me?.mode !== mode) this.net.send({ t: "setMode", mode });
   }
 
   // Brief tracer streaks for ranged shots.
@@ -1747,6 +1796,16 @@ export class Game {
       ctx.stroke();
     }
 
+    // --- Knockout: thrown & dizzy, sitting on their butt with spinning stars ---
+    if (p.knockedOut) {
+      this.drawKnockout(p, sx, sy, R);
+      ctx.globalAlpha = 1;
+      // still draw the name below
+      ctx.fillStyle = "#eaf2f8"; ctx.font = "11px system-ui"; ctx.textAlign = "center";
+      ctx.fillText(p.name, sx, sy - TILE_SIZE * 0.9);
+      return;
+    }
+
     // --- The character body (oblique 3/4 view), sunk by real water depth ---
     // ankle-deep in shallow → waist-deep mid → head-only when swimming/deep.
     const depth = this.clientDepthAt(p.x, p.y);
@@ -1756,7 +1815,39 @@ export class Game {
     else if (depth >= DEPTH_ANKLE) submerge = 0.46; // waist-deep
     else if (depth > 0) submerge = 0.16;            // ankle-deep
     const gait = this.gaitFor(p.id, p.x, p.y);
-    drawCharacter(ctx, sx, sy, p.appearance, {
+
+    // --- Transform: 2 s strip-and-re-clothe spin (squash horizontally) ---
+    if (p.transforming) {
+      const t = performance.now() / 90;
+      const squash = Math.abs(Math.cos(t)) * 0.85 + 0.15; // 0.15..1 horizontal spin
+      ctx.save();
+      ctx.translate(sx, 0);
+      ctx.scale(squash, 1);
+      ctx.translate(-sx, 0);
+      drawCharacter(ctx, sx, sy, p.appearance, {
+        facing: "down", phase: t, moving: true, submerge, weapon: null,
+      });
+      ctx.restore();
+      // sparkle poof
+      for (let i = 0; i < 5; i++) {
+        const a = t * 0.6 + i * 1.3;
+        ctx.fillStyle = `hsla(${(t * 4 + i * 60) % 360},90%,80%,0.9)`;
+        ctx.beginPath();
+        ctx.arc(sx + Math.cos(a) * R * 1.4, sy - R + Math.sin(a) * R * 1.2, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = "#eaf2f8"; ctx.font = "11px system-ui"; ctx.textAlign = "center";
+      ctx.fillText(p.name, sx, sy - TILE_SIZE * 1.15);
+      return;
+    }
+
+    // Combat-ready shuffle: a subtle side-to-side sway when stood in combat mode.
+    let swayX = 0;
+    if (p.mode === "combat" && !gait.moving && !p.swimming) {
+      swayX = Math.sin(performance.now() / 260 + p.x * 3.1) * 1.6;
+    }
+
+    drawCharacter(ctx, sx + swayX, sy, p.appearance, {
       facing: facingFromDir(p.dir),
       phase: gait.phase,
       moving: gait.moving,
@@ -1819,6 +1910,36 @@ export class Game {
     }
   }
 
+  // A thrown player slumped on the ground, dizzy, with spinning stars overhead.
+  private drawKnockout(p: PlayerState, sx: number, sy: number, R: number) {
+    const ctx = this.ctx;
+    const a = p.appearance;
+    // ground shadow
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    ctx.beginPath();
+    ctx.ellipse(sx, sy + R * 0.5, R * 1.1, R * 0.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // slumped body (shirt) + head sitting on their butt
+    ctx.fillStyle = a.shirt;
+    ctx.beginPath();
+    ctx.ellipse(sx, sy + R * 0.15, R * 0.7, R * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = a.skin;
+    ctx.beginPath();
+    ctx.arc(sx + R * 0.15, sy - R * 0.35, R * 0.42, 0, Math.PI * 2);
+    ctx.fill();
+    // spinning dizzy stars
+    const t = performance.now() / 300;
+    for (let i = 0; i < 3; i++) {
+      const ang = t + (i / 3) * Math.PI * 2;
+      const stx = sx + Math.cos(ang) * R * 0.7;
+      const sty = sy - R * 0.9 + Math.sin(ang) * R * 0.3;
+      ctx.fillStyle = "#ffd54f";
+      ctx.font = "10px system-ui"; ctx.textAlign = "center";
+      ctx.fillText("✦", stx, sty);
+    }
+  }
+
   // ─── Side panel (OSRS-style right HUD) ─────────────────────────────────────
   private updateSidePanel(me?: PlayerState) {
     const now = performance.now();
@@ -1861,6 +1982,19 @@ export class Game {
       weapLine = `<div class="panel-info"><span style="color:#ffd98a">${ITEM_LABEL[eq]}</span>${ammoStr}</div>`;
     }
     const titlesStr = me.titles?.length ? `<div style="color:#ce93d8;font-size:10px">${me.titles.join(" · ")}</div>` : "";
+    // Highlight the active mode button + show combat stance.
+    for (const m of ["combat", "research", "profession"] as const) {
+      document.getElementById(`mode-${m}`)?.classList.toggle("active", me.mode === m);
+    }
+    let modeLine = "";
+    if (me.mode === "combat") {
+      const st = me.stance === "low" ? "LOW · kick" : "HIGH · punch";
+      modeLine = `<div class="panel-info" style="color:#ff9d6b;font-size:10px">Stance: ${st} (Alt) &nbsp;·&nbsp; / grab · B block</div>`;
+    } else if (me.mode === "research") {
+      modeLine = `<div class="panel-info" style="color:#7fd0ff;font-size:10px">Research · R scan · X inspect</div>`;
+    } else {
+      modeLine = `<div class="panel-info" style="color:#9fe6c0;font-size:10px">Profession · E use tool · C craft</div>`;
+    }
     document.getElementById("panel-stats")!.innerHTML = `
       <div class="stat-row"><span class="stat-label">HP</span><div class="stat-bar"><div class="stat-fill hp-fill" style="width:${hpPct}%"></div></div><span class="stat-val">${Math.round(me.hp)}</span></div>
       <div class="stat-row"><span class="stat-label">Stam</span><div class="stat-bar"><div class="stat-fill stam-fill" style="width:${stPct}%"></div></div><span class="stat-val">${Math.round(me.stamina)}</span></div>
@@ -1868,6 +2002,7 @@ export class Game {
       ${weapLine}
       <div class="panel-info"><span style="color:#9fe6c0">$${me.money}</span> &nbsp;·&nbsp; <span style="color:#ffd54f">${me.banfielderPts}pts</span>${me.isMayor?' &nbsp;<span style="color:#ffd54f">★</span>':''}</div>
       ${titlesStr}
+      ${modeLine}
       <div class="panel-info" style="color:#6a9ab5;font-size:10px">Tide: ${event} &nbsp;·&nbsp; ${this.snap.players.length} here</div>
     `;
   }
@@ -1929,27 +2064,34 @@ export class Game {
   private panelHelpHTML(): string {
     return `<div class="controls-section">
       <b>Move:</b> WASD &nbsp; <b>Dodge:</b> Shift<br/>
-      <b>Attack:</b> Space (hold=charge)<br/>
+      <b style="color:#ffe7a8">Mode:</b> Tab (or buttons up top)<br/>
+      <span style="color:#6a9ab5">⚔ Combat · 🔬 Research · 🛠 Pro</span><br/><br/>
+      <b style="color:#ff9d6b">⚔ Combat:</b><br/>
+      <b>Stance:</b> Alt (high=punch / low=kick)<br/>
+      <b>Punch/Kick:</b> Space<br/>
+      <b>Grab:</b> /  &nbsp;then jink ← → to spin<br/>
+      <b>Throw:</b> / again (fling 'em!)<br/>
+      <b>Block / break grab:</b> B (high stance)<br/><br/>
       <b>Talk:</b> E or N near an NPC<br/>
       <b>Chop/mine/pick:</b> E<br/>
       <b>Drink (lake):</b> E &nbsp; <b>Eat:</b> Q<br/>
       <b>Fish:</b> G &nbsp; <b>Sleep at fire:</b> Z<br/>
       <b>Board vehicle:</b> F<br/>
       <b>Bus (Anacla $3):</b> T<br/>
-      <b>Craft:</b> C &nbsp; <b>Shop:</b> B<br/>
-      <b>Map:</b> M &nbsp; <b>Full map:</b> M key<br/>
+      <b>Craft:</b> C &nbsp; <b>Shop:</b> B (non-combat)<br/>
+      <b>Map:</b> M<br/>
       <b>First aid:</b> H &nbsp; <b>Scan:</b> R<br/>
       <b>Inspect:</b> X &nbsp; <b>Leaderboard:</b> K<br/>
       <b>Weapons 1-6:</b> switch slot<br/>
       <b>Chat:</b> Enter<br/>
       <span style="color:#6a9ab5">/ global &nbsp; // team<br/> ///Name private</span><br/><br/>
       <b style="color:#ffb74d">Admin:</b><br/>
-      <span style="color:#6a9ab5">/give [n] [item]<br/>
-      /money [n]<br/>
-      /tp [x] [y]<br/>
+      <span style="color:#6a9ab5">/give [n] [item] &nbsp; /give wings<br/>
+      /remove [item|wings]<br/>
+      /money [n] &nbsp; /tp [x] [y]<br/>
       /god &nbsp; /heal &nbsp; /kill<br/>
       /tide [tsunami|king|none]<br/>
-      /spawn [creature]<br/>
+      /spawn [creature|car|boat]<br/>
       /where</span>
     </div>`;
   }
@@ -2667,7 +2809,7 @@ function facingFromDir(dir: number): Facing {
   return dy > 0 ? "down" : "up";
 }
 
-interface CharLook { skin: string; hair: string; shirt: string; pants?: string }
+interface CharLook { skin: string; hair: string; shirt: string; pants?: string; hat?: string }
 
 function drawWeaponInHand(ctx: CanvasRenderingContext2D, weapon: ItemId, hx: number, hy: number, side: -1 | 1, u: number) {
   const ang = side === 1 ? -Math.PI * 0.3 : Math.PI * 0.3; // tilt away from body
@@ -2864,6 +3006,26 @@ function drawCharacter(
   if (face === "down") { eye(-2 * u); eye(2 * u); }
   else if (face === "left")  eye(-2.2 * u);
   else if (face === "right") eye(2.2 * u);
+
+  // ---- hat (research sun hat etc.): a brim + crown over the head ----
+  if (look.hat) {
+    ctx.fillStyle = look.hat;
+    // wide brim
+    ctx.beginPath();
+    ctx.ellipse(hx, headCY - headR * 0.55, headR * 1.7, headR * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // crown
+    ctx.fillStyle = shade(look.hat, 0.88);
+    ctx.beginPath();
+    ctx.ellipse(hx, headCY - headR * 0.9, headR * 0.8, headR * 0.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // band
+    ctx.strokeStyle = shade(look.hat, 0.7);
+    ctx.lineWidth = 1.4 * u;
+    ctx.beginPath();
+    ctx.ellipse(hx, headCY - headR * 0.6, headR * 1.0, headR * 0.32, 0, Math.PI, Math.PI * 2);
+    ctx.stroke();
+  }
 
   // ---- waterline: a bright ellipse + soft wake where the body meets the water ----
   if (sub > 0 && Number.isFinite(waterY)) {

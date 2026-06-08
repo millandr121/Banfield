@@ -20,6 +20,7 @@ import {
   NpcState,
   PlantStage,
   PlantState,
+  PlayerMode,
   PlayerState,
   RegionId,
   ResourceNode,
@@ -116,6 +117,9 @@ interface WeaponStat {
   marineBonus?: number; // damage multiplier vs marine creatures (speargun)
 }
 const FIST: WeaponStat = { melee: true, damage: 6, range: 1.3, cooldownMs: 420, stamina: 5, arc: ATTACK_ARC, knockback: 4 };
+// High stance = a quick punch; low stance = a slower, harder kick with shove.
+const PUNCH: WeaponStat = { melee: true, damage: 7, range: 1.2, cooldownMs: 360, stamina: 5, arc: ATTACK_ARC, knockback: 5 };
+const KICK:  WeaponStat = { melee: true, damage: 9, range: 1.5, cooldownMs: 560, stamina: 8, arc: ATTACK_ARC, knockback: 11 };
 const WEAPONS: Partial<Record<ItemId, WeaponStat>> = {
   stick:        { melee: true,  damage: 9,  range: 1.6, cooldownMs: 360, stamina: 6,  arc: ATTACK_ARC,        knockback: 5 },
   huntingKnife: { melee: true,  damage: 18, range: 1.3, cooldownMs: 300, stamina: 7,  arc: Math.PI * 0.45,    knockback: 4 },
@@ -354,6 +358,14 @@ export class GameRoom {
   private lastDrink = new Map<string, number>(); // throttle freshwater sips
   private speedBoostUntil = new Map<string, number>(); // playerId → boost expiry ms
   private lootDrops = new Map<string, LootDrop>(); // ground loot waiting to be picked up
+  // --- Modes & grappling timing (server-only) ---
+  private baseAppearance = new Map<string, Appearance>();      // chosen colours per player
+  private modeWardrobe = new Map<string, Partial<Record<PlayerMode, Appearance>>>(); // saved per-mode look
+  private transformUntil = new Map<string, number>();          // mode-switch animation lock
+  private grabCdUntil = new Map<string, number>();             // grab cooldown
+  private knockoutUntil = new Map<string, number>();           // dizzy/down phase
+  private blockUntil = new Map<string, number>();              // active block window
+  private prevDx = new Map<string, number>();                  // last horizontal input (spin detection)
   // accountName → logbook: speciesKey → { count (encounters), firstAt }.
   private discoveries = new Map<string, Record<string, { count: number; firstAt: number }>>();
   // Role tallies, keyed by player name (live this session).
@@ -572,13 +584,20 @@ export class GameRoom {
         const v = this.vehicles.get(p.vehicleId);
         if (v) v.driverId = null;
       }
-      if (p) void this.savePlayer(p, null); // persist final state on leave
+      if (p) { this.releaseGrab(p); void this.savePlayer(p, null); } // free grapples + persist
       this.savedNames.delete(s.playerId);
       this.players.delete(s.playerId);
       this.kb.delete(s.playerId);
       this.deepSince.delete(s.playerId);
       this.fishingStates.delete(s.playerId);
       this.liveFishTimer.delete(s.playerId);
+      this.transformUntil.delete(s.playerId);
+      this.knockoutUntil.delete(s.playerId);
+      this.grabCdUntil.delete(s.playerId);
+      this.blockUntil.delete(s.playerId);
+      this.prevDx.delete(s.playerId);
+      this.baseAppearance.delete(s.playerId);
+      this.modeWardrobe.delete(s.playerId);
     }
     this.sessions.delete(ws);
     if (this.sessions.size === 0 && this.loop) {
@@ -606,7 +625,9 @@ export class GameRoom {
         s.sprint = msg.sprint ?? false;
         const p = this.players.get(s.playerId);
         if (p && (msg.dx !== 0 || msg.dy !== 0)) {
-          p.dir = Math.atan2(msg.dy, msg.dx);
+          // While holding someone, left/right jinks wind the spin — don't re-aim,
+          // so your throw flies the way you faced when you grabbed.
+          if (!p.grabbing) p.dir = Math.atan2(msg.dy, msg.dx);
           // Moving cancels fishing.
           if (p.fishing) {
             p.fishing = false;
@@ -666,6 +687,161 @@ export class GameRoom {
       case "heal":
         this.doHeal(s.playerId);
         break;
+      case "setMode":
+        this.doSetMode(s.playerId, msg.mode);
+        break;
+      case "setStance": {
+        const p = this.players.get(s.playerId);
+        if (p && p.mode === "combat") p.stance = msg.stance;
+        break;
+      }
+      case "grab":
+        this.doGrab(s.playerId);
+        break;
+      case "throwGrab":
+        this.doThrow(s.playerId);
+        break;
+      case "block":
+        this.doBlock(s.playerId);
+        break;
+    }
+  }
+
+  // --- Modes ----------------------------------------------------------------
+  private doSetMode(playerId: string, mode: PlayerMode) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead || p.mode === mode) return;
+    const now = Date.now();
+    if ((this.transformUntil.get(playerId) ?? 0) > now) return; // already transforming
+    // Release any grapple before transforming.
+    this.releaseGrab(p);
+    // Save the look you're leaving so it persists for the session.
+    const ward = this.modeWardrobe.get(playerId) ?? {};
+    ward[p.mode] = p.appearance;
+    this.modeWardrobe.set(playerId, ward);
+    const base = this.baseAppearance.get(playerId) ?? sanitizeAppearance(p.appearance);
+    p.mode = mode;
+    p.appearance = ward[mode] ?? defaultOutfit(mode, base);
+    p.transforming = true;
+    this.transformUntil.set(playerId, now + 2000); // 2 s strip + re-clothe
+    this.tell(p, `Transforming into ${mode} mode…`);
+  }
+
+  // --- Grappling ------------------------------------------------------------
+  private doGrab(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead || p.mode !== "combat" || p.vehicleId) return;
+    const now = Date.now();
+    if (p.transforming || (this.knockoutUntil.get(playerId) ?? 0) > now) return;
+    if ((this.grabCdUntil.get(playerId) ?? 0) > now) return;
+    if (p.grabbing) { this.doThrow(playerId); return; } // grab again = throw
+
+    const reach = 1.5, cos = Math.cos(p.dir), sin = Math.sin(p.dir);
+    // Prefer a player straight ahead; else a light creature.
+    let target: PlayerState | null = null, bestD = reach;
+    for (const t of this.players.values()) {
+      if (t.id === p.id || t.region !== p.region || t.dead || t.grabbedBy) continue;
+      const dx = t.x - p.x, dy = t.y - p.y, d = Math.hypot(dx, dy);
+      if (d > reach) continue;
+      if (dx * cos + dy * sin < d * 0.3) continue; // must be roughly ahead
+      if (d < bestD) { bestD = d; target = t; }
+    }
+    if (target) {
+      p.grabbing = target.id;
+      target.grabbedBy = p.id;
+      p.spin = 0;
+      this.grabCdUntil.set(playerId, now + 1200);
+      this.tell(p, `Grabbed ${target.name}! Jink left/right to spin, ${"/"} to throw.`);
+      this.tell(target, `${p.name} grabbed you! Block (B) in HIGH stance to break free.`);
+      return;
+    }
+    // No player — try a light creature.
+    let cTarget: CreatureState | null = null; let cd = reach;
+    for (const c of this.creatures.values()) {
+      if (c.region !== p.region || !GRABBABLE_CREATURES.has(c.kind)) continue;
+      const dx = c.x - p.x, dy = c.y - p.y, d = Math.hypot(dx, dy);
+      if (d > reach) continue;
+      if (dx * cos + dy * sin < d * 0.3) continue;
+      if (d < cd) { cd = d; cTarget = c; }
+    }
+    if (cTarget) {
+      p.grabbing = cTarget.id;
+      p.spin = 0;
+      this.grabCdUntil.set(playerId, now + 1200);
+      this.tell(p, `Grabbed a ${cTarget.kind}! Spin and throw it.`);
+    } else {
+      // Whiffed — if a heavy beast is in front, hint at the real tactic.
+      this.grabCdUntil.set(playerId, now + 500);
+    }
+  }
+
+  private doThrow(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || !p.grabbing) return;
+    const now = Date.now();
+    const power = Math.max(0.25, p.spin);          // even a weak fling goes a little
+    const dist = 3 + power * 7;                      // 3 → 10 tiles
+    const dmg = Math.round(2 + power * 8);           // up to ~10 hp
+    const cos = Math.cos(p.dir), sin = Math.sin(p.dir);
+    const target = this.players.get(p.grabbing);
+    if (target) {
+      target.grabbedBy = null;
+      this.applyKnockback(target.id, cos, sin, dist * 6);
+      if (!this.godPlayers.has(target.id)) target.hp = Math.max(0, target.hp - dmg);
+      this.knockoutUntil.set(target.id, now + 1500);
+      target.knockedOut = true;
+      this.giveXP(p, "combat", dmg * 0.4);
+      this.tell(target, `${p.name} threw you ${Math.round(dist)} tiles!`);
+      if (target.hp <= 0 && !target.dead) this.killPlayer(target);
+    } else {
+      const c = this.creatures.get(p.grabbing);
+      if (c) {
+        this.applyKnockback(c.id, cos, sin, dist * 6);
+        c.hp -= dmg;
+        this.giveXP(p, "combat", dmg * 0.4);
+        if (c.hp <= 0) { this.creatures.delete(c.id); this.kb.delete(c.id); }
+      }
+    }
+    p.grabbing = null;
+    p.spin = 0;
+    this.grabCdUntil.set(playerId, now + 1000);
+  }
+
+  private doBlock(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead) return;
+    const now = Date.now();
+    this.blockUntil.set(playerId, now + 500);
+    p.blocking = true;
+    // If I'm being held and I'm in high stance, blocking breaks the grab early
+    // (before the spinning really winds up) and shoves the grabber back.
+    if (p.grabbedBy && p.stance === "high") {
+      const grabber = this.players.get(p.grabbedBy);
+      if (grabber && grabber.spin < 0.55) {
+        grabber.grabbing = null;
+        grabber.spin = 0;
+        p.grabbedBy = null;
+        const dx = grabber.x - p.x, dy = grabber.y - p.y;
+        this.applyKnockback(grabber.id, dx, dy, 18);
+        this.grabCdUntil.set(grabber.id, now + 1500);
+        this.tell(p, "You broke free and shoved them back!");
+        this.tell(grabber, `${p.name} blocked and broke your grab!`);
+      }
+    }
+  }
+
+  // Cleanly drop any grapple this player is part of (death / disconnect / mode).
+  private releaseGrab(p: PlayerState) {
+    if (p.grabbing) {
+      const t = this.players.get(p.grabbing);
+      if (t) t.grabbedBy = null;
+      p.grabbing = null;
+      p.spin = 0;
+    }
+    if (p.grabbedBy) {
+      const g = this.players.get(p.grabbedBy);
+      if (g) { g.grabbing = null; g.spin = 0; }
+      p.grabbedBy = null;
     }
   }
 
@@ -761,20 +937,30 @@ export class GameRoom {
       banfielderPts: 0,
       rank: 0,
       isMayor: false,
-      inventory: { stick: 1 }, // everyone starts with a stick to defend themselves
+      inventory: {}, // a fresh settler washes ashore naked & empty-handed
       money: STARTING_MONEY,
       team: null,
-      appearance: sanitizeAppearance(msg.appearance),
+      appearance: combatOutfit(sanitizeAppearance(msg.appearance)), // naked combat look
       swimming: false,
       dodging: false,
       fishing: false,
       sleeping: false,
       vehicleId: null,
       dead: false,
-      equipped: "stick",
+      equipped: null,
       titles: [],
       speedBoosted: false,
+      mode: "combat",
+      stance: "high",
+      transforming: false,
+      grabbing: null,
+      grabbedBy: null,
+      spin: 0,
+      knockedOut: false,
+      blocking: false,
     };
+    // Remember the player's chosen base colours so each mode's outfit keeps them.
+    this.baseAppearance.set(s.playerId, sanitizeAppearance(msg.appearance));
 
     // Account flow. The `secret` is now the player's chosen passphrase, so an
     // account follows them across devices (real login, no email needed yet).
@@ -803,6 +989,14 @@ export class GameRoom {
         await this.savePlayer(player, msg.secret ?? null, msg.email); // register & claim the name now
       }
     } catch { /* DB unavailable — play in-memory only */ }
+
+    // Everyone (new or returning) wakes up in combat mode, naked on the beach.
+    // Keep the saved/chosen colours as the wardrobe base for all three modes.
+    const base = sanitizeAppearance(player.appearance);
+    this.baseAppearance.set(s.playerId, base);
+    player.mode = "combat";
+    player.appearance = combatOutfit(base);
+    player.equipped = null;
 
     this.players.set(s.playerId, player);
     this.sendInit(ws, player);
@@ -1084,6 +1278,64 @@ export class GameRoom {
         this.deepSince.delete(p.id);
         p.stamina = Math.min(p.maxStamina, p.stamina + STAMINA_REGEN * dt);
         continue;
+      }
+
+      // --- Mode transform & block windows ---
+      p.transforming = (this.transformUntil.get(p.id) ?? 0) > now;
+      p.blocking = (this.blockUntil.get(p.id) ?? 0) > now;
+
+      // --- Knockout: dizzy on the ground after being thrown. Can't act, but the
+      //     throw's momentum still carries them flying through the air. ---
+      if ((this.knockoutUntil.get(p.id) ?? 0) > now) {
+        p.knockedOut = true;
+        p.swimming = false;
+        const imp = this.kb.get(p.id);
+        if (imp) {
+          const nx = p.x + imp.x * dt, ny = p.y + imp.y * dt;
+          if (this.inBounds(region.map, nx, p.y)) p.x = nx;
+          if (this.inBounds(region.map, p.x, ny)) p.y = ny;
+        }
+        p.stamina = Math.min(p.maxStamina, p.stamina + STAMINA_REGEN * dt);
+        continue;
+      }
+      p.knockedOut = false;
+
+      // --- Mid-transform: frozen while stripping & re-clothing ---
+      if (p.transforming) {
+        p.stamina = Math.min(p.maxStamina, p.stamina + STAMINA_REGEN * dt);
+        continue;
+      }
+
+      // --- Being held: the grabber owns your position (set below) ---
+      if (p.grabbedBy) {
+        const g = this.players.get(p.grabbedBy);
+        if (!g || g.dead || g.grabbing !== p.id) this.releaseGrab(p);
+        else continue;
+      }
+
+      // --- Holding someone: jink left/right to wind up the helicopter spin ---
+      if (p.grabbing) {
+        const held = this.players.get(p.grabbing) ?? null;
+        const heldC = held ? null : this.creatures.get(p.grabbing) ?? null;
+        if (!held && !heldC) { p.grabbing = null; p.spin = 0; }
+        else {
+          const prev = this.prevDx.get(p.id) ?? 0;
+          if (Math.abs(s.dx) > 0.3 && prev !== 0 && Math.sign(s.dx) !== Math.sign(prev)) {
+            p.spin = Math.min(1, p.spin + 0.12);          // a clean reversal — big wind-up
+          } else if (Math.abs(s.dx) > 0.3) {
+            p.spin = Math.min(1, p.spin + 1.2 * dt);       // holding a direction — slow build
+          } else {
+            p.spin = Math.max(0, p.spin - 0.15 * dt);      // not jinking — bleed off
+          }
+          this.prevDx.set(p.id, s.dx);
+          const rad = 0.7 + p.spin * 0.6;
+          const ang = (now / 1000) * (2 + p.spin * 16);
+          const hx = p.x + Math.cos(ang) * rad, hy = p.y + Math.sin(ang) * rad;
+          if (held) { held.x = hx; held.y = hy; held.dir = ang; }
+          else if (heldC) { heldC.x = hx; heldC.y = hy; }
+          p.stamina = Math.max(0, p.stamina - 6 * dt);
+          continue; // rooted while spinning
+        }
       }
 
       const movingInput = s.dx !== 0 || s.dy !== 0;
@@ -2205,11 +2457,14 @@ export class GameRoom {
   private doAttack(playerId: string, charge: number) {
     const p = this.players.get(playerId);
     if (!p || p.dead || p.vehicleId) return; // no swinging from the driver's seat
+    if (p.transforming || p.knockedOut || p.grabbing || p.grabbedBy) return; // busy
     p.sleeping = false;
     const s = this.sessionFor(p.id);
     if (!s) return;
     const now = Date.now();
-    const wpn = (p.equipped && WEAPONS[p.equipped]) || FIST;
+    // Bare-handed in combat mode: stance picks punch (high) vs kick (low).
+    const fist = p.mode === "combat" ? (p.stance === "low" ? KICK : PUNCH) : FIST;
+    const wpn = (p.equipped && WEAPONS[p.equipped]) || fist;
     if (now - s.lastAttack < wpn.cooldownMs) return; // weapon-specific cooldown
     if (p.stamina < wpn.stamina) return;             // too winded
     const combatBonus = 1 + skillLevel(p.skills.combat) * 0.006;
@@ -2251,6 +2506,8 @@ export class GameRoom {
     const ts = this.sessionFor(target.id);
     if (ts && Date.now() < ts.iframeUntil) return; // dodged
     if (this.godPlayers.has(target.id)) return; // god mode: immune
+    // A raised block soaks most of the blow (and the shove).
+    if (target.blocking) { damage *= 0.25; knockback *= 0.4; }
     target.hp -= damage;
     this.applyKnockback(target.id, target.x - attacker.x, target.y - attacker.y, knockback);
     this.giveXP(attacker, "combat", damage * 0.15);
@@ -2744,6 +3001,11 @@ export class GameRoom {
   private killPlayer(p: PlayerState) {
     p.dead = true;
     p.hp = 0;
+    this.releaseGrab(p); // drop anyone we held / break free if held
+    this.knockoutUntil.delete(p.id);
+    this.transformUntil.delete(p.id);
+    p.knockedOut = false;
+    p.transforming = false;
     if (p.vehicleId) {
       const v = this.vehicles.get(p.vehicleId);
       if (v) v.driverId = null;
@@ -3208,5 +3470,29 @@ function sanitizeAppearance(a: Appearance | undefined): Appearance {
     skin: hex(a?.skin, "#e0ac69"),
     hair: hex(a?.hair, "#3b2a1a"),
     shirt: hex(a?.shirt, "#2e7d32"),
+    pants: a?.pants && /^#[0-9a-fA-F]{6}$/.test(a.pants) ? a.pants : undefined,
+    hat: a?.hat && /^#[0-9a-fA-F]{6}$/.test(a.hat) ? a.hat : undefined,
   };
 }
+
+// Default starter outfits per mode (keep the player's chosen skin & hair).
+function combatOutfit(base: Appearance): Appearance {
+  // Naked: bare chest (torso = skin tone), simple sandy shorts, no hat.
+  return { skin: base.skin, hair: base.hair, shirt: base.skin, pants: "#8a6a3c", hat: undefined };
+}
+function researchOutfit(base: Appearance): Appearance {
+  // Indiana-Jones field kit: beige shirt + shorts, a tan sun hat.
+  return { skin: base.skin, hair: base.hair, shirt: "#cdbf9a", pants: "#b8a982", hat: "#c2a35a" };
+}
+function professionOutfit(base: Appearance): Appearance {
+  // Your own clothes — keep the colours you picked at creation.
+  return { skin: base.skin, hair: base.hair, shirt: base.shirt, pants: "#39507a", hat: undefined };
+}
+function defaultOutfit(mode: PlayerMode, base: Appearance): Appearance {
+  return mode === "combat" ? combatOutfit(base)
+       : mode === "research" ? researchOutfit(base)
+       : professionOutfit(base);
+}
+
+// Which creatures are light enough to grab & throw (small mammals/birds).
+const GRABBABLE_CREATURES = new Set(["grouse", "crab", "octopus", "seaOtter"]);

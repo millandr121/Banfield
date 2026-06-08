@@ -84,8 +84,62 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
 - [x] PvP damage (melee + ranged, respects dodge i-frames) — foundation for the
       wanted/cops system.
 - [x] Ranged tracer effects + HUD weapon/ammo readout.
+- [x] **Weapon sprites in-hand** on the character (drawn in the front hand).
 - [ ] Projectile travel (currently hitscan) + arcing arrows, later.
-- [ ] Equip from a proper hotbar UI; weapon sprites in-hand on the character.
+- [ ] Equip from a proper hotbar UI.
+
+## 3b. MODES, GRAPPLING & FASHION  ← the big new direction
+The game now revolves around a **3-way mode switch** that condenses the button
+overload into context: **Combat · Research · Profession**. Switching plays a
+~2 s transform animation (strip + re-clothe — hop on one foot pulling pants on,
+a spin, and *poof* into that mode's last outfit). Each mode boots with its own
+starter kit and you predesign all three in their own tab.
+
+- [x] **Three modes** — `mode` on the player; cycle with **Tab** (or the three
+      panel buttons). 2 s transform lock + animation. Per-mode wardrobe persists
+      for the session.
+- [x] **Naked spawn** — a fresh character washes ashore on a random beach with
+      NO clothes and NO stick. Combat mode default = bare (skin torso + shorts).
+- [x] **Zoom in** — world scale unchanged (it's perfect), camera pushed in so you
+      see the person + their kicks / arm-reaches / punches up close.
+- [x] **Grappling combat (the funny, unique core):**
+  - Stances: **Alt** toggles **high / low**.
+  - Bare-handed: **Space** = **punch** (high stance) / **kick** (low stance).
+  - **Grab** (`/`): lunge both arms; if a target is ~1 tile ahead you seize them.
+  - **Spin**: while holding, jink **left/right** repeatedly to wind up — you
+    helicopter them by the arm, faster the longer you spin (capped).
+  - **Throw** (`/` again): fling them 3–10 tiles by spin power, up to ~10 dmg,
+    then they land in a **knockout/dizzy** phase (~1.5 s on their butt).
+  - **Block** (`b`): in **high** stance, a grabbed victim can block to **break
+    free** before the spin builds — knocks the grabber back. Short grab cooldown
+    stops button-mashing; blocking off a grab gives a little knockback.
+  - **Weight**: works on small mammals (grouse, crab, otter…) but NOT bears/elk
+    — for those you **block + play dead**.
+- [ ] **Jumping** — a hop (dodge/jump key) usable across modes.
+- [ ] **Equipment slots** — head, neck, torso, legs, hands, wrists, fingers,
+      back. Drag-drop / equip like OSRS. Each cloth item carries **stats** and a
+      **mode tag** (combat/research gear is mode-locked; **profession lets you
+      wear anything** — full self-expression). Three predesign tabs (one per mode).
+- [ ] **Fashion economy:**
+  - **Free Store** = the real **Transfer Station** (dump/recycle + a building of
+    doors full of random low-level attire to mix your look). Also the people's
+    **Grand Exchange**: leave items to sell, buy secondhand off others.
+  - **Seamstress NPC** — wanders town (west / east / Anacla, always somewhere
+    safe, sometimes vanishes & reappears). Buy/dye premade sets (warrior,
+    hunting, mining, woodcutting, painter, potter, fisher, marine-biologist,
+    birder, animal-tracker), dye a whole set or single item, or sell cloth to her.
+- [ ] **Mode-specific actions (condense the keybinds):**
+  - **Research**: curious/frolicky gait; **R** discovery pulse; binocular mode;
+    "listen" mode to concentrate on nearby wildlife sound; **play dead** (bears).
+  - **Profession**: the action button uses your **tool** (mine / pot / chop /
+    paint / fish) by what you're set up as — your uniqueness mode.
+  - **Combat**: ready shuffle/sway; **R** = a smaller exposure radius that
+    reveals hiders (risk: it's short-range so you may stumble into the threat).
+- [ ] **Hide** (Combat & Research) — beside a tall-enough tree, press hide to
+      tuck behind it: invisible to players/animals **as long as you don't move**.
+      A discovery pulse (the radius) re-exposes anyone hiding in bush/tree.
+      Radius gets a short cooldown so you can't spam it while walking.
+
 
 ## 4. WILDLIFE & NATURE (technical accuracy)
 - [ ] Rarity tiers (OSRS-style rarity feel):

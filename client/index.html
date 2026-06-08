@@ -164,6 +164,21 @@
         color: #cfe3ef;
         user-select: none;
       }
+      #mode-bar {
+        display: flex;
+        border-bottom: 2px solid #1d4a66;
+        flex-shrink: 0;
+      }
+      .mbtn {
+        flex: 1; margin: 0; padding: 8px 1px;
+        font-size: 11px; font-weight: 700;
+        background: #061018; color: #6a9ab5;
+        border: none; border-right: 1px solid #1d4a66;
+        cursor: pointer; width: auto; border-radius: 0;
+      }
+      .mbtn:last-child { border-right: none; }
+      .mbtn:hover { background: #0e2535; color: #cfe3ef; }
+      .mbtn.active { background: #15384f; color: #ffe7a8; box-shadow: inset 0 -3px 0 #ffb300; }
       #panel-tabs {
         display: flex;
         border-bottom: 2px solid #1d4a66;
@@ -259,6 +274,11 @@
 
     <!-- OSRS-style right panel (shown once player is in-game) -->
     <div id="side-panel" class="hidden">
+      <div id="mode-bar">
+        <button class="mbtn active" id="mode-combat" title="Tab to cycle">⚔ Combat</button>
+        <button class="mbtn" id="mode-research" title="Tab to cycle">🔬 Research</button>
+        <button class="mbtn" id="mode-profession" title="Tab to cycle">🛠 Pro</button>
+      </div>
       <div id="panel-tabs">
         <button class="ptab active" id="ptab-inv">Inv</button>
         <button class="ptab" id="ptab-skills">Skills</button>

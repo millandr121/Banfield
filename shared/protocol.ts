@@ -85,7 +85,13 @@ export interface Appearance {
   skin: string;
   hair: string;
   shirt: string;
+  pants?: string; // leg colour (defaults to denim when absent)
+  hat?: string;   // head covering colour (none when absent)
 }
+
+// The 3-way mode switch that organises the whole game.
+export type PlayerMode = "combat" | "research" | "profession";
+export type Stance = "high" | "low";
 
 export type RegionId = string;
 
@@ -310,6 +316,15 @@ export interface PlayerState {
   equipped: ItemId | null; // currently wielded weapon (null = bare hands)
   titles: string[]; // earned community roles (Mayor, BMSC President, Nurse, ...)
   speedBoosted: boolean; // /give wings active — 5× speed
+  // --- Modes & grappling ---
+  mode: PlayerMode;        // combat / research / profession
+  stance: Stance;          // combat stance (high = punch, low = kick)
+  transforming: boolean;   // mid mode-switch (2 s strip + re-clothe animation)
+  grabbing: string | null; // id of the player/creature I'm currently holding
+  grabbedBy: string | null;// id of whoever is holding me
+  spin: number;            // 0..1 helicopter wind-up while holding someone
+  knockedOut: boolean;     // dizzy/down phase after being thrown
+  blocking: boolean;       // briefly raising a block
 }
 
 export type CreatureKind =
@@ -455,6 +470,11 @@ export type ClientMessage =
   | { t: "input"; dx: number; dy: number; sprint?: boolean } // intended direction, each -1..1
   | { t: "attack"; charge?: number } // charge 0..1 from how long Space was held
   | { t: "dodge" } // quick lunge + i-frames in the current heading
+  | { t: "setMode"; mode: PlayerMode } // switch combat/research/profession (2 s transform)
+  | { t: "setStance"; stance: Stance } // combat: high (punch) / low (kick)
+  | { t: "grab" } // lunge to seize a target ahead (combat mode)
+  | { t: "throwGrab" } // release + fling whoever you're holding
+  | { t: "block" } // momentary block (break a grab in high stance; soften strikes)
   | { t: "board" } // get in / out of the nearest vehicle
   | { t: "harvest" } // chop/mine/forage nearest resource node, or pull invasive plant
   | { t: "craft"; recipe: CraftRecipeId } // craft (recipe validated server-side)
