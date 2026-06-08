@@ -5,7 +5,6 @@ import {
   FurnaceState,
   CRAFT_RECIPES,
   CreatureState,
-  FOOD_VALUE,
   INVASIVE_LABEL,
   ITEM_IDS,
   ITEM_LABEL,
@@ -89,6 +88,12 @@ export class Game {
   // oblique character's legs only stride while actually moving.
   private gait = new Map<string, { x: number; y: number; phase: number; moving: number }>();
 
+  // Side panel (OSRS-style right panel)
+  private panelTab: "inv" | "skills" | "log" | "map" | "help" = "inv";
+  private panelLastUpdate = 0;
+  private minimapCtx: CanvasRenderingContext2D | null = null;
+  static readonly PANEL_W = 200; // px — must match #side-panel width in CSS
+
   // Login-screen hooks (main.ts wires these before the game proper starts).
   onNameStatus?: (name: string, taken: boolean) => void;
   onJoinDenied?: (reason: string) => void;
@@ -122,6 +127,20 @@ export class Game {
     this.net.send({ t: "join", name, appearance, secret, register });
     if (this.started) return; // a retry after a denied sign-in — loop already runs
     this.started = true;
+
+    // Show the right panel and wire up tab buttons.
+    const panel = document.getElementById("side-panel")!;
+    panel.classList.remove("hidden");
+    const minimapEl = document.getElementById("minimap-canvas") as HTMLCanvasElement;
+    this.minimapCtx = minimapEl.getContext("2d")!;
+    for (const tab of ["inv", "skills", "log", "map", "help"] as const) {
+      document.getElementById(`ptab-${tab}`)?.addEventListener("click", () => {
+        this.panelTab = tab;
+        document.querySelectorAll(".ptab").forEach((b) => b.classList.remove("active"));
+        document.getElementById(`ptab-${tab}`)?.classList.add("active");
+      });
+    }
+
     requestAnimationFrame(() => this.frame());
 
     // Chat input box — wired up once.
@@ -159,6 +178,9 @@ export class Game {
   }
 
   private onKey(e: KeyboardEvent, down: boolean) {
+    // Never intercept keys while focus is inside a text input (login form, etc.)
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
     // While the chat box is open, let it handle all input.
     if (this.chatOpen) return;
     const k = e.key.toLowerCase();
@@ -378,8 +400,9 @@ export class Game {
 
     const me = this.snap.players.find((p) => p.id === this.myId);
     if (me) {
-      // Smoothly follow the player.
-      this.cam.x += (me.x * TILE_SIZE - this.canvas.width / 2 - this.cam.x) * 0.15;
+      // Centre player in the visible area (left of the right panel).
+      const visW = this.canvas.width - Game.PANEL_W;
+      this.cam.x += (me.x * TILE_SIZE - visW / 2 - this.cam.x) * 0.15;
       this.cam.y += (me.y * TILE_SIZE - this.canvas.height / 2 - this.cam.y) * 0.15;
     }
 
@@ -401,6 +424,7 @@ export class Game {
     if (me) this.drawSelfOverlay(me);
     if (me) this.drawScanRing(me);
     this.drawHud(this.snap, me);
+    this.updateSidePanel(me);
     this.drawTravelPrompt(me);
     this.drawBoardPrompt(me);
     this.drawShopPrompt(me);
@@ -1775,61 +1799,179 @@ export class Game {
     }
   }
 
+  // ─── Side panel (OSRS-style right HUD) ─────────────────────────────────────
+  private updateSidePanel(me?: PlayerState) {
+    const now = performance.now();
+    if (now - this.panelLastUpdate < 120) return; // cap at ~8fps for HTML writes
+    this.panelLastUpdate = now;
+
+    this.renderPanelStats(me);
+
+    const content = document.getElementById("panel-content")!;
+    const mmCanvas = document.getElementById("minimap-canvas")!;
+    if (this.panelTab === "map") {
+      content.innerHTML = "";
+      mmCanvas.classList.remove("hidden");
+      this.drawMinimapPanel(me);
+    } else {
+      mmCanvas.classList.add("hidden");
+      if (this.panelTab === "inv")    content.innerHTML = this.panelInvHTML(me);
+      else if (this.panelTab === "skills") content.innerHTML = this.panelSkillsHTML(me);
+      else if (this.panelTab === "log")    content.innerHTML = this.panelLogbookHTML();
+      else if (this.panelTab === "help")   content.innerHTML = this.panelHelpHTML();
+    }
+  }
+
+  private renderPanelStats(me?: PlayerState) {
+    if (!me || !this.snap) return;
+    const hpPct  = Math.min(100, Math.round(me.hp / me.maxHp * 100));
+    const stPct  = Math.min(100, Math.round(me.stamina / me.maxStamina * 100));
+    const hnPct  = Math.min(100, Math.round(me.hunger / me.maxHunger * 100));
+    const hungerLow = hnPct < 25;
+    const event = this.snap.event === "tsunami"
+      ? `<span style="color:#e57373">⚠ TSUNAMI</span>`
+      : this.snap.event === "king"
+        ? `<span style="color:#ffb74d">⚠ King tide</span>`
+        : `${this.snap.phase}`;
+    const eq = me.equipped;
+    let weapLine = "";
+    if (eq) {
+      const ammoId = WEAPON_AMMO[eq];
+      const ammoStr = ammoId ? ` <span style="color:${(me.inventory[ammoId]??0)>0?"#9fe6c0":"#e57373"}">[${me.inventory[ammoId]??0}]</span>` : "";
+      weapLine = `<div class="panel-info"><span style="color:#ffd98a">${ITEM_LABEL[eq]}</span>${ammoStr}</div>`;
+    }
+    const titlesStr = me.titles?.length ? `<div style="color:#ce93d8;font-size:10px">${me.titles.join(" · ")}</div>` : "";
+    document.getElementById("panel-stats")!.innerHTML = `
+      <div class="stat-row"><span class="stat-label">HP</span><div class="stat-bar"><div class="stat-fill hp-fill" style="width:${hpPct}%"></div></div><span class="stat-val">${Math.round(me.hp)}</span></div>
+      <div class="stat-row"><span class="stat-label">Stam</span><div class="stat-bar"><div class="stat-fill stam-fill" style="width:${stPct}%"></div></div><span class="stat-val">${Math.round(me.stamina)}</span></div>
+      <div class="stat-row"><span class="stat-label" style="color:${hungerLow?"#e57373":"#8fb4c9"}">Food</span><div class="stat-bar"><div class="stat-fill hun-fill" style="width:${hnPct}%;background:${hungerLow?"#e53935":hnPct<50?"#f9a825":"#43a047"}"></div></div><span class="stat-val" style="color:${hungerLow?"#e57373":"inherit"}">${Math.round(me.hunger)}</span></div>
+      ${weapLine}
+      <div class="panel-info"><span style="color:#9fe6c0">$${me.money}</span> &nbsp;·&nbsp; <span style="color:#ffd54f">${me.banfielderPts}pts</span>${me.isMayor?' &nbsp;<span style="color:#ffd54f">★</span>':''}</div>
+      ${titlesStr}
+      <div class="panel-info" style="color:#6a9ab5;font-size:10px">Tide: ${event} &nbsp;·&nbsp; ${this.snap.players.length} here</div>
+    `;
+  }
+
+  private panelInvHTML(me?: PlayerState): string {
+    if (!me) return '<p class="panel-empty">Not joined yet.</p>';
+    const items = (ITEM_IDS as readonly ItemId[]).filter(id => (me.inventory[id] ?? 0) > 0);
+    if (!items.length) return '<p class="panel-empty">Bag empty — go gather!</p>';
+    const cells = items.map(id => {
+      const col = (ITEM_COLORS as Record<string, string>)[id] ?? "#3a5a6a";
+      return `<div class="inv-cell" title="${ITEM_LABEL[id]}">
+        <div class="inv-swatch" style="background:${col}"></div>
+        <div class="inv-qty">×${me.inventory[id]}</div>
+        <div class="inv-name">${ITEM_LABEL[id]}</div>
+      </div>`;
+    }).join("");
+    return `<div class="inv-grid">${cells}</div>`;
+  }
+
+  private panelSkillsHTML(me?: PlayerState): string {
+    if (!me) return '<p class="panel-empty">Not joined yet.</p>';
+    const rankStr = me.isMayor ? "★ Mayor" : me.rank > 0 ? `#${me.rank}` : "unranked";
+    const rows = SKILL_NAMES.map(sk => {
+      const xp = me.skills[sk], lv = skillLevel(xp);
+      const nextXp = (lv+1)*(lv+1), thisXp = lv*lv;
+      const pct = lv === 0 ? 0 : Math.round((xp-thisXp)/(nextXp-thisXp)*100);
+      return `<div class="skill-row">
+        <span class="skill-name">${sk}</span><span class="skill-lv">Lv ${lv}</span>
+        <div class="skill-bar"><div class="skill-fill" style="width:${Math.min(100,pct)}%"></div></div>
+      </div>`;
+    }).join("");
+    return `<div class="stats-header">
+      <div style="color:#ffd54f;font-size:12px">${rankStr}</div>
+      <div style="color:#9fe6c0;font-size:11px">${me.banfielderPts} Banfielder pts</div>
+    </div><div class="skill-list">${rows}</div>`;
+  }
+
+  private panelLogbookHTML(): string {
+    const total = Object.keys(SPECIES).length;
+    const byKey = new Map(this.logbook.map(e => [e.key, e]));
+    const groups: Array<[string, string]> = [
+      ["marine","Marine"], ["land","Land"], ["bird","Birds"],
+      ["plant","Plants"], ["tree","Trees"], ["mineral","Minerals"],
+    ];
+    let html = `<div class="log-header">${this.logbook.length} / ${total} species</div>`;
+    for (const [g, label] of groups) {
+      const keys = Object.keys(SPECIES).filter(k => SPECIES[k].group === g);
+      if (!keys.length) continue;
+      html += `<div class="log-group">${label}</div>`;
+      for (const k of keys) {
+        const e = byKey.get(k), info = SPECIES[k];
+        const col = e ? "#eafff7" : "rgba(150,175,180,0.38)";
+        html += `<div class="log-entry" style="color:${col}">• ${info.common}${e?` ×${e.count}`:""}</div>`;
+      }
+    }
+    return html;
+  }
+
+  private panelHelpHTML(): string {
+    return `<div class="controls-section">
+      <b>Move:</b> WASD &nbsp; <b>Dodge:</b> Shift<br/>
+      <b>Attack:</b> Space (hold=charge)<br/>
+      <b>Talk:</b> E or N near an NPC<br/>
+      <b>Chop/mine/pick:</b> E<br/>
+      <b>Drink (lake):</b> E &nbsp; <b>Eat:</b> Q<br/>
+      <b>Fish:</b> G &nbsp; <b>Sleep at fire:</b> Z<br/>
+      <b>Board vehicle:</b> F<br/>
+      <b>Bus (Anacla $3):</b> T<br/>
+      <b>Craft:</b> C &nbsp; <b>Shop:</b> B<br/>
+      <b>Map:</b> M &nbsp; <b>Full map:</b> M key<br/>
+      <b>First aid:</b> H &nbsp; <b>Scan:</b> R<br/>
+      <b>Inspect:</b> X &nbsp; <b>Leaderboard:</b> K<br/>
+      <b>Weapons 1-6:</b> switch slot<br/>
+      <b>Chat:</b> Enter<br/>
+      <span style="color:#6a9ab5">/ global &nbsp; // team<br/> ///Name private</span><br/><br/>
+      <b style="color:#ffb74d">Admin:</b><br/>
+      <span style="color:#6a9ab5">/give [n] [item]<br/>
+      /money [n]<br/>
+      /tp [x] [y]<br/>
+      /god &nbsp; /heal &nbsp; /kill<br/>
+      /tide [tsunami|king|none]<br/>
+      /spawn [creature]<br/>
+      /where</span>
+    </div>`;
+  }
+
+  private drawMinimapPanel(me?: PlayerState) {
+    const mctx = this.minimapCtx;
+    if (!mctx || !this.overview) return;
+    const mw = 184, mh = 150;
+    mctx.fillStyle = "#0a1c29";
+    mctx.fillRect(0, 0, mw, mh);
+    const ov = this.overview;
+    const sx = mw / ov.width, sy = mh / ov.height;
+    for (let y = 0; y < ov.height; y++) {
+      for (let x = 0; x < ov.width; x++) {
+        const tile = ov.tiles[y * ov.width + x] as Tile;
+        mctx.fillStyle = (TILE_COLORS as Record<number, string>)[tile] ?? "#1c5f86";
+        mctx.fillRect(Math.floor(x*sx), Math.floor(y*sy), Math.ceil(sx)+1, Math.ceil(sy)+1);
+      }
+    }
+    if (me && this.map) {
+      const px = (me.x / this.map.width) * mw;
+      const py = (me.y / this.map.height) * mh;
+      mctx.fillStyle = "#fff";
+      mctx.beginPath();
+      mctx.arc(px, py, 2.5, 0, Math.PI * 2);
+      mctx.fill();
+    }
+    // Border
+    mctx.strokeStyle = "#1d4a66";
+    mctx.lineWidth = 1;
+    mctx.strokeRect(0, 0, mw, mh);
+  }
+
   private drawHud(snap: Snapshot, me?: PlayerState) {
     const hud = document.getElementById("hud")!;
     const tidePct = Math.round(snap.tide * 100);
     const event = snap.event === "tsunami" ? " ⚠ TSUNAMI" : snap.event === "king" ? " ⚠ King tide" : "";
-    const hp = me ? Math.max(0, Math.round(me.hp)) : 0;
-    const stam = me ? Math.max(0, Math.round(me.stamina)) : 0;
-    const hunger = me ? Math.max(0, Math.round(me.hunger)) : 0;
-    const hungerLow = me ? me.hunger < me.maxHunger * 0.25 : false;
-    const skillsHtml = me
-      ? SKILL_NAMES
-          .filter((sk) => skillLevel(me.skills[sk]) > 0)
-          .map((sk) => `${sk.slice(0, 3).toUpperCase()}:${skillLevel(me.skills[sk])}`)
-          .join(" ") || "New settler — go earn some XP!"
-      : "";
-    const isFood = (id: ItemId) => (FOOD_VALUE as Record<string, unknown>)[id] !== undefined;
-    const invItems = me
-      ? (ITEM_IDS as readonly ItemId[])
-          .filter((id) => (me.inventory[id] ?? 0) > 0)
-          .map((id) => {
-            const qty = me.inventory[id] ?? 0;
-            const label = ITEM_LABEL[id];
-            return isFood(id) ? `<span style="color:#7ec8a0">${label}:${qty}</span>` : `${label}:${qty}`;
-          })
-          .join(" ")
-      : "";
-    const teamStr = me?.team ? ` &nbsp; <b>Team:</b> ${me.team}` : "";
-    const rankStr = me
-      ? me.isMayor
-        ? `<span style="color:#ffd54f">★ MAYOR</span>`
-        : me.rank > 0
-          ? `#${me.rank}`
-          : "unranked"
-      : "";
-    const sleepStr = me?.sleeping ? ` <span style="color:#7ec8a0">💤 resting</span>` : "";
-    const titleStr = me && me.titles && me.titles.length
-      ? `<span style="color:#ffd54f">${me.titles.join(" · ")}</span><br />` : "";
-    let weaponStr = "";
-    if (me) {
-      const eq = me.equipped;
-      const name = eq ? ITEM_LABEL[eq] : "Bare hands";
-      const ammoId = eq ? WEAPON_AMMO[eq] : undefined;
-      const ammoStr = ammoId ? ` <span style="color:${(me.inventory[ammoId] ?? 0) > 0 ? "#cfe3ef" : "#e57373"}">[${ITEM_LABEL[ammoId]}:${me.inventory[ammoId] ?? 0}]</span>` : "";
-      weaponStr = `<b>Weapon:</b> <span style="color:#ffd98a">${name}</span>${ammoStr} <span style="font-size:10px;color:#8aa">(1-6 switch · Space attack)</span><br />`;
-    }
+    const sleepStr = me?.sleeping ? ` 💤` : "";
+    const teamStr = me?.team ? ` · <b>Team:</b> ${me.team}` : "";
     hud.innerHTML =
-      `<b>${this.regionName}</b><br />` +
-      titleStr +
-      `<b>Tide:</b> ${snap.phase} (${tidePct}%)${event}<br />` +
-      `<b>HP:</b> ${hp}/${me?.maxHp ?? 100} &nbsp; <b>Stam:</b> ${stam}/${me?.maxStamina ?? 100}${sleepStr}<br />` +
-      `<b>Hunger:</b> <span style="color:${hungerLow ? "#e57373" : "#cfe3ef"}">${hunger}/${me?.maxHunger ?? 100}${hungerLow ? " — EAT (Q)!" : ""}</span><br />` +
-      weaponStr +
-      `<b>Money:</b> <span style="color:#9fe6c0">$${me?.money ?? 0}</span> &nbsp; <b>Banfielder:</b> ${me?.banfielderPts ?? 0} pts (${rankStr})${teamStr}<br />` +
-      (skillsHtml ? `<b>Skills:</b> <span style="font-size:11px">${skillsHtml}</span><br />` : "") +
-      (invItems ? `<b>Inv:</b> <span style="font-size:11px">${invItems}</span><br />` : "") +
-      `<b>Here:</b> ${snap.players.length}`;
+      `<b>${this.regionName}</b> · <b>Tide:</b> ${snap.phase} (${tidePct}%)${event}${sleepStr}${teamStr}<br />` +
+      `<b>Here:</b> ${snap.players.length} players`;
   }
 
   private renderLog() {

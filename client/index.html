@@ -132,16 +132,6 @@
         text-shadow: 0 1px 2px #000;
         pointer-events: none;
       }
-      #help {
-        position: fixed;
-        right: 12px;
-        top: 12px;
-        font-size: 12px;
-        color: #9fc2d6;
-        text-align: right;
-        text-shadow: 0 1px 2px #000;
-        pointer-events: none;
-      }
       .hidden { display: none !important; }
 
       #chat-input {
@@ -159,23 +149,127 @@
         z-index: 10;
       }
       #chat-input::placeholder { color: #5a7f96; }
+
+      /* ── OSRS-style right panel ── */
+      #side-panel {
+        position: fixed;
+        right: 0; top: 0; bottom: 0;
+        width: 200px;
+        background: #09202e;
+        border-left: 2px solid #1d4a66;
+        display: flex;
+        flex-direction: column;
+        z-index: 6;
+        font-size: 12px;
+        color: #cfe3ef;
+        user-select: none;
+      }
+      #panel-tabs {
+        display: flex;
+        border-bottom: 2px solid #1d4a66;
+        flex-shrink: 0;
+      }
+      .ptab {
+        flex: 1; margin: 0; padding: 7px 2px;
+        font-size: 11px; font-weight: 700;
+        background: #07131c; color: #6a9ab5;
+        border: none; border-right: 1px solid #1d4a66;
+        cursor: pointer; width: auto; border-radius: 0;
+      }
+      .ptab:last-child { border-right: none; }
+      .ptab:hover { background: #0e2535; color: #cfe3ef; }
+      .ptab.active { background: #0f2f42; color: #eaf2f8; border-bottom: 2px solid #1e88e5; }
+      #panel-content {
+        flex: 1;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 6px;
+        min-height: 0;
+      }
+      #panel-content::-webkit-scrollbar { width: 4px; }
+      #panel-content::-webkit-scrollbar-thumb { background: #1d4a66; border-radius: 2px; }
+      #minimap-canvas { display: block; margin: 4px auto; }
+      #panel-stats {
+        border-top: 2px solid #1d4a66;
+        padding: 8px 8px 6px;
+        flex-shrink: 0;
+        background: #07131c;
+      }
+      .stat-row {
+        display: flex; align-items: center;
+        gap: 4px; margin-bottom: 4px;
+      }
+      .stat-label { width: 32px; font-size: 10px; color: #8fb4c9; flex-shrink: 0; }
+      .stat-bar {
+        flex: 1; height: 8px; background: #0a1c29;
+        border-radius: 4px; overflow: hidden; border: 1px solid #1d4a66;
+      }
+      .stat-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+      .hp-fill   { background: #e53935; }
+      .stam-fill { background: #f9a825; }
+      .hun-fill  { background: #43a047; }
+      .stat-val  { width: 26px; font-size: 10px; text-align: right; flex-shrink: 0; }
+      .panel-info { font-size: 11px; color: #8fb4c9; margin-top: 3px; }
+      /* Inventory grid */
+      .inv-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 3px;
+        padding: 2px 0;
+      }
+      .inv-cell {
+        background: #0a1c29;
+        border: 1px solid #1d4a66;
+        border-radius: 4px;
+        padding: 3px;
+        text-align: center;
+        cursor: default;
+      }
+      .inv-swatch {
+        width: 100%; height: 22px;
+        border-radius: 3px;
+        margin-bottom: 2px;
+      }
+      .inv-qty { font-size: 10px; font-weight: 700; color: #eaf2f8; }
+      .inv-name { font-size: 9px; color: #7faacc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      /* Skills */
+      .stats-header { padding: 4px 2px 8px; border-bottom: 1px solid #1d4a66; margin-bottom: 6px; }
+      .skill-list { padding: 2px 0; }
+      .skill-row { margin-bottom: 5px; }
+      .skill-name { display: inline-block; width: 80px; font-size: 11px; color: #9fc2d6; text-transform: capitalize; }
+      .skill-lv { display: inline-block; width: 30px; font-size: 11px; font-weight: 700; color: #ffd54f; text-align: right; }
+      .skill-bar { height: 5px; background: #0a1c29; border-radius: 3px; overflow: hidden; margin-top: 2px; border: 1px solid #1d4a66; }
+      .skill-fill { height: 100%; background: #1e88e5; border-radius: 3px; }
+      /* Logbook */
+      .log-header { font-weight: 700; color: #7fd0c2; margin-bottom: 6px; font-size: 11px; }
+      .log-group { font-weight: 700; color: #7fd0c2; margin: 6px 0 2px; font-size: 11px; border-top: 1px solid #1d4a66; padding-top: 4px; }
+      .log-entry { font-size: 10px; padding: 1px 0 1px 6px; }
+      /* Controls help */
+      .controls-section { font-size: 10px; color: #6a9ab5; line-height: 1.5; padding: 2px 0; }
+      .controls-section b { color: #9fc2d6; }
+      .panel-empty { color: #5a7f96; font-size: 12px; text-align: center; padding: 20px 4px; }
     </style>
   </head>
   <body>
     <canvas id="game"></canvas>
 
     <div id="hud" class="hidden"></div>
-    <div id="help" class="hidden">
-      WASD: move &nbsp; Shift: dodge &nbsp; Space: attack (hold=charge)<br />
-      E: chop / mine / pick / refuel / drink (by a lake) &nbsp; Q: eat &nbsp; N: talk to locals<br />
-      G: fish &nbsp; F: board vehicle &nbsp; Z: sleep by fire &nbsp; T: catch the $3 bus<br />
-      C: craft (cook at a fire) &nbsp; B: shop/trade &nbsp; I: inventory &nbsp; M: map &nbsp; Enter: chat<br />
-      Pull invasive plants while they FLOWER to kill them for good<br />
-      Chat: / global &nbsp; // team &nbsp; ///Name private &nbsp; /team Name<br />
-      Admin: /give [qty] [item|skill] &nbsp; /money [n] &nbsp; /tp [x] [y] &nbsp; /god &nbsp; /tide [tsunami|king|none] &nbsp; /spawn [creature] &nbsp; /heal &nbsp; /kill &nbsp; /where
-    </div>
     <div id="log" class="hidden"></div>
     <input id="chat-input" class="hidden" type="text" maxlength="160" placeholder="Chat — / global, // team, ///Name private, /team Name — Enter to send" autocomplete="off" />
+
+    <!-- OSRS-style right panel (shown once player is in-game) -->
+    <div id="side-panel" class="hidden">
+      <div id="panel-tabs">
+        <button class="ptab active" id="ptab-inv">Inv</button>
+        <button class="ptab" id="ptab-skills">Skills</button>
+        <button class="ptab" id="ptab-log">Log</button>
+        <button class="ptab" id="ptab-map">Map</button>
+        <button class="ptab" id="ptab-help">?</button>
+      </div>
+      <div id="panel-content"></div>
+      <canvas id="minimap-canvas" class="hidden" width="184" height="150"></canvas>
+      <div id="panel-stats"></div>
+    </div>
 
     <div id="creator">
       <div class="card">
