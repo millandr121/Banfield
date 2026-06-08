@@ -46,6 +46,7 @@ import {
   defaultSkills,
   skillLevel,
   submergedAt,
+  isWaterTile,
   phaseForTide,
 } from "../shared/protocol";
 import { DEFAULT_REGION, PlantDef, RegionDef, ResourceNodeDef, buildRegions } from "../shared/map";
@@ -308,6 +309,7 @@ export class GameRoom {
   private kb = new Map<string, { x: number; y: number }>();
   // playerId → epoch ms they entered deep water (for the float/drown timer).
   private deepSince = new Map<string, number>();
+  private lastDrink = new Map<string, number>(); // throttle freshwater sips
   // accountName → logbook: speciesKey → { count (encounters), firstAt }.
   private discoveries = new Map<string, Record<string, { count: number; firstAt: number }>>();
   // Role tallies, keyed by player name (live this session).
@@ -600,6 +602,9 @@ export class GameRoom {
         break;
       case "refuel":
         this.doHarvest(s.playerId); // harvest doubles as the refuel action
+        break;
+      case "drink":
+        this.doDrink(s.playerId);
         break;
       case "travel":
         this.doTravel(ws, s.playerId);
@@ -1319,8 +1324,8 @@ export class GameRoom {
     const ox = x + Math.round((Math.random() - 0.5) * 4);
     const oy = y + Math.round((Math.random() - 0.5) * 4);
     if (!this.inBounds(region.map, ox + 0.5, oy + 0.5)) return;
-    // Don't sprout in the sea.
-    if (this.tileAt(region.map, ox + 0.5, oy + 0.5) === Tile.Water) return;
+    // Don't sprout in the sea (or a lake).
+    if (isWaterTile(this.tileAt(region.map, ox + 0.5, oy + 0.5) ?? Tile.Grass)) return;
     const kinds: InvasiveKind[] = ["scotchBroom", "himalayanBlackberry", "foxglove"];
     const kind = kinds[Math.floor(Math.random() * kinds.length)];
     const id = `inv${this.idCounter++}`;
@@ -1719,6 +1724,37 @@ export class GameRoom {
     this.tell(p, `Ate ${ITEM_LABEL[chosen]} (+${val.hunger} food${gainedHp > 0 ? `, +${Math.round(gainedHp)} HP` : ""}).`);
   }
 
+  // Drink from an adjacent freshwater lake. Takes the edge off hunger but can't
+  // fill you up — fresh water only tops you back to a "thirst-quenched" ceiling,
+  // never to full. Salt water (the ocean) isn't drinkable.
+  private doDrink(playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p || p.dead) return;
+    const region = this.regions.get(p.region);
+    if (!region) return;
+    const px = Math.floor(p.x), py = Math.floor(p.y);
+    let fresh = false, salt = false;
+    for (const [dx, dy] of [[0,0],[1,0],[-1,0],[0,1],[0,-1]] as const) {
+      const t = this.tileAt(region.map, px + dx + 0.5, py + dy + 0.5);
+      if (t === Tile.FreshWater) fresh = true;
+      else if (t === Tile.Water) salt = true;
+    }
+    if (!fresh) {
+      this.tell(p, salt ? "That's salt water — you can't drink the ocean." : "Find a freshwater lake to drink from.");
+      return;
+    }
+    const now = Date.now();
+    if (now - (this.lastDrink.get(p.id) ?? 0) < 2500) return; // sip throttle
+    this.lastDrink.set(p.id, now);
+    const CEILING = p.maxHunger * 0.6; // water alone only gets you ~60% full
+    if (p.hunger >= CEILING) {
+      this.tell(p, "You drink your fill — but water won't fill an empty belly. Find food.");
+      return;
+    }
+    p.hunger = Math.min(CEILING, p.hunger + 8);
+    this.tell(p, "You drink the cool fresh water. (+hunger — but you still need real food.)");
+  }
+
   private doFishToggle(playerId: string) {
     const p = this.players.get(playerId);
     if (!p || p.dead || p.vehicleId) return;
@@ -1744,7 +1780,7 @@ export class GameRoom {
       const nx = px + dx, ny = py + dy;
       if (nx < 0 || ny < 0 || nx >= mw || ny >= mh) return false;
       const i = ny * mw + nx;
-      return tiles[i] === Tile.Water || waterline > elevation[i];
+      return isWaterTile(tiles[i] as Tile) || waterline > elevation[i];
     });
     if (!nearWater) {
       const s = this.sessionFor(p.id);
@@ -2633,7 +2669,7 @@ export class GameRoom {
     const tx = Math.floor(x);
     const ty = Math.floor(y);
     const tile = map.tiles[ty * map.width + tx] as Tile;
-    const submerged = submergedAt(map.elevation[ty * map.width + tx], waterline) || tile === Tile.Water;
+    const submerged = submergedAt(map.elevation[ty * map.width + tx], waterline) || isWaterTile(tile);
     return swimmer ? submerged : !submerged;
   }
 

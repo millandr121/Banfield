@@ -10,7 +10,7 @@
 //   3. Any water NOT in the ocean that carries the road network = flooded land
 //      → reclaim to forest/grass. Small road-free pools stay as inland lakes.
 import fs from "fs";
-const T = { Water:0, Sand:1, Grass:2, Forest:3, Hill:4, Rock:5, Road:6 };
+const T = { Water:0, Sand:1, Grass:2, Forest:3, Hill:4, Rock:5, Road:6, Dock:7, FreshWater:8 };
 const path = "shared/regions/bamfield.json";
 const d = JSON.parse(fs.readFileSync(path));
 const W = d.width, H = d.height, N = W*H;
@@ -91,7 +91,13 @@ for (let i=0;i<N;i++){
   // Reclaim flooded land: a road-laced component, or a big one (>4000 tiles).
   if (hasRoad || comp.length>4000){
     for (const j of comp){ t[j]=T.Grass; reclaimed++; }
-  } else { lakes += comp.length; }
+  } else {
+    // A genuine enclosed, road-free water body = an inland FRESH-water lake.
+    // (Tiny artifacts under ~12 tiles are just rasterizer speckle — drop them
+    // back to land so we don't pepper the forest with puddles.)
+    if (comp.length >= 12){ for (const j of comp){ t[j]=T.FreshWater; } lakes += comp.length; }
+    else { for (const j of comp){ t[j]=T.Grass; } }
+  }
 }
 
 // --- 4. Blend reclaimed land: a newly-Grass tile with no Water within ~3 tiles
@@ -103,7 +109,7 @@ const snapshot = t.slice();
 const waterNear = (x,y,r)=>{
   for (let dy=-r;dy<=r;dy++){ const yy=y+dy; if(yy<0||yy>=H) continue;
     for (let dx=-r;dx<=r;dx++){ const xx=x+dx; if(xx<0||xx>=W) continue;
-      if (snapshot[yy*W+xx]===T.Water) return true; } }
+      const tt=snapshot[yy*W+xx]; if(tt===T.Water||tt===T.FreshWater) return true; } }
   return false;
 };
 for (let i=0;i<N;i++){

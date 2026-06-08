@@ -41,6 +41,7 @@ const HARVEST_RANGE_PX = 1.8 * TILE_SIZE; // client-side prompt range (cosmetic 
 
 const TILE_COLORS: Record<Tile, string> = {
   [Tile.Water]: "#1c5f86",
+  [Tile.FreshWater]: "#2f7d6a", // teal-green: a calm freshwater lake
   [Tile.Sand]: "#d8c98c",
   [Tile.Grass]: "#4f7d3a",
   [Tile.Forest]: "#2f5a28",
@@ -174,6 +175,7 @@ export class Game {
           } else {
             this.net.send({ t: "harvest" });
             this.net.send({ t: "repair" });
+            this.net.send({ t: "drink" }); // sip from fresh water if beside a lake
           }
         } else if (k === "n") {
           const npc = this.nearbyNpc();
@@ -658,7 +660,12 @@ export class Game {
         const { sx, sy } = this.toScreen(x, y);
         const depth = snap.waterline - elev; // >0 means under water right now
 
-        if (depth > 0) {
+        if (tile === Tile.FreshWater) {
+          // Inland lake: a calm teal-green, lightly shaded by depth — clearly
+          // not the same body as the salt inlet. Always wet (never mudflat).
+          ctx.fillStyle = freshWaterColor(Math.max(2, depth));
+          ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
+        } else if (depth > 0) {
           // Colour by depth tier — ankle turquoise → abyss near-black.
           ctx.fillStyle = waterDepthColor(depth);
           ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
@@ -1909,6 +1916,15 @@ function waterDepthColor(depth: number): string {
   if (depth < DEPTH_OCEAN) return "#0f5278"; // deep — dark blue
   if (depth < DEPTH_OCEAN * 1.5) return "#082e50"; // ocean — near-navy
   return "#040f22";                              // abyss — near-black
+}
+
+// Fresh water reads green-teal (tannin-stained coastal lake), distinct from the
+// blue salt ocean, and only mildly darkens with depth so a lake never looks
+// like the deep sea.
+function freshWaterColor(depth: number): string {
+  if (depth < DEPTH_ANKLE) return "#5fae90"; // shallow lake edge
+  if (depth < DEPTH_SWIM)  return "#3f8f78"; // mid
+  return "#2c6f62";                          // deeper centre
 }
 
 // --- resource node sprites --------------------------------------------------

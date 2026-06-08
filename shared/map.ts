@@ -1,4 +1,4 @@
-import { BuildingState, InvasiveKind, ResourceKind, ShopDef, Tile, TravelNode, VehicleKind, WorldMap, WATERLINE_HIGH } from "./protocol";
+import { BuildingState, InvasiveKind, ResourceKind, ShopDef, Tile, TravelNode, VehicleKind, WorldMap, WATERLINE_HIGH, WATERLINE_LOW } from "./protocol";
 import { IMPORTED_REGIONS } from "./regions";
 
 // Where a driveable vehicle starts life in a region.
@@ -37,7 +37,7 @@ export interface PlantDef {
 // waterline past WATERLINE_HIGH, can ever spill onto land.
 const BEACH_SLOPE = 2;
 export function computeElevation(tiles: Tile[], w: number, h: number): number[] {
-  const isWater = (i: number) => tiles[i] === Tile.Water;
+  const isWater = (i: number) => tiles[i] === Tile.Water || tiles[i] === Tile.FreshWater;
   const bfs = (isSource: (i: number) => boolean): Int32Array => {
     const d = new Int32Array(w * h).fill(-1);
     const q: number[] = [];
@@ -60,7 +60,12 @@ export function computeElevation(tiles: Tile[], w: number, h: number): number[] 
   const fromLand = bfs((i) => !isWater(i));
   const elev = new Array(w * h).fill(0);
   for (let i = 0; i < w * h; i++) {
-    if (isWater(i)) {
+    if (tiles[i] === Tile.FreshWater) {
+      // Inland lakes aren't tidal: pin them just below the low-tide line so they
+      // stay wet at every tide (a shallow, wadeable pond you can drink from),
+      // never draining to mudflat the way the salt inlets do.
+      elev[i] = WATERLINE_LOW - 1;
+    } else if (isWater(i)) {
       // Distance (in tiles) from this water cell out to the nearest land.
       const wd = fromLand[i] <= 0 ? 1 : fromLand[i];
       // Shore-most water rides just below the high-tide line (covered only near

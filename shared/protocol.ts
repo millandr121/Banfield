@@ -5,7 +5,7 @@ export const TILE_SIZE = 24; // pixels per tile on the client
 
 // --- Tile types -------------------------------------------------------------
 export enum Tile {
-  Water = 0,
+  Water = 0,      // salt water — the ocean & tidal inlets
   Sand = 1,
   Grass = 2,
   Forest = 3,
@@ -13,6 +13,12 @@ export enum Tile {
   Rock = 5,
   Road = 6,
   Dock = 7,
+  FreshWater = 8, // inland lakes / ponds — drinkable, not tidal salt
+}
+
+// Both ocean and lake tiles count as "water" for swimming, depth & rendering.
+export function isWaterTile(t: Tile): boolean {
+  return t === Tile.Water || t === Tile.FreshWater;
 }
 
 // Base elevation per tile type, used only as a seed/bump. The AUTHORITATIVE
@@ -20,6 +26,7 @@ export enum Tile {
 // tide can sweep gradually across a beach instead of toggling one tile.
 export const TILE_ELEVATION: Record<Tile, number> = {
   [Tile.Water]: 4,
+  [Tile.FreshWater]: 6,
   [Tile.Sand]: 18,
   [Tile.Dock]: 22,
   [Tile.Road]: 40,
@@ -425,6 +432,7 @@ export type ClientMessage =
   | { t: "craft"; recipe: CraftRecipeId } // craft (recipe validated server-side)
   | { t: "fish" } // toggle fishing on/off (needs rod in inventory)
   | { t: "eat" } // consume food from inventory for hunger/HP
+  | { t: "drink" } // sip from an adjacent freshwater lake (a little hunger back)
   | { t: "sleep" } // toggle resting by a fire to heal
   | { t: "chat"; msg: string } // text; / global, // team, ///name private
   | { t: "repair" }

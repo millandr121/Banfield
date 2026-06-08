@@ -150,6 +150,16 @@ items off as they ship. (Captured from playtest notes so nothing gets lost.)
       Surviving either awards Banfielder pts (king tide +10, tsunami +50).
 - [ ] **Disaster logbook achievement** — log the specific date + event when
       a player survives a king tide or tsunami; visible in the field logbook.
+- [x] **East/NE land un-flooded** — the ocean flood had leaked past the map
+      edges into land that runs beyond the bbox (Pachena/Anacla read as water
+      under their own roads). `tools/repair-flood.mjs` reclaims it on the baked
+      grid since the `.osm` export isn't recoverable in-container. 425k tiles
+      back to forest/shore; harbour, inlet & islands untouched.
+- [x] **Fresh vs salt water** — inland lakes are now `Tile.FreshWater` (teal-
+      green, never tidal). **Press E by a lake to drink** — takes the edge off
+      hunger (to ~60%) but won't fill you; the ocean is salt and undrinkable.
+      NOTE: the Pachena River can't be tagged fresh without a re-import (it
+      drains to the ocean and merged with it) — revisit when the `.osm` is back.
 - [ ] **BUG LOG: "dragged under" random death** — player dies with "dragged under"
       message after swimming and returning to shore. Root cause: FLOAT_GRACE_MS
       was only 60 s; at 3300-tile scale the inlet takes ~90 s to cross when
