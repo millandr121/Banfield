@@ -104,7 +104,7 @@ function drawStage() {
   if (editorMode === "items") {
     // Items mode: paint the flat 16×16 pixel array directly.
     const W = ITEM_SIZE, H = ITEM_SIZE;
-    paintPixels(sctx, itemPixels, zoom);
+    paintPixels(sctx, itemPixels, zoom, ITEM_SIZE, ITEM_SIZE);
     if (showGrid && zoom >= 6) {
       sctx.strokeStyle = "rgba(255,255,255,0.09)";
       sctx.lineWidth = 1;
@@ -121,7 +121,7 @@ function drawStage() {
     const ox2 = (itemPreview.width  - ITEM_SIZE * sc) / 2;
     const oy2 = (itemPreview.height - ITEM_SIZE * sc) / 2;
     ipctx.save(); ipctx.translate(ox2, oy2);
-    paintPixels(ipctx, itemPixels, sc);
+    paintPixels(ipctx, itemPixels, sc, ITEM_SIZE, ITEM_SIZE);
     ipctx.restore();
     return;
   }
@@ -155,10 +155,10 @@ function drawStage() {
   }
 }
 
-function paintPixels(ctx: CanvasRenderingContext2D, px: string[], scale: number) {
-  for (let y = 0; y < doc.h; y++) {
-    for (let x = 0; x < doc.w; x++) {
-      const c = px[idx(x, y)];
+function paintPixels(ctx: CanvasRenderingContext2D, px: string[], scale: number, W = doc.w, H = doc.h) {
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const c = px[y * W + x];
       if (!c) continue;
       ctx.fillStyle = c;
       ctx.fillRect(x * scale, y * scale, scale, scale);

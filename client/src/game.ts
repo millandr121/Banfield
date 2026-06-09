@@ -40,6 +40,7 @@ import { LogbookEntry, LeaderboardData } from "../../shared/protocol";
 import { SPECIES, resourceSpeciesKey } from "../../shared/species";
 import { Net } from "./net";
 import { drawCharacterPixel, type CharOpts as PixelCharOpts } from "./pixelchar";
+import npcLooksData from "./assets/npc-looks.json";
 import { drawItemIcon } from "./itemicon";
 
 const CHARGE_MAX_MS = 600; // hold Space this long for a full-power swing
@@ -3047,34 +3048,7 @@ const NPC_NAME: Record<NpcState["kind"], string> = {
 // Each local is a distinct, quirky individual — Eastward-style cast. Skin, hair,
 // shirt, pants, optional hat, plus build/hair length give everyone a silhouette
 // you can recognise from across the map.
-const NPC_LOOKS: Record<NpcState["kind"], Appearance> = {
-  // Wiry old hippy botanist, long grey hair, mossy-green field vest.
-  naturalist:     { skin: "#caa472", hair: "#b8b0a0", shirt: "#3f6b34", pants: "#5a4a32", hairStyle: "long",   bodyBuild: "slight" },
-  // Weathered hobo pirate — sun-leathered, wild black beard-hair, tattered red.
-  pirate:         { skin: "#a86a40", hair: "#241a14", shirt: "#8a2f24", pants: "#3a3026", hat: "#2a2018", hairStyle: "medium", bodyBuild: "sturdy" },
-  // Nerdy marine scientist — pale, neat side-part, lab-blue, sturdy glasses vibe.
-  scientist:      { skin: "#e7c9a4", hair: "#5a4632", shirt: "#1565c0", pants: "#33405c", hairStyle: "short",  bodyBuild: "slight" },
-  westsider:      { skin: "#d9a877", hair: "#3a2a18", shirt: "#0f7a6c", pants: "#2e3a52", hairStyle: "short",  bodyBuild: "medium" },
-  eastsider:      { skin: "#c89060", hair: "#4a148c", shirt: "#5e35b1", pants: "#2a2440", hairStyle: "medium", bodyBuild: "medium" },
-  // Huu-ay-aht elder — warm tone, long dark hair, deep crimson regalia red.
-  huuayaht:       { skin: "#b87a4a", hair: "#1a1410", shirt: "#9a1f1f", pants: "#3a2418", hairStyle: "long",   bodyBuild: "medium" },
-  // Unofficial mayor — ruddy, balding, loud mustard blazer.
-  mayor:          { skin: "#e0a878", hair: "#8a7a5a", shirt: "#e0901f", pants: "#4a3a22", hat: "#caa040", hairStyle: "short", bodyBuild: "sturdy" },
-  // Bookish historian — grey beard-hair, tweedy brown, soft build.
-  historian:      { skin: "#d4ac80", hair: "#9a9088", shirt: "#7a5a3a", pants: "#4a3e30", hairStyle: "medium", bodyBuild: "sturdy" },
-  // Salty boat dealer — tanned, ball-cap, oilskin teal.
-  boatdealer:     { skin: "#c08850", hair: "#2a2018", shirt: "#00695c", pants: "#2a3a40", hat: "#143a36", hairStyle: "short", bodyBuild: "sturdy" },
-  // Ice vendor — chilled pale, frosty cap, cold-blue apron.
-  icevendor:      { skin: "#e3cbb0", hair: "#5a5048", shirt: "#4aa6c8", pants: "#3a4a55", hat: "#cfe8f0", hairStyle: "short", bodyBuild: "medium" },
-  // Flamboyant seamstress — magenta hair, hot-pink, expressive.
-  seamstress:     { skin: "#c88040", hair: "#8b2252", shirt: "#d946a8", pants: "#5a2a4a", hairStyle: "long",   bodyBuild: "slight", breastSize: "modest", hipSize: "wide" },
-  // Field researcher — sandy hair, eggplant cargo, practical.
-  researcher2:    { skin: "#d4b896", hair: "#bfa060", shirt: "#7b3fa0", pants: "#3e3550", hairStyle: "medium", bodyBuild: "medium" },
-  // Marine biologist — cool ocean tones, navy wetsuit-ish.
-  marineBiologist:{ skin: "#cdb59c", hair: "#2a5a80", shirt: "#0d47a1", pants: "#1a2a4a", hairStyle: "short",  bodyBuild: "medium" },
-  // Snorkeler — sun-bleached, kelp-dark hair, teal rash-guard.
-  snorkeler:      { skin: "#caa06e", hair: "#1a3a2a", shirt: "#00838f", pants: "#244a4a", hairStyle: "short",  bodyBuild: "slight" },
-};
+const NPC_LOOKS = npcLooksData as unknown as Record<NpcState["kind"], Appearance>;
 
 const NPC_COLORS: Record<NpcState["kind"], string> = {
   naturalist: "#2e7d32", pirate: "#37474f", scientist: "#1565c0", westsider: "#00695c",

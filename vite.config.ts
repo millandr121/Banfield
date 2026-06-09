@@ -1,16 +1,44 @@
-import { defineConfig } from "vite";
+import { defineConfig, Plugin } from "vite";
 import { resolve } from "node:path";
+import fs from "node:fs";
+import path from "node:path";
 
-// The client is a static HTML5 Canvas app. In dev, Vite serves it on :5173 and
-// proxies the WebSocket connection to `wrangler dev` (the Worker) on :8787.
-// In production, `wrangler deploy` serves the built files from dist/client.
+// Dev-only plugin: POST /api/save-asset  { filename: "foo.json", data: {...} }
+// writes to client/src/assets/<filename> so Vite hot-reloads the change.
+function saveAssetPlugin(): Plugin {
+  return {
+    name: "save-asset",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use("/api/save-asset", (req, res, next) => {
+        if (req.method !== "POST") return next();
+        let body = "";
+        req.on("data", (chunk: Buffer) => (body += chunk.toString()));
+        req.on("end", () => {
+          try {
+            const { filename, data } = JSON.parse(body) as { filename: string; data: unknown };
+            const safe = path.basename(filename);   // no path traversal
+            const dest = path.resolve(__dirname, "client/src/assets", safe);
+            fs.writeFileSync(dest, JSON.stringify(data, null, 2));
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true }));
+          } catch (e) {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end(String(e));
+          }
+        });
+      });
+    },
+  };
+}
+
 export default defineConfig({
   root: "client",
+  plugins: [saveAssetPlugin()],
   build: {
     outDir: "../dist/client",
     emptyOutDir: true,
     rollupOptions: {
-      // Multi-page: the game (index) and the standalone sprite editor.
       input: {
         main: resolve(__dirname, "client/index.html"),
         editor: resolve(__dirname, "client/editor.html"),
