@@ -41,6 +41,7 @@ import { SPECIES, resourceSpeciesKey } from "../../shared/species";
 import { Net } from "./net";
 import { drawAvatar } from "./avatar";
 import { drawCharacterPixel, type CharOpts as PixelCharOpts } from "./pixelchar";
+import { drawItemIcon } from "./itemicon";
 
 const CHARGE_MAX_MS = 600; // hold Space this long for a full-power swing
 const HARVEST_RANGE_PX = 1.8 * TILE_SIZE; // client-side prompt range (cosmetic only)
@@ -295,6 +296,10 @@ export class Game {
 
   // Canvas HUD hit-regions, rebuilt each frame (corner icons + quick-keys).
   private hudHits: Array<{ x: number; y: number; w: number; h: number; act: () => void }> = [];
+  // Inventory-bag cell hit-regions (item id per cell) + the panel's bounds, so
+  // a click can open the equip/drop menu at the pointer.
+  private invHits: Array<{ x: number; y: number; w: number; h: number; id: ItemId }> = [];
+  private invBounds: { x: number; y: number; w: number; h: number } | null = null;
 
   // Login-screen hooks (main.ts wires these before the game proper starts).
   onNameStatus?: (name: string, taken: boolean) => void;
@@ -319,6 +324,23 @@ export class Game {
     if (!this.started || e.button !== 0) return;
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    // Open bag: click a cell for the equip/drop/eat menu (at the pointer);
+    // clicks elsewhere on the panel are swallowed.
+    if (this.invOpen && this.invBounds) {
+      for (const h of this.invHits) {
+        if (mx >= h.x && mx <= h.x + h.w && my >= h.y && my <= h.y + h.h) {
+          this.openItemMenu(h.id, e.clientX, e.clientY);
+          e.preventDefault();
+          return;
+        }
+      }
+      const b = this.invBounds;
+      if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
+        this.closeItemMenu();
+        e.preventDefault();
+        return;
+      }
+    }
     // Compass (top-right circle) — click anywhere inside it opens the full map.
     const c = this.compassHit;
     if (c && Math.hypot(mx - c.cx, my - c.cy) <= c.r) {
@@ -1803,72 +1825,74 @@ export class Game {
   // --- inventory bag --------------------------------------------------------
   private drawInventoryPanel(me?: PlayerState) {
     const ctx = this.ctx;
-    const cols = 4;
-    const cellW = 84, cellH = 64;
+    this.invHits = [];
+    const cols = 5;
+    const cell = 72, gap = 6;
     const pad = 18;
-    const pw = cols * cellW + pad * 2;
+    const pw = cols * cell + (cols - 1) * gap + pad * 2;
     const items = me
       ? (ITEM_IDS as readonly ItemId[]).filter((id) => (me.inventory[id] ?? 0) > 0)
       : [];
     const rows = Math.max(1, Math.ceil(items.length / cols));
-    const ph = 56 + rows * cellH + 40;
+    const ph = 54 + rows * (cell + gap) + 34;
     const px = this.canvas.width / 2 - pw / 2;
     const py = this.canvas.height / 2 - ph / 2;
+    this.invBounds = { x: px, y: py, w: pw, h: ph };
 
-    ctx.fillStyle = "rgba(7,19,28,0.95)";
-    roundRect(ctx, px, py, pw, ph, 10);
-    ctx.fill();
-    ctx.strokeStyle = "#ffb300";
-    ctx.lineWidth = 2;
-    roundRect(ctx, px, py, pw, ph, 10);
-    ctx.stroke();
+    ctx.fillStyle = "rgba(7,19,28,0.96)";
+    roundRect(ctx, px, py, pw, ph, 12); ctx.fill();
+    ctx.strokeStyle = "#ffb300"; ctx.lineWidth = 2;
+    roundRect(ctx, px, py, pw, ph, 12); ctx.stroke();
 
-    ctx.fillStyle = "#ffe9b0";
-    ctx.font = "bold 16px system-ui";
-    ctx.textAlign = "left";
-    ctx.fillText("INVENTORY", px + pad, py + 30);
-    ctx.fillStyle = "#7fa8c8";
-    ctx.font = "13px system-ui";
-    ctx.textAlign = "right";
-    ctx.fillText("[I] or Esc to close", px + pw - pad, py + 30);
+    ctx.fillStyle = "#ffe9b0"; ctx.font = "bold 16px system-ui"; ctx.textAlign = "left";
+    ctx.fillText("🎒 BAG", px + pad, py + 30);
+    ctx.fillStyle = "#7fa8c8"; ctx.font = "12px system-ui"; ctx.textAlign = "right";
+    ctx.fillText("Click an item for options · [I]/Esc close", px + pw - pad, py + 30);
 
     if (items.length === 0) {
-      ctx.fillStyle = "#5a7f96";
-      ctx.font = "14px system-ui";
-      ctx.textAlign = "center";
+      ctx.fillStyle = "#5a7f96"; ctx.font = "14px system-ui"; ctx.textAlign = "center";
       ctx.fillText("Your bag is empty — go gather, hunt, or fish.", px + pw / 2, py + ph / 2);
     }
 
     items.forEach((id, i) => {
-      const cx = px + pad + (i % cols) * cellW;
-      const cy = py + 48 + Math.floor(i / cols) * cellH;
-      // Item swatch
-      ctx.fillStyle = ITEM_COLORS[id] ?? "#888";
-      roundRect(ctx, cx + 6, cy + 6, cellW - 18, 30, 5);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(0,0,0,0.4)";
-      ctx.lineWidth = 1;
-      roundRect(ctx, cx + 6, cy + 6, cellW - 18, 30, 5);
-      ctx.stroke();
-      // Quantity badge
-      ctx.fillStyle = "#0b1d2a";
-      ctx.font = "bold 14px system-ui";
-      ctx.textAlign = "right";
-      ctx.fillText(`×${me!.inventory[id] ?? 0}`, cx + cellW - 16, cy + 26);
-      // Label
-      ctx.fillStyle = "#cfe3ef";
-      ctx.font = "11px system-ui";
-      ctx.textAlign = "left";
-      ctx.fillText(ITEM_LABEL[id], cx + 6, cy + 50);
+      const cx = px + pad + (i % cols) * (cell + gap);
+      const cy = py + 46 + Math.floor(i / cols) * (cell + gap);
+      const equipped = me!.equipped === id || Object.values(me!.appearance?.worn ?? {}).includes(id);
+      // Slot
+      ctx.fillStyle = "rgba(10,28,41,0.85)";
+      roundRect(ctx, cx, cy, cell, cell, 8); ctx.fill();
+      ctx.strokeStyle = equipped ? "#ffd54f" : "rgba(120,180,220,0.22)";
+      ctx.lineWidth = equipped ? 2 : 1;
+      roundRect(ctx, cx, cy, cell, cell, 8); ctx.stroke();
+      // Icon (big, centred) with colour-swatch fallback.
+      const isz = 44;
+      if (!drawItemIcon(ctx, id, cx + (cell - isz) / 2, cy + 6, isz)) {
+        ctx.fillStyle = (ITEM_COLORS as Record<string, string>)[id] ?? "#888";
+        roundRect(ctx, cx + 16, cy + 12, cell - 32, 32, 6); ctx.fill();
+      }
+      // Quantity badge, top-right corner.
+      const qty = me!.inventory[id] ?? 0;
+      if (qty > 1) {
+        ctx.font = "bold 12px system-ui"; ctx.textAlign = "right";
+        const txt = `${qty}`;
+        const bw = ctx.measureText(txt).width + 8;
+        ctx.fillStyle = "rgba(6,14,20,0.9)";
+        roundRect(ctx, cx + cell - bw - 3, cy + 3, bw, 16, 5); ctx.fill();
+        ctx.fillStyle = "#ffe9a0";
+        ctx.fillText(txt, cx + cell - 6, cy + 15);
+      }
+      // Label, bottom.
+      ctx.fillStyle = equipped ? "#ffe9a0" : "#9fc2d6"; ctx.font = "9px system-ui"; ctx.textAlign = "center";
+      const lbl = ITEM_LABEL[id];
+      ctx.fillText(lbl.length > 12 ? lbl.slice(0, 11) + "…" : lbl, cx + cell / 2, cy + cell - 6);
+      this.invHits.push({ x: cx, y: cy, w: cell, h: cell, id });
     });
 
-    ctx.fillStyle = "#9fe6c0";
-    ctx.font = "13px system-ui";
-    ctx.textAlign = "left";
-    ctx.fillText(`Money: $${me?.money ?? 0}`, px + pad, py + ph - 16);
+    ctx.fillStyle = "#9fe6c0"; ctx.font = "13px system-ui"; ctx.textAlign = "left";
+    ctx.fillText(`$${me?.money ?? 0}`, px + pad, py + ph - 14);
     ctx.textAlign = "right";
     ctx.fillStyle = me && me.hunger < me.maxHunger * 0.25 ? "#e57373" : "#cfe3ef";
-    ctx.fillText(`Hunger: ${Math.round(me?.hunger ?? 0)}/${me?.maxHunger ?? 100}`, px + pw - pad, py + ph - 16);
+    ctx.fillText(`Hunger ${Math.round(me?.hunger ?? 0)}/${me?.maxHunger ?? 100}`, px + pw - pad, py + ph - 14);
   }
 
   // --- NPCs -----------------------------------------------------------------
@@ -2773,11 +2797,14 @@ export class Game {
     this.drawSlotBox(ctx, pad, beltTop, slotS, slotS);
     const eq = me.equipped;
     if (eq) {
-      ctx.fillStyle = (ITEM_COLORS as Record<string, string>)[eq] ?? "#3a5a6a";
-      roundRect(ctx, pad + 8, beltTop + 8, slotS - 16, slotS - 22, 4); ctx.fill();
+      const isz = slotS - 14;
+      if (!drawItemIcon(ctx, eq, pad + 7, beltTop + 4, isz)) {
+        ctx.fillStyle = (ITEM_COLORS as Record<string, string>)[eq] ?? "#3a5a6a";
+        roundRect(ctx, pad + 8, beltTop + 8, slotS - 16, slotS - 22, 4); ctx.fill();
+      }
       ctx.fillStyle = "#eaf2f8"; ctx.font = "8px system-ui"; ctx.textAlign = "center";
       const lbl = ITEM_LABEL[eq] ?? eq;
-      ctx.fillText(lbl.length > 9 ? lbl.slice(0, 8) + "…" : lbl, pad + slotS / 2, beltTop + slotS - 5);
+      ctx.fillText(lbl.length > 9 ? lbl.slice(0, 8) + "…" : lbl, pad + slotS / 2, beltTop + slotS - 4);
       const ammoId = WEAPON_AMMO[eq];
       if (ammoId) {
         const n = me.inventory[ammoId] ?? 0;
@@ -2789,7 +2816,7 @@ export class Game {
       ctx.fillStyle = "#3a5a6a"; ctx.font = "9px system-ui"; ctx.textAlign = "center";
       ctx.fillText("fists", pad + slotS / 2, beltTop + slotS / 2 + 3);
     }
-    this.hudHits.push({ x: pad, y: beltTop, w: slotS, h: slotS, act: () => this.togglePanel("inv") });
+    this.hudHits.push({ x: pad, y: beltTop, w: slotS, h: slotS, act: () => { this.invOpen = !this.invOpen; } });
 
     // Quick-key belt (weapons 1–6) to the right of the equipped slot.
     const qkS = 28, qkGap = 4;
@@ -2800,10 +2827,15 @@ export class Game {
       const on = me.equipped === item;
       this.drawSlotBox(ctx, qx, qy, qkS, qkS, on);
       if (owned) {
-        ctx.fillStyle = (ITEM_COLORS as Record<string, string>)[item] ?? "#3a5a6a";
-        roundRect(ctx, qx + 4, qy + 4, qkS - 8, qkS - 11, 3); ctx.fill();
+        ctx.save();
+        if (!on) ctx.globalAlpha = 0.85;
+        if (!drawItemIcon(ctx, item, qx + 2, qy + 1, qkS - 4)) {
+          ctx.fillStyle = (ITEM_COLORS as Record<string, string>)[item] ?? "#3a5a6a";
+          roundRect(ctx, qx + 4, qy + 4, qkS - 8, qkS - 11, 3); ctx.fill();
+        }
+        ctx.restore();
       }
-      ctx.fillStyle = owned ? "#cfe3ef" : "#41606f";
+      ctx.fillStyle = owned ? "#ffe9a0" : "#41606f";
       ctx.font = "bold 9px system-ui"; ctx.textAlign = "left";
       ctx.fillText(`${i + 1}`, qx + 3, qy + qkS - 3);
       const idx = i;
@@ -2852,10 +2884,10 @@ export class Game {
     const gx = rightEdge - iS;
     const sx2 = gx - iGap - iS;
     const bx = sx2 - iGap - iS;
-    this.drawHudIcon(ctx, bx, iy, iS, "backpack", this.panelOpen && this.panelTab === "inv");
+    this.drawHudIcon(ctx, bx, iy, iS, "backpack", this.invOpen);
     this.drawHudIcon(ctx, sx2, iy, iS, "body", this.panelOpen && this.panelTab === "equip");
     this.drawHudIcon(ctx, gx, iy, iS, "gear", this.panelOpen && this.panelTab === "skills");
-    this.hudHits.push({ x: bx, y: iy, w: iS, h: iS, act: () => this.togglePanel("inv") });
+    this.hudHits.push({ x: bx, y: iy, w: iS, h: iS, act: () => { this.invOpen = !this.invOpen; } });
     this.hudHits.push({ x: sx2, y: iy, w: iS, h: iS, act: () => this.togglePanel("equip") });
     this.hudHits.push({ x: gx, y: iy, w: iS, h: iS, act: () => this.togglePanel("skills") });
   }
