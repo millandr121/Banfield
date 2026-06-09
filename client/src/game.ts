@@ -283,11 +283,18 @@ export class Game {
   // Transient melee-swing animation per player id (set from a "melee" fx or local Space release).
   private attackAnim = new Map<string, { at: number; stance: "high" | "low" }>();
 
-  // Side panel (OSRS-style right panel)
+  // Side panel (OSRS-style right panel) — now a click-to-open drawer.
   private panelTab: "inv" | "equip" | "skills" | "log" | "map" | "help" = "inv";
+  private panelOpen = false;          // drawer hidden until a corner icon opens it
   private panelLastUpdate = 0;
   private minimapCtx: CanvasRenderingContext2D | null = null;
   static readonly PANEL_W = 200; // px — must match #side-panel width in CSS
+
+  // Reserve the drawer's width on the right only while it's open.
+  private get panelW() { return this.panelOpen ? Game.PANEL_W : 0; }
+
+  // Canvas HUD hit-regions, rebuilt each frame (corner icons + quick-keys).
+  private hudHits: Array<{ x: number; y: number; w: number; h: number; act: () => void }> = [];
 
   // Login-screen hooks (main.ts wires these before the game proper starts).
   onNameStatus?: (name: string, taken: boolean) => void;
@@ -302,6 +309,47 @@ export class Game {
     window.addEventListener("resize", () => this.resize());
     window.addEventListener("keydown", (e) => this.onKey(e, true));
     window.addEventListener("keyup", (e) => this.onKey(e, false));
+    this.canvas.addEventListener("mousedown", (e) => this.onCanvasMouseDown(e));
+  }
+
+  // HUD clicks: corner icons (bottom-right), quick-key belt, and the top-right
+  // compass. Returns true if the click hit a HUD control (so it isn't treated
+  // as a world click). Only the left button drives the HUD.
+  private onCanvasMouseDown(e: MouseEvent) {
+    if (!this.started || e.button !== 0) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    // Compass (top-right circle) — click anywhere inside it opens the full map.
+    const c = this.compassHit;
+    if (c && Math.hypot(mx - c.cx, my - c.cy) <= c.r) {
+      this.mapOpen = !this.mapOpen;
+      e.preventDefault();
+      return;
+    }
+    for (const h of this.hudHits) {
+      if (mx >= h.x && mx <= h.x + h.w && my >= h.y && my <= h.y + h.h) {
+        h.act();
+        e.preventDefault();
+        return;
+      }
+    }
+  }
+
+  private compassHit: { cx: number; cy: number; r: number } | null = null;
+
+  // Open the drawer at a given tab; clicking the active tab's icon closes it.
+  private togglePanel(tab: typeof this.panelTab) {
+    const panel = document.getElementById("side-panel")!;
+    if (this.panelOpen && this.panelTab === tab) {
+      this.panelOpen = false;
+      panel.classList.add("hidden");
+      return;
+    }
+    this.panelOpen = true;
+    this.panelTab = tab;
+    panel.classList.remove("hidden");
+    document.querySelectorAll(".ptab").forEach((b) => b.classList.remove("active"));
+    document.getElementById(`ptab-${tab}`)?.classList.add("active");
   }
 
   // Open the socket early so the login screen can check name availability
@@ -323,9 +371,8 @@ export class Game {
     if (this.started) return; // a retry after a denied sign-in — loop already runs
     this.started = true;
 
-    // Show the right panel and wire up tab buttons.
-    const panel = document.getElementById("side-panel")!;
-    panel.classList.remove("hidden");
+    // The right panel is now a click-to-open drawer (corner icons toggle it),
+    // so it starts hidden. Wire up its tab buttons regardless.
     const minimapEl = document.getElementById("minimap-canvas") as HTMLCanvasElement;
     this.minimapCtx = minimapEl.getContext("2d")!;
     for (const tab of ["inv", "equip", "skills", "log", "map", "help"] as const) {
@@ -656,7 +703,7 @@ export class Game {
     if (me) {
       // Centre player in the visible area (left of the right panel), accounting
       // for the zoom so the camera frames the same world point however far in.
-      const visW = (this.canvas.width - Game.PANEL_W) / z;
+      const visW = (this.canvas.width - this.panelW) / z;
       const visH = this.canvas.height / z;
       this.cam.x += (me.x * TILE_SIZE - visW / 2 - this.cam.x) * 0.15;
       this.cam.y += (me.y * TILE_SIZE - visH / 2 - this.cam.y) * 0.15;
@@ -695,6 +742,7 @@ export class Game {
     // === Screen pass: HUD & modals at 1:1 (unscaled) ===
 
     this.drawHud(this.snap, me);
+    this.drawCornerHud(me);
     this.updateSidePanel(me);
     if (this.craftOpen) this.drawCraftPanel(me);
     if (this.shopId) this.drawShopPanel(me);
@@ -2322,24 +2370,20 @@ export class Game {
     // Always restore globalAlpha before drawing UI elements.
     ctx.globalAlpha = 1;
 
-    // HP / stamina bar floating above the head (oblique-friendly, not a ring).
+    // We DON'T broadcast everyone's HP to the world. Your own HP lives in the
+    // hearts HUD; others' bodies stay clean — UNLESS someone is near death
+    // (<10%), when a red bar flashes above them so teammates know to help and
+    // foes know they're nearly down.
     const frac = Math.max(0, Math.min(1, p.hp / p.maxHp));
-    const barW = TILE_SIZE * 0.9, barH = 3;
-    const barX = sx - barW / 2, barY = sy - TILE_SIZE * 0.95;
-    if (frac < 1 || isMe) {
+    const critical = frac < 0.10 && !p.dead;
+    if (critical && !isMe) {
+      const barW = TILE_SIZE * 0.9, barH = 3;
+      const barX = sx - barW / 2, barY = sy - TILE_SIZE * 0.95;
+      const flash = 0.45 + 0.55 * Math.abs(Math.sin(performance.now() / 150));
       ctx.fillStyle = "rgba(0,0,0,0.45)";
       ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
-      ctx.fillStyle = hpColor(frac);
+      ctx.fillStyle = `rgba(${(229 * flash) | 0},30,34,1)`;
       ctx.fillRect(barX, barY, barW * frac, barH);
-    }
-    if (isMe) {
-      const sfrac = Math.max(0, Math.min(1, p.stamina / p.maxStamina));
-      if (sfrac < 1) {
-        ctx.fillStyle = "rgba(0,0,0,0.4)";
-        ctx.fillRect(barX - 1, barY + barH + 1, barW + 2, 2 + 2);
-        ctx.fillStyle = "#42c0ff";
-        ctx.fillRect(barX, barY + barH + 2, barW * sfrac, 2);
-      }
     }
     ctx.globalAlpha = 1;
 
@@ -2409,6 +2453,7 @@ export class Game {
 
   // ─── Side panel (OSRS-style right HUD) ─────────────────────────────────────
   private updateSidePanel(me?: PlayerState) {
+    if (!this.panelOpen) return; // drawer closed — nothing to render
     const now = performance.now();
     if (now - this.panelLastUpdate < 120) return; // cap at ~8fps for HTML writes
     this.panelLastUpdate = now;
@@ -2705,6 +2750,233 @@ export class Game {
     hud.innerHTML =
       `<b>${this.regionName}</b> · <b>Tide:</b> ${snap.phase} (${tidePct}%)${event}${sleepStr}${teamStr}<br />` +
       `<b>Here:</b> ${snap.players.length} players`;
+  }
+
+  // ─── Canvas corner HUD ─────────────────────────────────────────────────────
+  // Hearts + stamina + equipped/quick-keys bottom-left, clickable backpack /
+  // body / gear bottom-right, and a circular compass-minimap top-right.
+  private drawCornerHud(me?: PlayerState) {
+    this.hudHits = [];
+    this.compassHit = null;
+    if (!me) return;
+    const ctx = this.ctx;
+    const W = this.canvas.width, H = this.canvas.height;
+    const pad = 16;
+    const now = performance.now();
+
+    // ── Bottom-left: hearts, stamina, equipped item + quick-keys ──────────────
+    const beltH = 46;
+    const beltTop = H - pad - beltH;
+
+    // Equipped item slot.
+    const slotS = beltH;
+    this.drawSlotBox(ctx, pad, beltTop, slotS, slotS);
+    const eq = me.equipped;
+    if (eq) {
+      ctx.fillStyle = (ITEM_COLORS as Record<string, string>)[eq] ?? "#3a5a6a";
+      roundRect(ctx, pad + 8, beltTop + 8, slotS - 16, slotS - 22, 4); ctx.fill();
+      ctx.fillStyle = "#eaf2f8"; ctx.font = "8px system-ui"; ctx.textAlign = "center";
+      const lbl = ITEM_LABEL[eq] ?? eq;
+      ctx.fillText(lbl.length > 9 ? lbl.slice(0, 8) + "…" : lbl, pad + slotS / 2, beltTop + slotS - 5);
+      const ammoId = WEAPON_AMMO[eq];
+      if (ammoId) {
+        const n = me.inventory[ammoId] ?? 0;
+        ctx.fillStyle = n > 0 ? "#9fe6c0" : "#e57373";
+        ctx.font = "bold 9px system-ui"; ctx.textAlign = "right";
+        ctx.fillText(`${n}`, pad + slotS - 5, beltTop + 12);
+      }
+    } else {
+      ctx.fillStyle = "#3a5a6a"; ctx.font = "9px system-ui"; ctx.textAlign = "center";
+      ctx.fillText("fists", pad + slotS / 2, beltTop + slotS / 2 + 3);
+    }
+    this.hudHits.push({ x: pad, y: beltTop, w: slotS, h: slotS, act: () => this.togglePanel("inv") });
+
+    // Quick-key belt (weapons 1–6) to the right of the equipped slot.
+    const qkS = 28, qkGap = 4;
+    let qx = pad + slotS + 10;
+    const qy = beltTop + (slotS - qkS);
+    WEAPON_ORDER.forEach((item, i) => {
+      const owned = (me.inventory[item] ?? 0) > 0;
+      const on = me.equipped === item;
+      this.drawSlotBox(ctx, qx, qy, qkS, qkS, on);
+      if (owned) {
+        ctx.fillStyle = (ITEM_COLORS as Record<string, string>)[item] ?? "#3a5a6a";
+        roundRect(ctx, qx + 4, qy + 4, qkS - 8, qkS - 11, 3); ctx.fill();
+      }
+      ctx.fillStyle = owned ? "#cfe3ef" : "#41606f";
+      ctx.font = "bold 9px system-ui"; ctx.textAlign = "left";
+      ctx.fillText(`${i + 1}`, qx + 3, qy + qkS - 3);
+      const idx = i;
+      this.hudHits.push({ x: qx, y: qy, w: qkS, h: qkS, act: () => this.selectWeapon(idx) });
+      qx += qkS + qkGap;
+    });
+
+    // Stamina bar above the belt.
+    const barW = slotS + 10 + WEAPON_ORDER.length * (qkS + qkGap) - qkGap;
+    const sfrac = Math.max(0, Math.min(1, me.stamina / me.maxStamina));
+    const staH = 8, staY = beltTop - 12 - staH;
+    ctx.fillStyle = "rgba(7,19,28,0.7)"; roundRect(ctx, pad, staY, barW, staH, 4); ctx.fill();
+    ctx.fillStyle = "#1b6e3a"; // base
+    const grad = ctx.createLinearGradient(pad, 0, pad + barW, 0);
+    grad.addColorStop(0, "#e65100"); grad.addColorStop(1, "#f9a825");
+    ctx.fillStyle = grad;
+    roundRect(ctx, pad, staY, Math.max(2, barW * sfrac), staH, 4); ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 1;
+    roundRect(ctx, pad, staY, barW, staH, 4); ctx.stroke();
+
+    // Hearts above the stamina bar.
+    const heartS = 18, heartGap = 2;
+    const maxHearts = Math.max(1, Math.min(12, Math.round(me.maxHp / 20)));
+    const hpPerHeart = me.maxHp / maxHearts;
+    const heartY = staY - 6 - heartS;
+    const critical = me.hp / me.maxHp < 0.10;
+    const pulse = critical ? 0.55 + 0.45 * Math.abs(Math.sin(now / 180)) : 1;
+    for (let i = 0; i < maxHearts; i++) {
+      const hx = pad + i * (heartS + heartGap);
+      const frac = Math.max(0, Math.min(1, (me.hp - i * hpPerHeart) / hpPerHeart));
+      const state = frac >= 0.75 ? 2 : frac >= 0.25 ? 1 : 0;
+      this.drawHeart(ctx, hx, heartY, heartS, state, critical ? pulse : 1);
+    }
+
+    // ── Top-right: circular compass / minimap ─────────────────────────────────
+    const R = 52;
+    const cx = W - pad - R - this.panelW;
+    const cy = pad + R;
+    this.drawCompass(ctx, cx, cy, R, me);
+    this.compassHit = { cx, cy, r: R };
+
+    // ── Bottom-right: backpack / body / gear icons ────────────────────────────
+    const iS = 50, iGap = 8;
+    const rightEdge = W - pad - this.panelW;
+    const iy = H - pad - iS;
+    const gx = rightEdge - iS;
+    const sx2 = gx - iGap - iS;
+    const bx = sx2 - iGap - iS;
+    this.drawHudIcon(ctx, bx, iy, iS, "backpack", this.panelOpen && this.panelTab === "inv");
+    this.drawHudIcon(ctx, sx2, iy, iS, "body", this.panelOpen && this.panelTab === "equip");
+    this.drawHudIcon(ctx, gx, iy, iS, "gear", this.panelOpen && this.panelTab === "skills");
+    this.hudHits.push({ x: bx, y: iy, w: iS, h: iS, act: () => this.togglePanel("inv") });
+    this.hudHits.push({ x: sx2, y: iy, w: iS, h: iS, act: () => this.togglePanel("equip") });
+    this.hudHits.push({ x: gx, y: iy, w: iS, h: iS, act: () => this.togglePanel("skills") });
+  }
+
+  // A rounded HUD cell with subtle inner shading; gold ring when active.
+  private drawSlotBox(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, active = false) {
+    ctx.fillStyle = "rgba(7,19,28,0.78)";
+    roundRect(ctx, x, y, w, h, 6); ctx.fill();
+    ctx.strokeStyle = active ? "#ffd54f" : "rgba(120,180,220,0.25)";
+    ctx.lineWidth = active ? 2 : 1;
+    roundRect(ctx, x, y, w, h, 6); ctx.stroke();
+  }
+
+  // Pixel-art-ish heart: state 0 empty, 1 half, 2 full. `bright` pulses it red.
+  private drawHeart(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, state: number, bright: number) {
+    const r = s * 0.27;
+    const cxL = x + r, cxR = x + s - r, topY = y + r * 0.9;
+    const path = () => {
+      ctx.beginPath();
+      ctx.arc(cxL, topY, r, Math.PI, 0);
+      ctx.arc(cxR, topY, r, Math.PI, 0);
+      ctx.lineTo(x + s / 2, y + s);
+      ctx.closePath();
+    };
+    // Empty socket.
+    path(); ctx.fillStyle = "rgba(20,8,8,0.55)"; ctx.fill();
+    if (state > 0) {
+      ctx.save();
+      if (state === 1) { ctx.beginPath(); ctx.rect(x, y, s / 2, s + 2); ctx.clip(); }
+      path();
+      const red = state === 2 ? `rgba(${(229 * bright) | 0},${(40 * bright) | 0},${(45 * bright) | 0},1)` : "#e53935";
+      ctx.fillStyle = red; ctx.fill();
+      // top-left glint
+      ctx.fillStyle = "rgba(255,180,180,0.7)";
+      ctx.beginPath(); ctx.arc(cxL, topY - r * 0.2, r * 0.32, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    path(); ctx.strokeStyle = "rgba(10,4,4,0.85)"; ctx.lineWidth = 1.4; ctx.stroke();
+  }
+
+  // Bottom-right clickable icon button (backpack / body silhouette / gear).
+  private drawHudIcon(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, kind: "backpack" | "body" | "gear", active: boolean) {
+    ctx.fillStyle = active ? "rgba(30,80,120,0.85)" : "rgba(7,19,28,0.8)";
+    roundRect(ctx, x, y, s, s, 9); ctx.fill();
+    ctx.strokeStyle = active ? "#ffd54f" : "rgba(120,180,220,0.3)";
+    ctx.lineWidth = active ? 2 : 1;
+    roundRect(ctx, x, y, s, s, 9); ctx.stroke();
+    const cx = x + s / 2, cy = y + s / 2;
+    ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    const accent = active ? "#ffe9a0" : "#bcd6ea";
+    if (kind === "backpack") {
+      ctx.fillStyle = "#7a5a3a"; roundRect(ctx, cx - 11, cy - 7, 22, 19, 5); ctx.fill();
+      ctx.fillStyle = "#9a744c"; roundRect(ctx, cx - 11, cy - 12, 22, 9, 5); ctx.fill(); // flap
+      ctx.strokeStyle = "#5a3f28"; ctx.beginPath(); ctx.moveTo(cx, cy - 3); ctx.lineTo(cx, cy + 9); ctx.stroke();
+      ctx.fillStyle = "#caa46e"; roundRect(ctx, cx - 4, cy + 1, 8, 6, 2); ctx.fill(); // pocket
+    } else if (kind === "body") {
+      ctx.fillStyle = accent;
+      ctx.beginPath(); ctx.arc(cx, cy - 7, 5, 0, Math.PI * 2); ctx.fill();   // head
+      ctx.beginPath();
+      ctx.moveTo(cx - 9, cy + 12); ctx.quadraticCurveTo(cx - 9, cy - 1, cx, cy - 1);
+      ctx.quadraticCurveTo(cx + 9, cy - 1, cx + 9, cy + 12); ctx.closePath(); ctx.fill(); // torso
+    } else {
+      // Gear / cog.
+      ctx.fillStyle = accent;
+      const teeth = 8, rO = 11, rI = 7;
+      ctx.beginPath();
+      for (let i = 0; i < teeth * 2; i++) {
+        const a = (i / (teeth * 2)) * Math.PI * 2;
+        const rr = i % 2 === 0 ? rO : rO - 3;
+        const px = cx + Math.cos(a) * rr, py = cy + Math.sin(a) * rr;
+        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = active ? "rgba(30,80,120,0.95)" : "rgba(7,19,28,0.95)";
+      ctx.beginPath(); ctx.arc(cx, cy, rI - 3, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // The circular compass-minimap (top-right). Zoomed view centred on the player.
+  private drawCompass(ctx: CanvasRenderingContext2D, cx: number, cy: number, R: number, me: PlayerState) {
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.clip();
+    ctx.fillStyle = "#0a1c29"; ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
+    const ov = this.overview;
+    if (ov) {
+      const zoomCells = 30;                 // overview cells spanning the diameter
+      const cell = (R * 2) / zoomCells;
+      const pcx = me.x / ov.scale, pcy = me.y / ov.scale;
+      const half = zoomCells / 2 + 1;
+      const x0 = Math.max(0, Math.floor(pcx - half)), x1 = Math.min(ov.width - 1, Math.ceil(pcx + half));
+      const y0 = Math.max(0, Math.floor(pcy - half)), y1 = Math.min(ov.height - 1, Math.ceil(pcy + half));
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const tile = ov.tiles[y * ov.width + x] as Tile;
+          ctx.fillStyle = (TILE_COLORS as Record<number, string>)[tile] ?? "#1c5f86";
+          const sxp = cx + (x - pcx) * cell, syp = cy + (y - pcy) * cell;
+          ctx.fillRect(sxp, syp, cell + 1, cell + 1);
+        }
+      }
+    }
+    ctx.restore();
+
+    // Player marker — bright dot + a facing wedge.
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(me.dir) * 9, cy + Math.sin(me.dir) * 9);
+    ctx.lineTo(cx + Math.cos(me.dir + 2.5) * 4, cy + Math.sin(me.dir + 2.5) * 4);
+    ctx.lineTo(cx + Math.cos(me.dir - 2.5) * 4, cy + Math.sin(me.dir - 2.5) * 4);
+    ctx.closePath(); ctx.fill();
+
+    // Bezel + N tick.
+    ctx.strokeStyle = "rgba(10,20,28,0.9)"; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = "rgba(150,200,235,0.55)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = "#ffd54f"; ctx.font = "bold 11px system-ui"; ctx.textAlign = "center";
+    ctx.fillText("N", cx, cy - R + 12);
+    ctx.fillStyle = "rgba(180,212,236,0.7)"; ctx.font = "8px system-ui";
+    ctx.fillText("map", cx, cy + R - 5);
   }
 
   private renderLog() {
@@ -4117,12 +4389,6 @@ function drawWolf(ctx: CanvasRenderingContext2D, x: number, y: number) {
   ctx.lineCap = "round";
   ctx.stroke();
   ctx.lineCap = "butt";
-}
-
-function hpColor(frac: number): string {
-  const r = Math.round(235 * (1 - frac));
-  const g = Math.round(190 * frac + 20);
-  return `rgb(${r},${g},60)`;
 }
 
 function buildingLabel(kind: BuildingState["kind"]): string {
