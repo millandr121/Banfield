@@ -39,7 +39,6 @@ import {
 import { LogbookEntry, LeaderboardData } from "../../shared/protocol";
 import { SPECIES, resourceSpeciesKey } from "../../shared/species";
 import { Net } from "./net";
-import { drawAvatar } from "./avatar";
 import { drawCharacterPixel, type CharOpts as PixelCharOpts } from "./pixelchar";
 import { drawItemIcon } from "./itemicon";
 
@@ -284,15 +283,9 @@ export class Game {
   // Transient melee-swing animation per player id (set from a "melee" fx or local Space release).
   private attackAnim = new Map<string, { at: number; stance: "high" | "low" }>();
 
-  // Side panel (OSRS-style right panel) — now a click-to-open drawer.
-  private panelTab: "inv" | "equip" | "skills" | "log" | "map" | "help" = "inv";
+  // Side panel (OSRS-style right panel) — now a click-to-open canvas drawer.
+  private panelTab: "equip" | "skills" = "equip";
   private panelOpen = false;          // drawer hidden until a corner icon opens it
-  private panelLastUpdate = 0;
-  private minimapCtx: CanvasRenderingContext2D | null = null;
-  static readonly PANEL_W = 200; // px — must match #side-panel width in CSS
-
-  // Reserve the drawer's width on the right only while it's open.
-  private get panelW() { return this.panelOpen ? Game.PANEL_W : 0; }
 
   // Canvas HUD hit-regions, rebuilt each frame (corner icons + quick-keys).
   private hudHits: Array<{ x: number; y: number; w: number; h: number; act: () => void }> = [];
@@ -361,17 +354,12 @@ export class Game {
 
   // Open the drawer at a given tab; clicking the active tab's icon closes it.
   private togglePanel(tab: typeof this.panelTab) {
-    const panel = document.getElementById("side-panel")!;
     if (this.panelOpen && this.panelTab === tab) {
       this.panelOpen = false;
-      panel.classList.add("hidden");
-      return;
+    } else {
+      this.panelOpen = true;
+      this.panelTab = tab;
     }
-    this.panelOpen = true;
-    this.panelTab = tab;
-    panel.classList.remove("hidden");
-    document.querySelectorAll(".ptab").forEach((b) => b.classList.remove("active"));
-    document.getElementById(`ptab-${tab}`)?.classList.add("active");
   }
 
   // Open the socket early so the login screen can check name availability
@@ -392,39 +380,6 @@ export class Game {
     this.net.send({ t: "join", name, appearance, secret, register, email });
     if (this.started) return; // a retry after a denied sign-in — loop already runs
     this.started = true;
-
-    // The right panel is now a click-to-open drawer (corner icons toggle it),
-    // so it starts hidden. Wire up its tab buttons regardless.
-    const minimapEl = document.getElementById("minimap-canvas") as HTMLCanvasElement;
-    this.minimapCtx = minimapEl.getContext("2d")!;
-    for (const tab of ["inv", "equip", "skills", "log", "map", "help"] as const) {
-      document.getElementById(`ptab-${tab}`)?.addEventListener("click", () => {
-        this.panelTab = tab;
-        document.querySelectorAll(".ptab").forEach((b) => b.classList.remove("active"));
-        document.getElementById(`ptab-${tab}`)?.classList.add("active");
-      });
-    }
-    // Mode switch buttons (combat / research / profession).
-    for (const mode of ["combat", "research", "profession"] as const) {
-      document.getElementById(`mode-${mode}`)?.addEventListener("click", () => this.setMode(mode));
-    }
-
-    // Click delegation for inventory / equip cells -> item context menu.
-    document.getElementById("panel-content")?.addEventListener("click", (e) => {
-      const cell = (e.target as HTMLElement).closest("[data-item]") as HTMLElement | null;
-      if (!cell) return;
-      const item = cell.dataset.item as ItemId | undefined;
-      const slot = cell.dataset.slot; // present on equip paper-doll hand slot
-      if (slot === "hand") { this.net.send({ t: "equip", item: null }); this.closeItemMenu(); return; }
-      if (item) this.openItemMenu(item, e.clientX, e.clientY);
-    });
-    // Any outside click / Escape closes the item menu.
-    document.addEventListener("click", (e) => {
-      const m = document.getElementById("item-menu");
-      if (m && !m.classList.contains("hidden") &&
-          !m.contains(e.target as Node) &&
-          !(e.target as HTMLElement).closest("[data-item]")) this.closeItemMenu();
-    });
 
     requestAnimationFrame(() => this.frame());
 
@@ -723,9 +678,9 @@ export class Game {
     const me = this.snap.players.find((p) => p.id === this.myId);
     const z = this.zoom;
     if (me) {
-      // Centre player in the visible area (left of the right panel), accounting
-      // for the zoom so the camera frames the same world point however far in.
-      const visW = (this.canvas.width - this.panelW) / z;
+      // Centre player in the visible area, accounting for the zoom so the camera
+      // frames the same world point however far in.
+      const visW = this.canvas.width / z;
       const visH = this.canvas.height / z;
       this.cam.x += (me.x * TILE_SIZE - visW / 2 - this.cam.x) * 0.15;
       this.cam.y += (me.y * TILE_SIZE - visH / 2 - this.cam.y) * 0.15;
@@ -765,7 +720,8 @@ export class Game {
 
     this.drawHud(this.snap, me);
     this.drawCornerHud(me);
-    this.updateSidePanel(me);
+    if (this.panelOpen && this.panelTab === "equip") this.drawEquipPanel(me);
+    if (this.panelOpen && this.panelTab === "skills") this.drawSkillsPanel(me);
     if (this.craftOpen) this.drawCraftPanel(me);
     if (this.shopId) this.drawShopPanel(me);
     if (this.invOpen) this.drawInventoryPanel(me);
@@ -2475,294 +2431,209 @@ export class Game {
     }
   }
 
-  // ─── Side panel (OSRS-style right HUD) ─────────────────────────────────────
-  private updateSidePanel(me?: PlayerState) {
-    if (!this.panelOpen) return; // drawer closed — nothing to render
-    const now = performance.now();
-    if (now - this.panelLastUpdate < 120) return; // cap at ~8fps for HTML writes
-    this.panelLastUpdate = now;
+  // ─── Canvas equip panel ────────────────────────────────────────────────────
+  private drawEquipPanel(me?: PlayerState) {
+    const ctx = this.ctx;
+    const W = this.canvas.width, H = this.canvas.height;
+    const pw = 220, ph = H;
+    const px = W - pw;
+    const pad = 12;
 
-    this.renderPanelStats(me);
+    // Background
+    ctx.fillStyle = "rgba(6,14,22,0.96)";
+    ctx.fillRect(px, 0, pw, ph);
+    ctx.strokeStyle = "#1d4a66";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, ph); ctx.stroke();
 
-    const content = document.getElementById("panel-content")!;
-    const mmCanvas = document.getElementById("minimap-canvas")!;
-    if (this.panelTab === "map") {
-      content.innerHTML = "";
-      mmCanvas.classList.remove("hidden");
-      this.drawMinimapPanel(me);
-    } else {
-      mmCanvas.classList.add("hidden");
-      if (this.panelTab === "inv")         content.innerHTML = this.panelInvHTML(me);
-      else if (this.panelTab === "equip") {
-        content.innerHTML = this.panelEquipHTML(me);
-        // Paint the paper-doll figure into the freshly-rendered canvas.
-        const dc = document.getElementById("doll-canvas") as HTMLCanvasElement | null;
-        if (dc && me) drawAvatar(dc.getContext("2d")!, me.appearance, dc.width, dc.height);
-      }
-      else if (this.panelTab === "skills") content.innerHTML = this.panelSkillsHTML(me);
-      else if (this.panelTab === "log")    content.innerHTML = this.panelLogbookHTML();
-      else if (this.panelTab === "help")   content.innerHTML = this.panelHelpHTML();
-    }
-  }
+    // Title + close
+    ctx.fillStyle = "#ffd54f";
+    ctx.font = "bold 14px system-ui";
+    ctx.textAlign = "left";
+    ctx.fillText("EQUIPMENT", px + pad, 28);
+    ctx.fillStyle = "#4a7a9b";
+    ctx.font = "bold 16px system-ui";
+    ctx.textAlign = "right";
+    ctx.fillText("×", W - pad, 28);
+    this.hudHits.push({ x: W - 28, y: 8, w: 20, h: 22, act: () => { this.panelOpen = false; } });
 
-  private renderPanelStats(me?: PlayerState) {
-    if (!me || !this.snap) return;
-    const hpPct  = Math.min(100, Math.round(me.hp / me.maxHp * 100));
-    const stPct  = Math.min(100, Math.round(me.stamina / me.maxStamina * 100));
-    const hnPct  = Math.min(100, Math.round(me.hunger / me.maxHunger * 100));
-    const hungerLow = hnPct < 25;
-    const event = this.snap.event === "tsunami"
-      ? `<span style="color:#e57373">⚠ TSUNAMI</span>`
-      : this.snap.event === "king"
-        ? `<span style="color:#ffb74d">⚠ King tide</span>`
-        : `${this.snap.phase}`;
-    const eq = me.equipped;
-    let weapLine = "";
-    if (eq) {
-      const ammoId = WEAPON_AMMO[eq];
-      const ammoStr = ammoId ? ` <span style="color:${(me.inventory[ammoId]??0)>0?"#9fe6c0":"#e57373"}">[${me.inventory[ammoId]??0}]</span>` : "";
-      weapLine = `<div class="panel-info"><span style="color:#ffd98a">${ITEM_LABEL[eq]}</span>${ammoStr}</div>`;
-    }
-    const titlesStr = me.titles?.length ? `<div style="color:#ce93d8;font-size:10px">${me.titles.join(" · ")}</div>` : "";
-    // Highlight the active mode button + show combat stance.
-    for (const m of ["combat", "research", "profession"] as const) {
-      document.getElementById(`mode-${m}`)?.classList.toggle("active", me.mode === m);
-    }
-    let modeLine = "";
-    if (me.mode === "combat") {
-      const st = me.stance === "low" ? "LOW · kick" : "HIGH · punch";
-      modeLine = `<div class="panel-info" style="color:#ff9d6b;font-size:10px">Stance: ${st} (Alt) &nbsp;·&nbsp; / grab · B block</div>`;
-    } else if (me.mode === "research") {
-      modeLine = `<div class="panel-info" style="color:#7fd0ff;font-size:10px">Research · R scan · X inspect</div>`;
-    } else {
-      modeLine = `<div class="panel-info" style="color:#9fe6c0;font-size:10px">Profession · E use tool · C craft</div>`;
-    }
-    document.getElementById("panel-stats")!.innerHTML = `
-      <div class="stat-row"><span class="stat-label">HP</span><div class="stat-bar"><div class="stat-fill hp-fill" style="width:${hpPct}%"></div></div><span class="stat-val">${Math.round(me.hp)}</span></div>
-      <div class="stat-row"><span class="stat-label">Stam</span><div class="stat-bar"><div class="stat-fill stam-fill" style="width:${stPct}%"></div></div><span class="stat-val">${Math.round(me.stamina)}</span></div>
-      <div class="stat-row"><span class="stat-label" style="color:${hungerLow?"#e57373":"#8fb4c9"}">Food</span><div class="stat-bar"><div class="stat-fill hun-fill" style="width:${hnPct}%;background:${hungerLow?"#e53935":hnPct<50?"#f9a825":"#43a047"}"></div></div><span class="stat-val" style="color:${hungerLow?"#e57373":"inherit"}">${Math.round(me.hunger)}</span></div>
-      ${weapLine}
-      <div class="panel-info"><span style="color:#9fe6c0">$${me.money}</span> &nbsp;·&nbsp; <span style="color:#ffd54f">${me.banfielderPts}pts</span>${me.isMayor?' &nbsp;<span style="color:#ffd54f">★</span>':''}</div>
-      ${titlesStr}
-      ${modeLine}
-      <div class="panel-info" style="color:#6a9ab5;font-size:10px">Tide: ${event} &nbsp;·&nbsp; ${this.snap.players.length} here</div>
-    `;
-  }
-
-  private panelInvHTML(me?: PlayerState): string {
-    if (!me) return '<p class="panel-empty">Not joined yet.</p>';
-    const items = (ITEM_IDS as readonly ItemId[]).filter(id => (me.inventory[id] ?? 0) > 0);
-    if (!items.length) return '<p class="panel-empty">Bag empty — go gather!</p>';
-    const cells = items.map(id => {
-      const col = (ITEM_COLORS as Record<string, string>)[id] ?? "#3a5a6a";
-      const equipped = me.equipped === id;
-      return `<div class="inv-cell" data-item="${id}" title="${ITEM_LABEL[id]} — click for options">
-        <div class="inv-swatch" style="background:${col};${equipped ? "outline:2px solid #ffd54f;outline-offset:-2px;" : ""}"></div>
-        <div class="inv-qty">×${me.inventory[id]}</div>
-        <div class="inv-name">${ITEM_LABEL[id]}</div>
-      </div>`;
-    }).join("");
-    return `<div class="inv-grid">${cells}</div>
-      <div class="panel-info" style="font-size:10px;color:#5a7f96;margin-top:6px;">Click an item for options · ⚔ in hand has a yellow ring</div>`;
-  }
-
-  private panelEquipHTML(me?: PlayerState): string {
-    if (!me) return '<p class="panel-empty">Not joined yet.</p>';
+    if (!me) return;
     const worn = me.appearance?.worn ?? {};
-    const handLabel = me.mode === "combat" ? "Hand (weapon)" : me.mode === "research" ? "Hand (tool)" : "Hand (gear)";
 
-    const slotRow = (slot: WornSlot, label: string) => {
-      const itemId = worn[slot];
+    // Paper-doll slots
+    const slotW = pw - pad * 2, slotH = 42;
+    const slots: Array<[WornSlot, string]> = [
+      ["head", "Head"],
+      ["torso", "Torso"],
+      ["legs", "Legs"],
+      ["back", "Back"],
+    ];
+    const handLabel = me.mode === "combat" ? "Weapon" : me.mode === "research" ? "Tool" : "Gear";
+
+    let sy = 44;
+    for (const [slot, label] of slots) {
+      const itemId = worn[slot] as ItemId | undefined;
+      this.drawEquipSlotRow(ctx, px + pad, sy, slotW, slotH, label, itemId, me);
       if (itemId) {
-        const col = (ITEM_COLORS as Record<string, string>)[itemId] ?? "#7a6a4a";
-        return `<div class="slot-row">
-          <span class="slot-label">${label}</span>
-          <div class="slot-box filled" data-item="${itemId}" title="${ITEM_LABEL[itemId] ?? itemId} — click for options">
-            <span class="slot-swatch" style="background:${col}"></span>${ITEM_LABEL[itemId] ?? itemId}
-          </div></div>`;
+        const capturedId = itemId;
+        const cx = px + pad + slotW / 2, cy = sy + slotH / 2;
+        this.hudHits.push({ x: px + pad, y: sy, w: slotW, h: slotH, act: () => this.openItemMenu(capturedId, cx, cy) });
       }
-      return `<div class="slot-row">
-        <span class="slot-label">${label}</span>
-        <div class="slot-box empty">— empty</div></div>`;
-    };
+      sy += slotH + 4;
+    }
+    // Hand (equipped weapon/tool)
+    const handItem = me.equipped as ItemId | undefined;
+    this.drawEquipSlotRow(ctx, px + pad, sy, slotW, slotH, handLabel, handItem, me);
+    if (handItem) {
+      const capturedId = handItem;
+      const cx = px + pad + slotW / 2, cy = sy + slotH / 2;
+      this.hudHits.push({ x: px + pad, y: sy, w: slotW, h: slotH, act: () => this.openItemMenu(capturedId, cx, cy) });
+    }
+    sy += slotH + 10;
 
-    // Items in inventory that fit each slot (excluding current weapon/hand).
+    // Separator
+    ctx.strokeStyle = "#1d4a66"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(px + pad, sy); ctx.lineTo(W - pad, sy); ctx.stroke();
+    sy += 10;
+
+    // Wardrobe: wearable clothing in bag
     const CLOTHING_IDS: ItemId[] = [
       "clothShirt", "clothPants", "waxedJacket", "rainCoat", "woolSweater",
       "wetsuitTop", "wetsuitBottom", "snorkelMask", "divingTank",
     ] as ItemId[];
-    const RESEARCH_TOOLS: ItemId[] = ["binoculars", "butterflyNet", "listeningDevice", "fieldNotebook"] as ItemId[];
-    const PROF_TOOLS: ItemId[] = ["pickaxe", "fishingCage", "surveyFlag"] as ItemId[];
-
-    const availableClothing = CLOTHING_IDS.filter(id => (me.inventory[id] ?? 0) > 0);
-    const availableHand = (me.mode === "combat" ? (WEAPON_ORDER as ItemId[]) :
-      me.mode === "research" ? RESEARCH_TOOLS : PROF_TOOLS
-    ).filter(id => (me.inventory[id] ?? 0) > 0);
-
-    const wardrobeGrid = availableClothing.length
-      ? `<div style="font-size:10px;color:#7fd0c2;margin:6px 0 3px;font-weight:700">In your bag — click to wear/wield</div>
-         <div class="inv-grid">${availableClothing.map(id => {
-           const col = (ITEM_COLORS as Record<string, string>)[id] ?? "#7a6a4a";
-           const sl = SLOT_FOR_ITEM[id] as WornSlot;
-           const isOn = sl && worn[sl] === id;
-           return `<div class="inv-cell" data-item="${id}" title="${ITEM_LABEL[id]}">
-             <div class="inv-swatch" style="background:${col};${isOn?"outline:2px solid #ffd54f;outline-offset:-2px;":""}"></div>
-             <div class="inv-name">${ITEM_LABEL[id]}</div></div>`;
-         }).join("")}</div>` : "";
-
-    const handGrid = availableHand.length
-      ? `<div style="font-size:10px;color:#7fd0c2;margin:6px 0 3px;font-weight:700">Available ${me.mode === "combat" ? "weapons" : "tools"}</div>
-         <div class="inv-grid">${availableHand.map(id => {
-           const col = (ITEM_COLORS as Record<string, string>)[id] ?? "#3a5a6a";
-           const isOn = me.equipped === id;
-           return `<div class="inv-cell" data-item="${id}" title="${ITEM_LABEL[id]}">
-             <div class="inv-swatch" style="background:${col};${isOn?"outline:2px solid #ffd54f;outline-offset:-2px;":""}"></div>
-             <div class="inv-name">${ITEM_LABEL[id]}</div></div>`;
-         }).join("")}</div>` : `<div style="font-size:10px;color:#4a6b7c;margin-top:4px;">No ${me.mode==="combat"?"weapons":"tools"} in bag.</div>`;
-
-    return `
-      <div class="doll-wrap">
-        <canvas id="doll-canvas" width="92" height="150"></canvas>
-      </div>
-      ${slotRow("head", "Head")}
-      ${slotRow("torso", "Torso")}
-      ${slotRow("legs", "Legs")}
-      ${slotRow("back", "Back")}
-      ${slotRow("hand", handLabel)}
-      <div style="border-top:1px solid #1d4a66;margin:8px 0 6px"></div>
-      ${wardrobeGrid}
-      ${handGrid}
-      <div class="panel-info" style="font-size:10px;color:#5a7f96;margin-top:8px;">Click a slot or bag item for options · clothing from Seamstress</div>
-    `;
-  }
-
-  private panelSkillsHTML(me?: PlayerState): string {
-    if (!me) return '<p class="panel-empty">Not joined yet.</p>';
-    const rankStr = me.isMayor ? "★ Mayor" : me.rank > 0 ? `#${me.rank}` : "unranked";
-    const rows = SKILL_NAMES.map(sk => {
-      const xp = me.skills[sk], lv = skillLevel(xp);
-      const nextXp = (lv+1)*(lv+1), thisXp = lv*lv;
-      const pct = lv === 0 ? 0 : Math.round((xp-thisXp)/(nextXp-thisXp)*100);
-      return `<div class="skill-row">
-        <span class="skill-name">${sk}</span><span class="skill-lv">Lv ${lv}</span>
-        <div class="skill-bar"><div class="skill-fill" style="width:${Math.min(100,pct)}%"></div></div>
-      </div>`;
-    }).join("");
-    return `<div class="stats-header">
-      <div style="color:#ffd54f;font-size:12px">${rankStr}</div>
-      <div style="color:#9fe6c0;font-size:11px">${me.banfielderPts} Banfielder pts</div>
-    </div><div class="skill-list">${rows}</div>`;
-  }
-
-  private panelLogbookHTML(): string {
-    const total = Object.keys(SPECIES).length;
-    const byKey = new Map(this.logbook.map(e => [e.key, e]));
-    const groups: Array<[string, string]> = [
-      ["marine","Marine"], ["land","Land"], ["bird","Birds"],
-      ["plant","Plants"], ["tree","Trees"], ["mineral","Minerals"],
-    ];
-    let html = `<div class="log-header">${this.logbook.length} / ${total} species</div>`;
-    for (const [g, label] of groups) {
-      const keys = Object.keys(SPECIES).filter(k => SPECIES[k].group === g);
-      if (!keys.length) continue;
-      html += `<div class="log-group">${label}</div>`;
-      for (const k of keys) {
-        const e = byKey.get(k), info = SPECIES[k];
-        const col = e ? "#eafff7" : "rgba(150,175,180,0.38)";
-        html += `<div class="log-entry" style="color:${col}">• ${info.common}${e?` ×${e.count}`:""}</div>`;
-      }
-    }
-    return html;
-  }
-
-  private panelHelpHTML(): string {
-    return `<div class="controls-section">
-      <b>Move:</b> WASD &nbsp; <b>Run:</b> hold Shift<br/>
-      <b style="color:#ffe7a8">Mode:</b> Tab (or buttons up top)<br/>
-      <span style="color:#6a9ab5">⚔ Combat · 🔬 Research · 🛠 Pro</span><br/>
-      <span style="color:#6a9ab5">You can only fight in Combat mode.</span><br/>
-      <b>Items:</b> click in your bag for options<br/>
-      <span style="color:#6a9ab5">(wield · eat · drop)</span><br/><br/>
-      <b style="color:#ff9d6b">⚔ Combat:</b><br/>
-      <b>Stance:</b> Alt (high=punch / low=kick)<br/>
-      <b>Punch/Kick:</b> Space<br/>
-      <b>Grab:</b> /  &nbsp;then jink ← → to spin<br/>
-      <b>Throw:</b> / again (fling 'em!)<br/>
-      <b>Block / break grab:</b> B (high stance)<br/><br/>
-      <b style="color:#7fd0ff">🔬 Research:</b><br/>
-      <b>H</b> = hide near trees<br/>
-      <b>P</b> = play dead (bears ignore you!)<br/>
-      <b>V</b> = listen (ambient clues)<br/><br/>
-      <b>J</b> = jump (any mode)<br/><br/>
-      <b>Talk:</b> E or N near an NPC<br/>
-      <b>Chop/mine/pick:</b> E<br/>
-      <b>Drink (lake):</b> E &nbsp; <b>Eat:</b> Q<br/>
-      <b>Fish:</b> G &nbsp; <b>Sleep at fire:</b> Z<br/>
-      <b>Board vehicle:</b> F<br/>
-      <b>Bus (Anacla $3):</b> T<br/>
-      <b>Craft:</b> C &nbsp; <b>Shop:</b> B (non-combat)<br/>
-      <b>Map:</b> M<br/>
-      <b>H (combat/pro):</b> First aid &nbsp; <b>Scan:</b> R<br/>
-      <b>Inspect:</b> X &nbsp; <b>Leaderboard:</b> K<br/>
-      <b>Weapons 1-6:</b> switch slot<br/>
-      <b>Chat:</b> Enter<br/>
-      <span style="color:#6a9ab5">/ global &nbsp; // team<br/> ///Name private</span><br/><br/>
-      <b style="color:#ffb74d">Admin:</b><br/>
-      <span style="color:#6a9ab5">/give [n] [item] &nbsp; /give wings<br/>
-      /remove [item|wings]<br/>
-      /money [n] &nbsp; /tp [x] [y]<br/>
-      /god &nbsp; /heal &nbsp; /kill<br/>
-      /tide [tsunami|king|none]<br/>
-      /spawn [creature|car|boat]<br/>
-      /where</span>
-    </div>`;
-  }
-
-  // Cached base minimap image (just tiles, no player dot).
-  // Rebuilt only when the overview changes — never on every frame.
-  private minimapCache: OffscreenCanvas | null = null;
-  private minimapCacheKey = "";
-
-  private drawMinimapPanel(me?: PlayerState) {
-    const mctx = this.minimapCtx;
-    if (!mctx || !this.overview) return;
-    const mw = 184, mh = 150;
-    const ov = this.overview;
-
-    const cacheKey = `${ov.width}x${ov.height}`;
-    if (this.minimapCacheKey !== cacheKey || !this.minimapCache) {
-      this.minimapCacheKey = cacheKey;
-      const ofc = new OffscreenCanvas(mw, mh);
-      const octx = ofc.getContext("2d")!;
-      octx.fillStyle = "#0a1c29";
-      octx.fillRect(0, 0, mw, mh);
-      const sx = mw / ov.width, sy = mh / ov.height;
-      for (let y = 0; y < ov.height; y++) {
-        for (let x = 0; x < ov.width; x++) {
-          const tile = ov.tiles[y * ov.width + x] as Tile;
-          octx.fillStyle = (TILE_COLORS as Record<number, string>)[tile] ?? "#1c5f86";
-          octx.fillRect(Math.floor(x * sx), Math.floor(y * sy), Math.ceil(sx) + 1, Math.ceil(sy) + 1);
+    const available = CLOTHING_IDS.filter(id => (me.inventory[id] ?? 0) > 0);
+    if (available.length > 0) {
+      ctx.fillStyle = "#7fd0c2";
+      ctx.font = "bold 10px system-ui";
+      ctx.textAlign = "left";
+      ctx.fillText("WARDROBE", px + pad, sy + 10);
+      sy += 16;
+      const cellS = 44, cellGap = 4;
+      const cols = Math.floor((pw - pad * 2 + cellGap) / (cellS + cellGap));
+      available.forEach((id, i) => {
+        const col = i % cols, row = Math.floor(i / cols);
+        const cx2 = px + pad + col * (cellS + cellGap);
+        const cy2 = sy + row * (cellS + cellGap);
+        const isOn = (SLOT_FOR_ITEM[id] && worn[SLOT_FOR_ITEM[id] as WornSlot] === id);
+        this.drawSlotBox(ctx, cx2, cy2, cellS, cellS, !!isOn);
+        drawItemIcon(ctx, id, cx2 + 4, cy2 + 4, cellS - 8);
+        if (isOn) {
+          ctx.strokeStyle = "#ffd54f"; ctx.lineWidth = 2;
+          roundRect(ctx, cx2, cy2, cellS, cellS, 6); ctx.stroke();
         }
-      }
-      this.minimapCache = ofc;
+        const capturedId = id;
+        const midX = cx2 + cellS / 2, midY = cy2 + cellS / 2;
+        this.hudHits.push({ x: cx2, y: cy2, w: cellS, h: cellS, act: () => this.openItemMenu(capturedId, midX, midY) });
+      });
     }
 
-    mctx.drawImage(this.minimapCache, 0, 0);
-    if (me && this.map) {
-      const px = (me.x / this.map.width) * mw;
-      const py = (me.y / this.map.height) * mh;
-      mctx.fillStyle = "rgba(255,255,255,0.22)";
-      mctx.beginPath();
-      mctx.arc(px, py, 5, 0, Math.PI * 2);
-      mctx.fill();
-      mctx.fillStyle = "#fff";
-      mctx.beginPath();
-      mctx.arc(px, py, 2.5, 0, Math.PI * 2);
-      mctx.fill();
+    // Stats footer
+    const footY = H - 60;
+    ctx.strokeStyle = "#1d4a66"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(px + pad, footY); ctx.lineTo(W - pad, footY); ctx.stroke();
+    ctx.fillStyle = "#9fc8de"; ctx.font = "11px system-ui"; ctx.textAlign = "left";
+    ctx.fillText(`$${me.money}  ·  ${me.banfielderPts} pts`, px + pad, footY + 18);
+    if (me.titles?.length) {
+      ctx.fillStyle = "#ce93d8"; ctx.font = "10px system-ui";
+      ctx.fillText(me.titles.join(" · "), px + pad, footY + 32);
     }
-    mctx.strokeStyle = "#1d4a66";
-    mctx.lineWidth = 1;
-    mctx.strokeRect(0, 0, mw, mh);
+  }
+
+  private drawEquipSlotRow(
+    ctx: CanvasRenderingContext2D,
+    x: number, y: number, w: number, h: number,
+    label: string, itemId: ItemId | undefined, _me: PlayerState
+  ) {
+    const iconS = h - 8;
+    // Background
+    ctx.fillStyle = itemId ? "rgba(20,40,60,0.8)" : "rgba(10,20,30,0.6)";
+    roundRect(ctx, x, y, w, h, 6); ctx.fill();
+    ctx.strokeStyle = itemId ? "#ffd54f" : "rgba(100,160,200,0.2)";
+    ctx.lineWidth = itemId ? 1.5 : 1;
+    roundRect(ctx, x, y, w, h, 6); ctx.stroke();
+    // Label
+    ctx.fillStyle = "#6a9ab5"; ctx.font = "9px system-ui"; ctx.textAlign = "left";
+    ctx.fillText(label.toUpperCase(), x + 6, y + 11);
+    if (itemId) {
+      // Icon
+      if (!drawItemIcon(ctx, itemId, x + 4, y + (h - iconS) / 2, iconS)) {
+        ctx.fillStyle = (ITEM_COLORS as Record<string, string>)[itemId] ?? "#3a5a6a";
+        roundRect(ctx, x + 4, y + 4, iconS, iconS, 4); ctx.fill();
+      }
+      // Name
+      ctx.fillStyle = "#eaf2f8"; ctx.font = "bold 11px system-ui"; ctx.textAlign = "left";
+      const lbl = ITEM_LABEL[itemId] ?? itemId;
+      ctx.fillText(lbl, x + iconS + 10, y + h / 2 + 4);
+    } else {
+      ctx.fillStyle = "#2a4a60"; ctx.font = "italic 11px system-ui"; ctx.textAlign = "left";
+      ctx.fillText("— empty", x + 8, y + h / 2 + 4);
+    }
+  }
+
+  // ─── Canvas skills panel ───────────────────────────────────────────────────
+  private drawSkillsPanel(me?: PlayerState) {
+    const ctx = this.ctx;
+    const W = this.canvas.width, H = this.canvas.height;
+    const pw = 220, ph = H;
+    const px = W - pw;
+    const pad = 12;
+
+    // Background
+    ctx.fillStyle = "rgba(6,14,22,0.96)";
+    ctx.fillRect(px, 0, pw, ph);
+    ctx.strokeStyle = "#1d4a66";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, ph); ctx.stroke();
+
+    // Title + close
+    ctx.fillStyle = "#ffd54f";
+    ctx.font = "bold 14px system-ui";
+    ctx.textAlign = "left";
+    ctx.fillText("SKILLS", px + pad, 28);
+    ctx.fillStyle = "#4a7a9b";
+    ctx.font = "bold 16px system-ui";
+    ctx.textAlign = "right";
+    ctx.fillText("×", W - pad, 28);
+    this.hudHits.push({ x: W - 28, y: 8, w: 20, h: 22, act: () => { this.panelOpen = false; } });
+
+    if (!me) return;
+    const rankStr = me.isMayor ? "★ Mayor" : me.rank > 0 ? `#${me.rank}` : "unranked";
+
+    ctx.fillStyle = "#9fe6c0"; ctx.font = "12px system-ui"; ctx.textAlign = "left";
+    ctx.fillText(`${me.banfielderPts} pts  ·  ${rankStr}`, px + pad, 46);
+
+    // Separator
+    ctx.strokeStyle = "#1d4a66"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(px + pad, 54); ctx.lineTo(W - pad, 54); ctx.stroke();
+
+    // Skill rows
+    const barW = pw - pad * 2, rowH = 30;
+    let sy = 62;
+    for (const sk of SKILL_NAMES) {
+      const xp = me.skills[sk] ?? 0;
+      const lv = skillLevel(xp);
+      const nextXp = (lv + 1) * (lv + 1), thisXp = lv * lv;
+      const pct = lv === 0 ? 0 : Math.min(1, (xp - thisXp) / (nextXp - thisXp));
+
+      // Skill name
+      ctx.fillStyle = "#9fc2d6"; ctx.font = "11px system-ui"; ctx.textAlign = "left";
+      ctx.fillText(sk.charAt(0).toUpperCase() + sk.slice(1), px + pad, sy + 13);
+      // Level badge
+      ctx.fillStyle = "#ffd54f"; ctx.font = "bold 12px system-ui"; ctx.textAlign = "right";
+      ctx.fillText(`${lv}`, W - pad, sy + 13);
+      // XP bar
+      const barH = 5, barY = sy + 18;
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      roundRect(ctx, px + pad, barY, barW, barH, 3); ctx.fill();
+      if (pct > 0) {
+        const grad = ctx.createLinearGradient(px + pad, 0, px + pad + barW, 0);
+        grad.addColorStop(0, "#1565c0"); grad.addColorStop(1, "#42a5f5");
+        ctx.fillStyle = grad;
+        roundRect(ctx, px + pad, barY, Math.max(3, barW * pct), barH, 3); ctx.fill();
+      }
+      sy += rowH;
+      if (sy + rowH > H - 20) break; // don't overflow
+    }
   }
 
   private drawHud(snap: Snapshot, me?: PlayerState) {
@@ -2872,14 +2743,14 @@ export class Game {
 
     // ── Top-right: circular compass / minimap ─────────────────────────────────
     const R = 52;
-    const cx = W - pad - R - this.panelW;
+    const cx = W - pad - R;
     const cy = pad + R;
     this.drawCompass(ctx, cx, cy, R, me);
     this.compassHit = { cx, cy, r: R };
 
     // ── Bottom-right: backpack / body / gear icons ────────────────────────────
     const iS = 50, iGap = 8;
-    const rightEdge = W - pad - this.panelW;
+    const rightEdge = W - pad;
     const iy = H - pad - iS;
     const gx = rightEdge - iS;
     const sx2 = gx - iGap - iS;

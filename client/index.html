@@ -193,143 +193,6 @@
       }
       #chat-input::placeholder { color: #5a7f96; }
 
-      /* ── Right panel ── */
-      #side-panel {
-        position: fixed;
-        right: 0; top: 0; bottom: 0;
-        width: 210px;
-        background: linear-gradient(180deg, #081828 0%, #060f18 100%);
-        border-left: 1px solid #1a3d58;
-        display: flex;
-        flex-direction: column;
-        z-index: 6;
-        font-size: 12px;
-        color: #cfe3ef;
-        user-select: none;
-        box-shadow: -4px 0 24px rgba(0,0,0,0.4);
-      }
-      #mode-bar {
-        display: flex;
-        border-bottom: 1px solid #1a3d58;
-        flex-shrink: 0;
-        background: rgba(0,0,0,0.3);
-      }
-      .mbtn {
-        flex: 1; margin: 0; padding: 9px 2px;
-        font-size: 10px; font-weight: 800; letter-spacing: 0.4px; text-transform: uppercase;
-        background: transparent; color: #4a7a9b;
-        border: none; border-right: 1px solid #1a3d58;
-        cursor: pointer; width: auto; border-radius: 0;
-        transition: background 0.12s, color 0.12s;
-      }
-      .mbtn:last-child { border-right: none; }
-      .mbtn:hover { background: rgba(30,136,229,0.1); color: #cfe3ef; }
-      .mbtn.active {
-        background: rgba(30,136,229,0.15);
-        color: #ffe9a0;
-        box-shadow: inset 0 -2px 0 #ffd54f;
-      }
-      #panel-tabs {
-        display: flex;
-        border-bottom: 1px solid #1a3d58;
-        flex-shrink: 0;
-        background: rgba(0,0,0,0.2);
-      }
-      .ptab {
-        flex: 1; margin: 0; padding: 7px 2px;
-        font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
-        background: transparent; color: #4a7a9b;
-        border: none; border-right: 1px solid #1a3d58;
-        cursor: pointer; width: auto; border-radius: 0;
-        transition: background 0.1s, color 0.1s;
-      }
-      .ptab:last-child { border-right: none; }
-      .ptab:hover { background: rgba(30,136,229,0.08); color: #9fc8de; }
-      .ptab.active {
-        background: rgba(30,136,229,0.12);
-        color: #eaf2f8;
-        box-shadow: inset 0 -2px 0 var(--accent);
-      }
-      #panel-content {
-        flex: 1;
-        overflow-y: auto;
-        overflow-x: hidden;
-        padding: 6px 7px;
-        min-height: 0;
-      }
-      #panel-content::-webkit-scrollbar { width: 3px; }
-      #panel-content::-webkit-scrollbar-track { background: transparent; }
-      #panel-content::-webkit-scrollbar-thumb { background: #1d4a66; border-radius: 2px; }
-      #minimap-canvas { display: block; margin: 4px auto; border-radius: 4px; }
-      #panel-stats {
-        border-top: 1px solid #1a3d58;
-        padding: 7px 8px 6px;
-        flex-shrink: 0;
-        background: rgba(0,0,0,0.35);
-      }
-      .stat-row {
-        display: flex; align-items: center;
-        gap: 4px; margin-bottom: 4px;
-      }
-      .stat-label { width: 32px; font-size: 9px; color: var(--dim); flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700; }
-      .stat-bar {
-        flex: 1; height: 7px;
-        background: rgba(0,0,0,0.5);
-        border-radius: 4px; overflow: hidden;
-        border: 1px solid rgba(255,255,255,0.05);
-      }
-      .stat-fill { height: 100%; border-radius: 4px; transition: width 0.4s; }
-      .hp-fill   { background: linear-gradient(90deg, #c62828, #e53935); box-shadow: 0 0 6px rgba(229,57,53,0.4); }
-      .stam-fill { background: linear-gradient(90deg, #e65100, #f9a825); box-shadow: 0 0 6px rgba(249,168,37,0.3); }
-      .hun-fill  { background: linear-gradient(90deg, #2e7d32, #43a047); box-shadow: 0 0 6px rgba(67,160,71,0.3); }
-      .stat-val  { width: 26px; font-size: 10px; font-weight: 700; text-align: right; flex-shrink: 0; color: #d4eaf8; }
-      .panel-info { font-size: 11px; color: var(--muted); margin-top: 3px; }
-      /* Inventory grid */
-      .inv-grid {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 3px;
-        padding: 2px 0;
-      }
-      .inv-cell {
-        background: rgba(10,28,41,0.8);
-        border: 1px solid #1a3d58;
-        border-radius: 5px;
-        padding: 3px;
-        text-align: center;
-        cursor: pointer;
-        transition: border-color 0.1s, background 0.1s;
-      }
-      .inv-cell:hover { border-color: var(--accent); background: rgba(30,136,229,0.1); }
-      .inv-swatch {
-        width: 100%; height: 22px;
-        border-radius: 3px;
-        margin-bottom: 2px;
-      }
-      .inv-qty { font-size: 10px; font-weight: 800; color: #eaf2f8; }
-      .inv-name { font-size: 9px; color: #7faacc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      /* Skills */
-      .stats-header { padding: 4px 2px 8px; border-bottom: 1px solid #1a3d58; margin-bottom: 6px; }
-      .skill-list { padding: 2px 0; }
-      .skill-row { margin-bottom: 6px; }
-      .skill-name { display: inline-block; width: 82px; font-size: 11px; color: #9fc2d6; text-transform: capitalize; }
-      .skill-lv { display: inline-block; width: 28px; font-size: 11px; font-weight: 800; color: var(--gold); text-align: right; }
-      .skill-bar { height: 5px; background: rgba(0,0,0,0.5); border-radius: 3px; overflow: hidden; margin-top: 3px; }
-      .skill-fill { height: 100%; background: linear-gradient(90deg, #1565c0, #42a5f5); border-radius: 3px; }
-      /* Logbook */
-      .log-header { font-weight: 700; color: var(--teal); margin-bottom: 6px; font-size: 11px; }
-      .log-group { font-weight: 700; color: var(--teal); margin: 8px 0 3px; font-size: 11px; border-top: 1px solid #1a3d58; padding-top: 5px; }
-      .log-entry { font-size: 10px; padding: 1px 0 1px 8px; color: #9fbfd4; }
-      .log-entry.found { color: #d4fff7; }
-      /* Controls help */
-      .controls-section { font-size: 10px; color: #6a9ab5; line-height: 1.6; padding: 2px 0; }
-      .controls-section b { color: #b0cfe8; }
-      .controls-section .key {
-        display: inline-block; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
-        border-radius: 3px; padding: 0 4px; font-size: 10px; font-weight: 700; color: #d4eaf8;
-      }
-      .panel-empty { color: var(--dim); font-size: 12px; text-align: center; padding: 24px 4px; }
-
       /* Body-customisation chip selectors */
       .chip-group { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
       .chip {
@@ -356,23 +219,6 @@
         background: transparent; color: #cfe3ef;
       }
       #item-menu button:hover { background: #1e88e5; color: #fff; }
-      .inv-cell { cursor: pointer; }
-      .inv-cell:hover { border-color: #1e88e5; }
-
-      /* Equip paper-doll */
-      .doll-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 4px 0 8px; }
-      #doll-canvas { background: #0a1c29; border: 1px solid #1d4a66; border-radius: 8px; }
-      .slot-row { display: flex; align-items: center; gap: 6px; width: 100%; margin-bottom: 4px; }
-      .slot-label { width: 46px; font-size: 10px; color: #8fb4c9; flex-shrink: 0; }
-      .slot-box {
-        flex: 1; min-height: 26px; display: flex; align-items: center; gap: 6px;
-        padding: 3px 6px; border-radius: 6px; border: 1px solid #1d4a66; background: #0a1c29;
-        font-size: 11px; color: #cfe3ef; cursor: pointer;
-      }
-      .slot-box.empty { color: #4a6b7c; font-style: italic; cursor: default; }
-      .slot-box.filled { border-color: #ffd54f; }
-      .slot-box:not(.empty):hover { border-color: #1e88e5; }
-      .slot-swatch { width: 16px; height: 16px; border-radius: 3px; flex-shrink: 0; }
     </style>
   </head>
   <body>
@@ -381,26 +227,6 @@
     <div id="hud" class="hidden"></div>
     <div id="log" class="hidden"></div>
     <input id="chat-input" class="hidden" type="text" maxlength="160" placeholder="Chat — / global, // team, ///Name private, /team Name — Enter to send" autocomplete="off" />
-
-    <!-- OSRS-style right panel (shown once player is in-game) -->
-    <div id="side-panel" class="hidden">
-      <div id="mode-bar">
-        <button class="mbtn active" id="mode-combat" title="Tab to cycle">⚔ Combat</button>
-        <button class="mbtn" id="mode-research" title="Tab to cycle">🔬 Research</button>
-        <button class="mbtn" id="mode-profession" title="Tab to cycle">🛠 Pro</button>
-      </div>
-      <div id="panel-tabs">
-        <button class="ptab active" id="ptab-inv">Inv</button>
-        <button class="ptab" id="ptab-equip">Equip</button>
-        <button class="ptab" id="ptab-skills">Skills</button>
-        <button class="ptab" id="ptab-log">Log</button>
-        <button class="ptab" id="ptab-map">Map</button>
-        <button class="ptab" id="ptab-help">?</button>
-      </div>
-      <div id="panel-content"></div>
-      <canvas id="minimap-canvas" class="hidden" width="184" height="150"></canvas>
-      <div id="panel-stats"></div>
-    </div>
 
     <!-- Item context menu (equip / eat / drop), positioned on click -->
     <div id="item-menu" class="hidden"></div>
