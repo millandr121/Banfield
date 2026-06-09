@@ -1,6 +1,6 @@
 import { Appearance } from "../../shared/protocol";
 import { Game } from "./game";
-import { drawAvatar } from "./avatar";
+import { drawCharacterPixel, type CharOpts as PixelCharOpts } from "./pixelchar";
 
 // Login / register screen -> game bootstrap.
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -78,9 +78,16 @@ function appearance(): Appearance {
   };
 }
 
-// ── Full-body face-on standing character preview (shared art module) ──────────
+// ── Full-body pixel-art character preview ─────────────────────────────────────
 function drawPreview() {
-  drawAvatar(pctx, appearance(), previewCanvas.width, previewCanvas.height);
+  const app = appearance();
+  pctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+  pctx.fillStyle = "#0a1c29";
+  pctx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+  const cx = previewCanvas.width / 2;
+  const cy = previewCanvas.height * 0.6;
+  const opts: PixelCharOpts = { facing: "down", phase: 0, moving: false };
+  drawCharacterPixel(pctx, cx, cy, app, opts);
 }
 
 for (const el of [skinInput, hairInput, shirtInput]) {

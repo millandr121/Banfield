@@ -65,59 +65,97 @@ function tileHash(x: number, y: number): number {
   return (h >>> 0) / 0xffffffff;
 }
 
-// Grass: sunlit patches, individual blade clusters, stones, rare flowers.
+// Grass: OSRS-style pixel dithering — no big rectangular blobs.
 function drawGrassTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
   const h1 = tileHash(tx, ty);
   const h2 = tileHash(tx + 97, ty + 13);
   const h3 = tileHash(tx * 3 + 1, ty * 5 + 7);
   const T = TILE_SIZE;
 
-  // Sunlit patch (~35% of tiles) — bright warm area
-  if (h1 > 0.65) {
-    ctx.fillStyle = "#a0c848";
-    const pw = (5 + h1 * 7) | 0;
-    const ph = (3 + h2 * 5) | 0;
-    ctx.fillRect(sx + (h2 * (T - pw - 2) | 0) + 1, sy + (h3 * (T - ph - 2) | 0) + 1, pw, ph);
+  // Dithered sunlit variation — scatter 3-5 individual bright pixels rather than a blob
+  const litCount = (h1 * 5 + 1) | 0;
+  for (let i = 0; i < litCount; i++) {
+    const ph = tileHash(tx + i * 17, ty + i * 11);
+    const ph2 = tileHash(tx + i * 13 + 5, ty * 3 + i);
+    ctx.fillStyle = i % 2 === 0 ? "#9ac840" : "#a8d448";
+    ctx.fillRect(sx + (ph * (T - 2) | 0), sy + (ph2 * (T - 2) | 0), 1, 1);
   }
 
-  // Shadow patch opposite corner (~30%)
-  if (h2 > 0.7) {
+  // Dark accent dots
+  if (h2 > 0.6) {
+    const dh = tileHash(tx * 5, ty * 9);
+    const dh2 = tileHash(tx + 31, ty * 7 + 3);
     ctx.fillStyle = "#527830";
-    ctx.fillRect(sx + (h3 * (T - 6) | 0), sy + (h1 * (T - 5) | 0), 5, 4);
+    ctx.fillRect(sx + (dh * (T - 3) | 0), sy + (dh2 * (T - 3) | 0), 1, 2);
   }
 
-  // 2–3 grass blade clusters
-  const blades = 2 + (h1 > 0.5 ? 1 : 0);
+  // 1–2 grass blade clusters — cleaner, more upright
+  const blades = 1 + (h1 > 0.6 ? 1 : 0);
   for (let i = 0; i < blades; i++) {
     const bh = tileHash(tx * 7 + i * 3, ty + i * 11);
     const bh2 = tileHash(tx + i * 13, ty * 5 + i * 7);
-    const gx = sx + 1 + (bh * (T - 5) | 0);
-    const gy = sy + 2 + (bh2 * (T - 7) | 0);
-    ctx.fillStyle = "#527830";
-    ctx.fillRect(gx, gy, 1, 3);           // left blade
-    ctx.fillRect(gx + 2, gy - 1, 1, 4);   // right blade
-    ctx.fillRect(gx - 1, gy + 2, 4, 1);   // base spread
-    ctx.fillStyle = "#90c040";
-    ctx.fillRect(gx, gy, 1, 1);           // tip highlight
-    ctx.fillRect(gx + 2, gy - 1, 1, 1);
+    const gx = sx + 2 + (bh * (T - 6) | 0);
+    const gy = sy + 4 + (bh2 * (T - 8) | 0);
+    ctx.fillStyle = "#4a7028";
+    ctx.fillRect(gx, gy, 1, 4);
+    ctx.fillRect(gx + 3, gy + 1, 1, 3);
+    ctx.fillStyle = "#78b030";
+    ctx.fillRect(gx, gy, 1, 1);
+    ctx.fillRect(gx + 3, gy + 1, 1, 1);
   }
 
-  // Stone (~20% of tiles) — round pebble with highlight
-  if (h3 < 0.2) {
-    const stx = sx + 2 + (h1 * (T - 8) | 0);
-    const sty = sy + 3 + (h2 * (T - 7) | 0);
-    ctx.fillStyle = "#8a8068"; ctx.fillRect(stx, sty + 1, 5, 2);  // shadow
-    ctx.fillStyle = "#c8c0a8"; ctx.fillRect(stx, sty, 5, 2);      // body
-    ctx.fillStyle = "#e0d8c0"; ctx.fillRect(stx + 1, sty, 2, 1);  // highlight
+  // Occasional pebble (15%)
+  if (h3 < 0.15) {
+    const stx = sx + 2 + (h1 * (T - 7) | 0);
+    const sty = sy + 3 + (h2 * (T - 6) | 0);
+    ctx.fillStyle = "#8a8068"; ctx.fillRect(stx, sty + 1, 4, 2);
+    ctx.fillStyle = "#c0b890"; ctx.fillRect(stx, sty, 4, 2);
+    ctx.fillStyle = "#d8d0b8"; ctx.fillRect(stx + 1, sty, 2, 1);
   }
 
-  // Small clover/flower (~8% of tiles)
-  if (h1 > 0.92) {
+  // Rare flower/clover (6%)
+  if (h1 > 0.94) {
     const flx = sx + 3 + (h2 * (T - 7) | 0);
     const fly = sy + 3 + (h3 * (T - 7) | 0);
-    ctx.fillStyle = "#d8e890";
-    ctx.fillRect(flx, fly, 1, 1); ctx.fillRect(flx + 2, fly, 1, 1); ctx.fillRect(flx + 1, fly - 1, 1, 1);
-    ctx.fillStyle = "#c0d860"; ctx.fillRect(flx + 1, fly + 1, 1, 1);
+    ctx.fillStyle = "#e8f0a0";
+    ctx.fillRect(flx, fly, 1, 1); ctx.fillRect(flx + 2, fly, 1, 1);
+    ctx.fillRect(flx + 1, fly - 1, 1, 1); ctx.fillRect(flx + 1, fly + 1, 1, 1);
+  }
+}
+
+// Hill/dirt: earthy dither, exposed rock chips, sparse dried grass.
+function drawHillTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
+  const h1 = tileHash(tx, ty);
+  const h2 = tileHash(tx + 19, ty + 83);
+  const h3 = tileHash(tx * 11, ty * 7);
+  const T = TILE_SIZE;
+
+  // Earthy dither: mix of brown tones
+  const dots = 4 + (h1 * 3 | 0);
+  for (let i = 0; i < dots; i++) {
+    const ph = tileHash(tx + i * 23, ty + i * 17);
+    const ph2 = tileHash(tx * 3 + i, ty + i * 7);
+    ctx.fillStyle = i % 3 === 0 ? "#6e5030" : i % 3 === 1 ? "#9a7848" : "#7a6040";
+    ctx.fillRect(sx + (ph * (T - 2) | 0), sy + (ph2 * (T - 2) | 0), 1, 1);
+  }
+
+  // Exposed rock chip (40%)
+  if (h2 > 0.6) {
+    ctx.fillStyle = "#6a5840";
+    ctx.fillRect(sx + (h1 * (T - 8) | 0), sy + (h2 * (T - 6) | 0), 4, 2);
+    ctx.fillStyle = "#9a8870";
+    ctx.fillRect(sx + (h1 * (T - 8) | 0), sy + (h2 * (T - 6) | 0), 4, 1);
+  }
+
+  // Sparse dried grass tuft (30%)
+  if (h3 > 0.7) {
+    const gx = sx + 2 + (h1 * (T - 6) | 0);
+    const gy = sy + 3 + (h2 * (T - 7) | 0);
+    ctx.fillStyle = "#8a7040";
+    ctx.fillRect(gx, gy, 1, 3);
+    ctx.fillRect(gx + 3, gy + 1, 1, 2);
+    ctx.fillStyle = "#b09858";
+    ctx.fillRect(gx, gy, 1, 1); ctx.fillRect(gx + 3, gy + 1, 1, 1);
   }
 }
 
@@ -1156,7 +1194,8 @@ export class Game {
           else if (tile === Tile.Forest) drawForestTexture(ctx, sx, sy, x, y);
           else if (tile === Tile.Sand) drawSandTexture(ctx, sx, sy, x, y);
           else if (tile === Tile.Road) drawRoadTexture(ctx, sx, sy, x, y);
-          else if (tile === Tile.Rock || tile === Tile.Hill) drawRockTexture(ctx, sx, sy, x, y, tile);
+          else if (tile === Tile.Hill) drawHillTexture(ctx, sx, sy, x, y);
+          else if (tile === Tile.Rock) drawRockTexture(ctx, sx, sy, x, y, tile);
         }
       }
     }
@@ -1245,7 +1284,7 @@ export class Game {
 
         // Deterministic hash for this tile.
         const h = Math.abs(((x * 374761393 + y * 1160490541) ^ (x * 13 ^ y * 7)) | 0);
-        if (h % 100 >= 38) continue; // ~38 % of ankle-deep tiles get kelp
+        if (h % 100 >= 10) continue; // ~10 % of ankle-deep tiles get kelp
 
         const { sx, sy } = this.toScreen(x, y);
         const fronds = 2 + (h % 3);
@@ -1334,8 +1373,9 @@ export class Game {
   private drawBuilding(b: BuildingState) {
     const ctx = this.ctx;
     const { sx, sy } = this.toScreen(b.x, b.y);
-    const w = b.w * TILE_SIZE;
-    const h = b.h * TILE_SIZE;
+    const BSCALE = 1.5; // buildings drawn 1.5× their tile footprint
+    const w = b.w * TILE_SIZE * BSCALE;
+    const h = b.h * TILE_SIZE * BSCALE;
 
     if (b.kind === "rubble") {
       ctx.fillStyle = "#4a4038";
@@ -1387,7 +1427,7 @@ export class Game {
     // --- Windows (warm lit) ---
     const winCols = Math.max(1, Math.floor(b.w));
     const winY = sy + h * 0.42;
-    const winW = 6, winH = 6;
+    const winW = 8, winH = 8;
     ctx.fillStyle = "#ffd98a";
     for (let c = 0; c < winCols; c++) {
       const cxw = sx + (c + 0.5) * (w / winCols) - winW / 2;
@@ -1399,9 +1439,9 @@ export class Game {
 
     // --- Door ---
     ctx.fillStyle = "#2c2018";
-    ctx.fillRect(sx + w / 2 - 4, sy + h - 11, 8, 11);
+    ctx.fillRect(sx + w / 2 - 5, sy + h - 14, 10, 14);
     ctx.fillStyle = "#c9a24b"; // knob
-    ctx.fillRect(sx + w / 2 + 1, sy + h - 6, 1.5, 1.5);
+    ctx.fillRect(sx + w / 2 + 2, sy + h - 8, 1.5, 1.5);
 
     // --- Pitched roof, overhanging the walls ---
     const roofCol = ROOF_COLORS[b.kind] ?? "#6b4a39";
@@ -1554,21 +1594,25 @@ export class Game {
       ctx.textAlign = "left";
       ctx.fillText(`[${i + 1}] ${r.name}`, px + 16, ry + 14);
 
-      // Ingredients
-      const needsStr = Object.entries(r.needs)
-        .map(([item, qty]) => {
-          const have = me?.inventory[item as ItemId] ?? 0;
-          const col = have >= (qty as number) ? "#7ec8a0" : "#e57373";
-          return `<${col}>${qty} ${ITEM_LABEL[item as ItemId]}</${col}>`;
-        })
-        .join("  ");
-      // Plain text fallback (canvas can't render HTML, so we do it manually)
+      // Ingredients — colored icon swatch + quantity + label
+      const swatchSize = 10;
       let nx = px + 16;
       const ny = ry + 30;
       ctx.font = "11px system-ui";
       for (const [item, qty] of Object.entries(r.needs) as [ItemId, number][]) {
         const have = me?.inventory[item] ?? 0;
-        ctx.fillStyle = have >= qty ? "#7ec8a0" : "#e57373";
+        const okColor = have >= qty ? "#7ec8a0" : "#e57373";
+        // Colored swatch
+        const swatchCol = (ITEM_COLORS as Record<string, string>)[item] ?? "#888";
+        ctx.fillStyle = swatchCol;
+        roundRect(ctx, nx, ny - swatchSize + 1, swatchSize, swatchSize, 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,0.4)";
+        ctx.lineWidth = 0.5;
+        roundRect(ctx, nx, ny - swatchSize + 1, swatchSize, swatchSize, 2);
+        ctx.stroke();
+        nx += swatchSize + 2;
+        ctx.fillStyle = okColor;
         const txt = `${qty} ${ITEM_LABEL[item]}  `;
         ctx.textAlign = "left";
         ctx.fillText(txt, nx, ny);
@@ -1577,13 +1621,21 @@ export class Game {
       if (Object.keys(r.gives).length > 0) {
         ctx.fillStyle = "#5a7a8a";
         ctx.fillText("→", nx, ny);
-        nx += ctx.measureText("→ ").width;
+        nx += ctx.measureText("→  ").width;
         for (const [item, qty] of Object.entries(r.gives) as [ItemId, number][]) {
+          const swatchCol = (ITEM_COLORS as Record<string, string>)[item] ?? "#888";
+          ctx.fillStyle = swatchCol;
+          roundRect(ctx, nx, ny - swatchSize + 1, swatchSize, swatchSize, 2);
+          ctx.fill();
+          ctx.strokeStyle = "rgba(0,0,0,0.4)";
+          ctx.lineWidth = 0.5;
+          roundRect(ctx, nx, ny - swatchSize + 1, swatchSize, swatchSize, 2);
+          ctx.stroke();
+          nx += swatchSize + 2;
           ctx.fillStyle = "#a0c8e0";
           ctx.fillText(`${qty} ${ITEM_LABEL[item]}`, nx, ny);
         }
       }
-      void needsStr; // suppress unused
     }
   }
 
@@ -1765,7 +1817,17 @@ export class Game {
       const label = ITEM_LABEL[ln.item];
       const held = inv[ln.item] ?? 0;
       const extra = ln.kind === "sell" ? `  (you have ${held})` : "";
-      ctx.fillText(`${i + 1}.  ${label}`, px + 28, y);
+      // Colored icon swatch
+      const swatchCol = (ITEM_COLORS as Record<string, string>)[ln.item] ?? "#888";
+      ctx.fillStyle = swatchCol;
+      roundRect(ctx, px + 28, y - 11, 12, 12, 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.35)";
+      ctx.lineWidth = 0.5;
+      roundRect(ctx, px + 28, y - 11, 12, 12, 2);
+      ctx.stroke();
+      ctx.fillStyle = "#eaf2f8";
+      ctx.fillText(`${i + 1}.  ${label}`, px + 44, y);
       ctx.textAlign = "right";
       ctx.fillStyle = ln.kind === "sell" ? "#9fe6c0" : "#ffd08a";
       ctx.fillText(`$${ln.price} ea${extra}`, px + pw - 18, y);
@@ -2908,7 +2970,7 @@ const ITEM_COLORS: Record<string, string> = {
   stick: "#8d6e63", huntingKnife: "#cfd8dc", bow: "#8d6e63", crossbow: "#5d4037",
   speargun: "#455a64", rifle: "#3e2723",
   arrow: "#8d6e63", bolt: "#78909c", spear: "#607d8b", bullet: "#90a4ae",
-  clothShirt: "#e3b0c0", clothPants: "#b0c3e3", waxedJacket: "#6b7b3a", rainCoat: "#e8d04a",
+  clothShirt: "#e3b0c0", clothPants: "#b0c3e3", fieldHat: "#c2a35a", waxedJacket: "#6b7b3a", rainCoat: "#e8d04a",
   woolSweater: "#8b6e4e", fabricDye: "#c040c0", seamstressKit: "#e891b8",
   snorkelMask: "#2ea8c0", divingTank: "#607d8b", wetsuitTop: "#1a2a3a", wetsuitBottom: "#1a2a3a",
   // research tools
@@ -3486,7 +3548,7 @@ function drawVehicleSprite(ctx: CanvasRenderingContext2D, v: VehicleState, x: nu
   // Shared damage bar above the hull when it's taken a beating.
   const frac = Math.max(0, v.hp / v.maxHp);
   if (frac < 1) {
-    const w = TILE_SIZE * 1.4;
+    const w = TILE_SIZE * 3.0;
     ctx.fillStyle = "#222";
     ctx.fillRect(x - w / 2, y - TILE_SIZE, w, 3);
     ctx.fillStyle = frac > 0.5 ? "#4caf50" : frac > 0.25 ? "#ffb300" : "#e53935";
@@ -3496,7 +3558,7 @@ function drawVehicleSprite(ctx: CanvasRenderingContext2D, v: VehicleState, x: nu
   // Fuel gauge just below the damage bar (only when it's not a full tank).
   const ffrac = Math.max(0, v.fuel / v.maxFuel);
   if (ffrac < 1) {
-    const w = TILE_SIZE * 1.4;
+    const w = TILE_SIZE * 3.0;
     const fy = y - TILE_SIZE + 5;
     ctx.fillStyle = "#222";
     ctx.fillRect(x - w / 2, fy, w, 3);
@@ -3510,8 +3572,8 @@ function drawVehicleSprite(ctx: CanvasRenderingContext2D, v: VehicleState, x: nu
 }
 
 function drawCar(ctx: CanvasRenderingContext2D) {
-  const L = TILE_SIZE * 1.5; // length (along heading)
-  const W = TILE_SIZE * 0.82; // width
+  const L = TILE_SIZE * 3.8; // length (along heading)
+  const W = TILE_SIZE * 1.8; // width
   // body
   ctx.fillStyle = "#c0392b";
   roundRect(ctx, -L / 2, -W / 2, L, W, 5);
@@ -3532,8 +3594,8 @@ function drawCar(ctx: CanvasRenderingContext2D) {
 }
 
 function drawBoat(ctx: CanvasRenderingContext2D) {
-  const L = TILE_SIZE * 1.7;
-  const W = TILE_SIZE * 0.78;
+  const L = TILE_SIZE * 3.6;
+  const W = TILE_SIZE * 1.7;
   // pointed hull (bow toward +x)
   ctx.fillStyle = "#e8e2d0";
   ctx.beginPath();

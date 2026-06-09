@@ -766,6 +766,12 @@ export class GameRoom {
     this.modeWardrobe.set(playerId, ward);
     const base = this.baseAppearance.get(playerId) ?? sanitizeAppearance(p.appearance);
     p.mode = mode;
+    // First time entering research or profession: give basic starter clothes.
+    if (!ward[mode] && mode !== "combat") {
+      if (!p.inventory["clothShirt"]) p.inventory["clothShirt"] = 1;
+      if (!p.inventory["clothPants"]) p.inventory["clothPants"] = 1;
+      if (mode === "research" && !p.inventory["fieldHat"]) p.inventory["fieldHat"] = 1;
+    }
     p.appearance = ward[mode] ?? defaultOutfit(mode, base);
     p.transforming = true;
     this.transformUntil.set(playerId, now + 2000); // 2 s strip + re-clothe
@@ -3865,12 +3871,14 @@ function combatOutfit(base: Appearance): Appearance {
   return { skin: base.skin, hair: base.hair, shirt: base.skin, pants: "#8a6a3c", hat: undefined };
 }
 function researchOutfit(base: Appearance): Appearance {
-  // Indiana-Jones field kit: beige shirt + shorts, a tan sun hat.
-  return { skin: base.skin, hair: base.hair, shirt: "#cdbf9a", pants: "#b8a982", hat: "#c2a35a" };
+  // Indiana-Jones field kit: cloth shirt + pants + tan field hat.
+  return { skin: base.skin, hair: base.hair, shirt: "#cdbf9a", pants: "#b8a982", hat: "#c2a35a",
+    worn: { torso: "clothShirt", legs: "clothPants", head: "fieldHat" } };
 }
 function professionOutfit(base: Appearance): Appearance {
-  // Your own clothes — keep the colours you picked at creation.
-  return { skin: base.skin, hair: base.hair, shirt: base.shirt, pants: "#39507a", hat: undefined };
+  // Work clothes — shirt + sturdy pants.
+  return { skin: base.skin, hair: base.hair, shirt: base.shirt, pants: "#39507a", hat: undefined,
+    worn: { torso: "clothShirt", legs: "clothPants" } };
 }
 function defaultOutfit(mode: PlayerMode, base: Appearance): Appearance {
   return mode === "combat" ? combatOutfit(base)

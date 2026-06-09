@@ -90,7 +90,7 @@ export type WornItems = Partial<Record<WornSlot, ItemId>>;
 export const SLOT_FOR_ITEM: Partial<Record<string, WornSlot>> = {
   clothShirt: "torso", waxedJacket: "torso", rainCoat: "torso", woolSweater: "torso", wetsuitTop: "torso",
   clothPants: "legs", wetsuitBottom: "legs",
-  snorkelMask: "head", divingTank: "back",
+  fieldHat: "head", snorkelMask: "head", divingTank: "back",
   // research tools → hand slot
   binoculars: "hand", butterflyNet: "hand", listeningDevice: "hand", fieldNotebook: "hand",
   // profession tools → hand slot
@@ -103,6 +103,7 @@ export const SLOT_FOR_ITEM: Partial<Record<string, WornSlot>> = {
 export const CLOTHING_COLOR: Partial<Record<string, { shirt?: string; pants?: string; hat?: string }>> = {
   clothShirt:     { shirt: "#c8a97a" },
   clothPants:     { pants: "#7a6a4a" },
+  fieldHat:       { hat:   "#c2a35a" }, // tan sun hat — research/profession default
   waxedJacket:    { shirt: "#3d5228" },
   rainCoat:       { shirt: "#1565c0" },
   woolSweater:    { shirt: "#7b4f2e" },
@@ -167,7 +168,8 @@ export const ITEM_IDS = [
   // ammo
   "arrow", "bolt", "spear", "bullet",
   // clothing
-  "clothShirt", "clothPants", "waxedJacket", "rainCoat", "woolSweater",
+  "clothShirt", "clothPants", "fieldHat",
+  "waxedJacket", "rainCoat", "woolSweater",
   "fabricDye", "seamstressKit", "snorkelMask", "divingTank", "wetsuitTop", "wetsuitBottom",
   // research tools
   "binoculars", "butterflyNet", "listeningDevice", "fieldNotebook",
@@ -195,7 +197,8 @@ export const ITEM_LABEL: Record<ItemId, string> = {
   stick: "Stick", huntingKnife: "Hunting Knife", bow: "Bow", crossbow: "Crossbow",
   speargun: "Speargun", rifle: "Rifle",
   arrow: "Arrow", bolt: "Bolt", spear: "Spear", bullet: "Bullet",
-  clothShirt: "Cloth Shirt", clothPants: "Cloth Pants", waxedJacket: "Waxed Jacket",
+  clothShirt: "Cloth Shirt", clothPants: "Cloth Pants", fieldHat: "Field Hat",
+  waxedJacket: "Waxed Jacket",
   rainCoat: "Rain Coat", woolSweater: "Wool Sweater", fabricDye: "Fabric Dye",
   seamstressKit: "Seamstress Kit", snorkelMask: "Snorkel Mask", divingTank: "Diving Tank",
   wetsuitTop: "Wetsuit Top", wetsuitBottom: "Wetsuit Bottom",
