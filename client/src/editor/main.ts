@@ -11,11 +11,14 @@ import {
 } from "../../../shared/sprite";
 import baseChar from "../assets/base-character.json";
 import rawItemSheet from "../assets/item-sprites.json";
+import npcLooksData from "../assets/npc-looks.json";
+import { drawCharacterPixel } from "../pixelchar";
+import type { Appearance } from "../../../shared/protocol";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ── Editor mode ───────────────────────────────────────────────────────────────
-type EditorMode = "char" | "items";
+type EditorMode = "char" | "items" | "npcs" | "creatures";
 let editorMode: EditorMode = "char";
 
 // ── Item sprites state ────────────────────────────────────────────────────────
@@ -36,6 +39,43 @@ function loadItemSheet(): ItemSheet {
 function saveItemSheet() {
   localStorage.setItem(ITEM_SHEET_KEY, JSON.stringify(itemSheet));
 }
+
+// ── NPC state ─────────────────────────────────────────────────────────────────
+const NPC_LOOKS_KEY = "banfield-npc-looks";
+type NpcKind = keyof typeof npcLooksData;
+const NPC_KINDS = Object.keys(npcLooksData) as NpcKind[];
+const NPC_DISPLAY: Record<string, string> = {
+  naturalist: "Naturalist", pirate: "Local Pirate", scientist: "Marine Scientist",
+  westsider: "West Sider", eastsider: "East Sider", huuayaht: "Huu-ay-aht",
+  mayor: "Mayor", historian: "Historian", boatdealer: "Boat Dealer",
+  icevendor: "Ice Vendor", seamstress: "Seamstress", researcher2: "Field Researcher",
+  marineBiologist: "Marine Biologist", snorkeler: "Snorkeler",
+};
+let npcLooks: Record<string, Appearance> = loadNpcLooks();
+let currentNpcKind = "";
+
+function loadNpcLooks(): Record<string, Appearance> {
+  try {
+    const raw = localStorage.getItem(NPC_LOOKS_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return JSON.parse(JSON.stringify(npcLooksData));
+}
+function saveNpcLooks() {
+  localStorage.setItem(NPC_LOOKS_KEY, JSON.stringify(npcLooks));
+}
+
+// ── Creature kinds ────────────────────────────────────────────────────────────
+const CREATURE_KINDS = [
+  "seal", "sealLion", "seaOtter", "deer", "elk", "grouse", "bear", "cougar", "wolf",
+  "crab", "octopus", "dogfish", "sixgill", "orca", "humpback", "greywhale",
+];
+const CREATURE_DISPLAY: Record<string, string> = {
+  seal: "Seal", sealLion: "Sea Lion", seaOtter: "Sea Otter", deer: "Deer",
+  elk: "Elk", grouse: "Grouse", bear: "Bear", cougar: "Cougar", wolf: "Wolf",
+  crab: "Crab", octopus: "Octopus", dogfish: "Dogfish", sixgill: "Sixgill Shark",
+  orca: "Orca", humpback: "Humpback Whale", greywhale: "Grey Whale",
+};
 
 // ── Editor state ──────────────────────────────────────────────────────────────
 type Tool = "pencil" | "eraser" | "fill" | "pick";
@@ -71,6 +111,8 @@ const preview = $<HTMLCanvasElement>("preview");
 const pctx = preview.getContext("2d")!;
 const itemPreview = $<HTMLCanvasElement>("item-preview");
 const ipctx = itemPreview.getContext("2d")!;
+const npcPreviewCanvas = $<HTMLCanvasElement>("npc-preview");
+const npcPctx = npcPreviewCanvas.getContext("2d")!;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function curFrame(): SpriteFrame { return doc.facings[facing][frameIdx]; }
@@ -572,39 +614,173 @@ function selectItem(id: string) {
   drawStage();
 }
 
+// ── NPC grid and editor ───────────────────────────────────────────────────────
+function buildNpcGrid() {
+  const wrap = $<HTMLDivElement>("npc-grid");
+  wrap.innerHTML = "";
+  for (const kind of NPC_KINDS) {
+    const card = document.createElement("div");
+    card.className = "npc-card" + (kind === currentNpcKind ? " sel" : "");
+    const c = document.createElement("canvas");
+    c.width = 60; c.height = 78;
+    const cx2 = c.getContext("2d")!;
+    cx2.fillStyle = "#0c1820";
+    cx2.fillRect(0, 0, 60, 78);
+    const app = npcLooks[kind] ?? (npcLooksData as Record<string, Appearance>)[kind];
+    drawCharacterPixel(cx2, 30, 58, app, { facing: "down", phase: 0, moving: false });
+    const lbl = document.createElement("div");
+    lbl.className = "npc-label";
+    lbl.textContent = NPC_DISPLAY[kind] ?? kind;
+    card.appendChild(c);
+    card.appendChild(lbl);
+    card.addEventListener("click", () => selectNpc(kind));
+    wrap.appendChild(card);
+  }
+}
+
+function selectNpc(kind: string) {
+  currentNpcKind = kind;
+  for (const c of document.querySelectorAll<HTMLElement>(".npc-card"))
+    c.classList.toggle("sel", c.querySelector(".npc-label")?.textContent === (NPC_DISPLAY[kind] ?? kind));
+  buildNpcAppEditor(kind);
+  renderNpcPreview(kind);
+}
+
+function renderNpcPreview(kind: string) {
+  npcPctx.clearRect(0, 0, npcPreviewCanvas.width, npcPreviewCanvas.height);
+  npcPctx.fillStyle = "#0c1820";
+  npcPctx.fillRect(0, 0, npcPreviewCanvas.width, npcPreviewCanvas.height);
+  const app = npcLooks[kind] ?? (npcLooksData as Record<string, Appearance>)[kind];
+  drawCharacterPixel(npcPctx, npcPreviewCanvas.width / 2, npcPreviewCanvas.height * 0.8, app, { facing: "down", phase: 0, moving: false });
+}
+
+function buildNpcAppEditor(kind: string) {
+  const wrap = $("npc-app-editor");
+  const app = { ...(npcLooks[kind] ?? (npcLooksData as Record<string, Appearance>)[kind]) };
+  $("npc-editor-title").textContent = NPC_DISPLAY[kind] ?? kind;
+  wrap.innerHTML = "";
+
+  const fields: Array<{ key: keyof Appearance; label: string; type: "color" | "select"; options?: string[] }> = [
+    { key: "skin",      label: "Skin",   type: "color" },
+    { key: "hair",      label: "Hair",   type: "color" },
+    { key: "shirt",     label: "Shirt",  type: "color" },
+    { key: "pants",     label: "Pants",  type: "color" },
+    { key: "hat",       label: "Hat",    type: "color" },
+    { key: "hairStyle", label: "Style",  type: "select", options: ["short", "medium", "long"] },
+    { key: "bodyBuild", label: "Build",  type: "select", options: ["slight", "medium", "sturdy"] },
+  ];
+
+  for (const f of fields) {
+    const row = document.createElement("div");
+    row.className = "app-row";
+    const lbl = document.createElement("label");
+    lbl.textContent = f.label;
+    row.appendChild(lbl);
+    if (f.type === "color") {
+      const inp = document.createElement("input");
+      inp.type = "color";
+      inp.value = ((app as unknown as Record<string, string>)[f.key] ?? "#888888");
+      inp.style.cssText = "width:34px;height:26px;padding:0;border:1px solid var(--border);border-radius:4px;cursor:pointer";
+      inp.addEventListener("input", () => {
+        (npcLooks[kind] as unknown as Record<string, string>)[f.key] = inp.value;
+        buildNpcGrid();
+        renderNpcPreview(kind);
+      });
+      row.appendChild(inp);
+    } else {
+      const sel = document.createElement("select");
+      sel.style.cssText = "font-size:11px;padding:2px;flex:1";
+      for (const opt of f.options ?? []) {
+        const o = document.createElement("option");
+        o.value = opt; o.textContent = opt;
+        if ((app as unknown as Record<string, string>)[f.key] === opt) o.selected = true;
+        sel.appendChild(o);
+      }
+      sel.addEventListener("change", () => {
+        (npcLooks[kind] as unknown as Record<string, string>)[f.key] = sel.value;
+        buildNpcGrid();
+        renderNpcPreview(kind);
+      });
+      row.appendChild(sel);
+    }
+    wrap.appendChild(row);
+  }
+}
+
+// ── Creature grid ─────────────────────────────────────────────────────────────
+function buildCreatureGrid() {
+  const wrap = $<HTMLDivElement>("creature-grid");
+  wrap.innerHTML = "";
+  for (const kind of CREATURE_KINDS) {
+    const card = document.createElement("div");
+    card.className = "creature-card";
+    const c = document.createElement("canvas");
+    c.width = 72; c.height = 72;
+    const cx2 = c.getContext("2d")!;
+    cx2.fillStyle = "#0e2030";
+    cx2.fillRect(0, 0, 72, 72);
+    // placeholder: write creature name (drawing requires game.ts internals)
+    cx2.fillStyle = "#5a8a40";
+    cx2.font = "bold 9px system-ui";
+    cx2.textAlign = "center";
+    cx2.fillText("◆", 36, 36);
+    cx2.fillStyle = "#8fbbdd";
+    cx2.font = "8px system-ui";
+    cx2.fillText(CREATURE_DISPLAY[kind] ?? kind, 36, 52);
+    const lbl = document.createElement("div");
+    lbl.className = "npc-label";
+    lbl.textContent = CREATURE_DISPLAY[kind] ?? kind;
+    card.appendChild(c);
+    card.appendChild(lbl);
+    wrap.appendChild(card);
+  }
+}
+
 // ── Editor mode switching ─────────────────────────────────────────────────────
 function setEditorMode(m: EditorMode) {
   editorMode = m;
-  $("tab-char").classList.toggle("active",  m === "char");
-  $("tab-items").classList.toggle("active", m === "items");
+  // tab buttons
+  for (const [id, val] of [["tab-char","char"],["tab-items","items"],["tab-npcs","npcs"],["tab-creatures","creatures"]] as const)
+    $(id).classList.toggle("active", m === val);
 
-  // Header name area
-  $("docname").style.display        = m === "char"  ? "" : "none";
-  $("item-name").style.display      = m === "items" ? "" : "none";
-  $("char-ops").style.display       = m === "char"  ? "flex" : "none";
-  $("item-ops").style.display       = m === "items" ? "flex" : "none";
+  // header
+  $("docname").style.display = m === "char" ? "" : "none";
+  $("item-name").style.display = m === "items" ? "" : "none";
+  $("char-ops").style.display  = m === "char" ? "flex" : "none";
+  $("item-ops").style.display  = m === "items" ? "flex" : "none";
+  ($("npc-ops") as HTMLElement).style.display = m === "npcs" ? "flex" : "none";
+  ($("creature-ops") as HTMLElement).style.display = m === "creatures" ? "flex" : "none";
 
-  // Left panel
-  ($("item-browser-panel") as HTMLElement).style.display   = m === "items" ? "flex" : "none";
+  // left panels
+  ($("item-browser-panel") as HTMLElement).style.display = m === "items" ? "flex" : "none";
+  ($("npc-grid-panel") as HTMLElement).style.display = m === "npcs" ? "flex" : "none";
+  ($("creature-grid-panel") as HTMLElement).style.display = m === "creatures" ? "flex" : "none";
 
-  // Center preview
-  ($("char-preview-wrap") as HTMLElement).style.display    = m === "char"  ? "" : "none";
-  ($("item-preview-wrap") as HTMLElement).style.display    = m === "items" ? "" : "none";
-  ($("center-hint") as HTMLElement).textContent            = m === "char"
-    ? "Click / drag to paint · I = pick · scroll palette for more colours"
-    : "Paint this item's 16×16 icon · pick colour from palette · Save icon when done";
+  // center previews
+  ($("char-preview-wrap") as HTMLElement).style.display = m === "char" ? "" : "none";
+  ($("item-preview-wrap") as HTMLElement).style.display = m === "items" ? "" : "none";
+  ($("npc-preview-wrap") as HTMLElement).style.display = m === "npcs" ? "" : "none";
+  ($("creature-preview-wrap") as HTMLElement).style.display = m === "creatures" ? "" : "none";
 
-  // Right panels
-  ($("char-right-panels") as HTMLElement).style.display   = m === "char"  ? "contents" : "none";
-  ($("item-right-panels") as HTMLElement).style.display   = m === "items" ? "block" : "none";
+  // right panels
+  ($("char-right-panels") as HTMLElement).style.display = m === "char" ? "contents" : "none";
+  ($("item-right-panels") as HTMLElement).style.display = m === "items" ? "block" : "none";
+  ($("npc-right-panels") as HTMLElement).style.display = m === "npcs" ? "block" : "none";
+  ($("creature-right-panels") as HTMLElement).style.display = m === "creatures" ? "block" : "none";
+
+  // stage visibility: hide stage for npcs/creatures (they don't use it)
+  stage.style.display = (m === "char" || m === "items") ? "" : "none";
+  ($("center-hint") as HTMLElement).style.display = (m === "char" || m === "items") ? "" : "none";
 
   if (m === "items") {
     buildItemBrowser();
-    if (!currentItemId && Object.keys(itemSheet.icons).length > 0) {
-      selectItem(Object.keys(itemSheet.icons)[0]);
-    } else if (currentItemId) {
-      sizeStage(); drawStage();
-    }
+    if (!currentItemId && Object.keys(itemSheet.icons).length > 0) selectItem(Object.keys(itemSheet.icons)[0]);
+    else if (currentItemId) { sizeStage(); drawStage(); }
+  } else if (m === "npcs") {
+    buildNpcGrid();
+    if (!currentNpcKind && NPC_KINDS.length > 0) selectNpc(NPC_KINDS[0]);
+  } else if (m === "creatures") {
+    buildCreatureGrid();
   } else {
     sizeStage(); drawStage();
   }
@@ -612,14 +788,26 @@ function setEditorMode(m: EditorMode) {
 
 $("tab-char").addEventListener("click",  () => setEditorMode("char"));
 $("tab-items").addEventListener("click", () => setEditorMode("items"));
+$("tab-npcs").addEventListener("click", () => setEditorMode("npcs" as EditorMode));
+$("tab-creatures").addEventListener("click", () => setEditorMode("creatures" as EditorMode));
 
 // ── Item save / export / import ───────────────────────────────────────────────
-$("btn-item-save").addEventListener("click", () => {
+$("btn-item-save").addEventListener("click", async () => {
   if (!currentItemId) return flash("Select an item first");
   itemSheet.icons[currentItemId] = [...itemPixels];
   saveItemSheet();
   buildItemBrowser();
-  flash(`Saved icon: ${currentItemId} ✓`);
+  // Also write to actual asset file in dev mode
+  try {
+    await fetch("/api/save-asset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "item-sprites.json", data: itemSheet }),
+    });
+    flash(`Saved ${currentItemId} to game ✓`);
+  } catch {
+    flash(`Saved icon: ${currentItemId} (localStorage only)`);
+  }
 });
 
 $("btn-item-export").addEventListener("click", () => {
@@ -640,6 +828,30 @@ $<HTMLInputElement>("file-item-import").addEventListener("change", async (e) => 
     if (Object.keys(itemSheet.icons).length > 0) selectItem(Object.keys(itemSheet.icons)[0]);
     flash("Item sprites imported ✓");
   } catch { flash("Bad item-sprites.json file"); }
+});
+
+// ── NPC save / reset ──────────────────────────────────────────────────────────
+$("btn-npc-save").addEventListener("click", async () => {
+  saveNpcLooks();
+  try {
+    await fetch("/api/save-asset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "npc-looks.json", data: npcLooks }),
+    });
+    flash("NPC appearances saved to game ✓");
+  } catch {
+    flash("NPC appearances saved (localStorage only)");
+  }
+});
+
+$("btn-npc-reset").addEventListener("click", () => {
+  if (!confirm("Reset all NPC appearances to defaults?")) return;
+  npcLooks = JSON.parse(JSON.stringify(npcLooksData));
+  saveNpcLooks();
+  buildNpcGrid();
+  if (currentNpcKind) { buildNpcAppEditor(currentNpcKind); renderNpcPreview(currentNpcKind); }
+  flash("Reset to defaults ✓");
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────

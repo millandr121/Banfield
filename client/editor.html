@@ -76,6 +76,18 @@
       input[type=color] { width: 34px; height: 28px; padding: 0; border: 1px solid var(--border);
         border-radius: 5px; background: none; cursor: pointer; }
       a.back { color: var(--accent-hi); text-decoration: none; font-size: 12px; }
+      .npc-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; overflow-y: auto; }
+      .npc-card { background: var(--panel2); border: 2px solid var(--border); border-radius: 6px;
+        padding: 6px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+      .npc-card.sel { border-color: var(--gold); }
+      .npc-card canvas { image-rendering: pixelated; }
+      .npc-label { font-size: 10px; color: var(--muted); text-align: center; }
+      .creature-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; overflow-y: auto; }
+      .creature-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+        padding: 6px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+      .creature-card canvas { background: #0c1820; }
+      .app-row { display: flex; gap: 6px; align-items: center; margin-bottom: 5px; }
+      .app-row label { font-size: 11px; color: var(--muted); width: 36px; flex-shrink: 0; }
     </style>
   </head>
   <body>
@@ -97,6 +109,8 @@
       <div class="mode-bar">
         <button id="tab-char" class="active" title="Edit character walk-cycle frames">Character</button>
         <button id="tab-items" title="Browse and paint item icons">Items</button>
+        <button id="tab-npcs" title="Edit NPC appearances">NPCs</button>
+        <button id="tab-creatures" title="Preview creature sprites">Creatures</button>
       </div>
       <input class="docname" id="docname" value="character" style="display:none" />
       <span id="item-name" style="display:none"></span>
@@ -116,10 +130,17 @@
         <button id="btn-item-import">Import item-sprites.json</button>
         <input type="file" id="file-item-import" accept="application/json" hidden />
       </div>
+      <div id="npc-ops" style="display:none">
+        <button id="btn-npc-save">Save NPCs</button>
+        <button id="btn-npc-reset">Reset to defaults</button>
+      </div>
+      <div id="creature-ops" style="display:none">
+        <!-- creatures are view-only previews -->
+      </div>
       <input type="file" id="file-import" accept="application/json" hidden />
     </header>
     <main>
-      <!-- LEFT: tools + palette (shared), item browser (items mode) -->
+      <!-- LEFT: tools + palette (shared), item browser (items mode), npc grid, creature grid -->
       <div class="col left">
         <!-- shared tools -->
         <div class="group" id="tools-panel">
@@ -155,9 +176,19 @@
           </div>
         </div>
         <!-- item browser (hidden until items mode) -->
-        <div class="group" id="item-browser-panel" style="display:none;flex:1;overflow:hidden;display:none;flex-direction:column">
+        <div class="group" id="item-browser-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
           <h2>Item Icons</h2>
           <div id="item-browser"></div>
+        </div>
+        <!-- NPC grid panel -->
+        <div class="group" id="npc-grid-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
+          <h2>NPC Characters</h2>
+          <div class="npc-grid" id="npc-grid"></div>
+        </div>
+        <!-- Creature grid panel -->
+        <div class="group" id="creature-grid-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
+          <h2>Creatures</h2>
+          <div class="creature-grid" id="creature-grid"></div>
         </div>
       </div>
 
@@ -176,9 +207,17 @@
           <label>Item preview</label>
           <canvas id="item-preview" width="80" height="80"></canvas>
         </div>
+        <div class="previewWrap" id="npc-preview-wrap" style="display:none">
+          <label>NPC preview</label>
+          <canvas id="npc-preview" width="80" height="104"></canvas>
+        </div>
+        <div class="previewWrap" id="creature-preview-wrap" style="display:none">
+          <label>Creature</label>
+          <canvas id="creature-stage" width="96" height="96"></canvas>
+        </div>
       </div>
 
-      <!-- RIGHT: facings/frames/layers (char) or item info (items) -->
+      <!-- RIGHT: facings/frames/layers (char) or item info (items) or npc editor or creature info -->
       <div class="col right">
         <div id="char-right-panels" style="display:contents">
           <div class="group">
@@ -220,6 +259,25 @@
               Save icon updates the<br>
               in-game sprite sheet<br>
               Export to download JSON
+            </div>
+          </div>
+        </div>
+        <div id="npc-right-panels" style="display:none">
+          <div class="group">
+            <h2 id="npc-editor-title">NPC Appearance</h2>
+            <div id="npc-app-editor">
+              <div class="hint">Select an NPC from the left panel.</div>
+            </div>
+          </div>
+        </div>
+        <div id="creature-right-panels" style="display:none">
+          <div class="group">
+            <h2>Creatures</h2>
+            <div class="hint" style="line-height:1.7">
+              Procedural canvas art.<br>
+              Preview all creature<br>
+              types here. Direct<br>
+              pixel editing coming soon.
             </div>
           </div>
         </div>
