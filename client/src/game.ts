@@ -70,56 +70,79 @@ function drawGrassTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number,
   const h1 = tileHash(tx, ty);
   const h2 = tileHash(tx + 97, ty + 13);
   const h3 = tileHash(tx * 3 + 1, ty * 5 + 7);
+  const h4 = tileHash(tx * 7 + 29, ty + 53);
   const T = TILE_SIZE;
 
-  // Dithered sunlit variation — scatter 3-5 individual bright pixels rather than a blob
-  const litCount = (h1 * 5 + 1) | 0;
-  for (let i = 0; i < litCount; i++) {
-    const ph = tileHash(tx + i * 17, ty + i * 11);
+  // Micro-variation sub-patches — break up the flat base colour with warm/cool spots
+  const patchCount = 2 + (h1 * 3 | 0);
+  for (let i = 0; i < patchCount; i++) {
+    const ph  = tileHash(tx + i * 17, ty + i * 11);
     const ph2 = tileHash(tx + i * 13 + 5, ty * 3 + i);
-    ctx.fillStyle = i % 2 === 0 ? "#9ac840" : "#a8d448";
-    ctx.fillRect(sx + (ph * (T - 2) | 0), sy + (ph2 * (T - 2) | 0), 1, 1);
+    const col = i % 3 === 0 ? "#7aab34" : i % 3 === 1 ? "#96c83c" : "#6a9828";
+    ctx.fillStyle = col;
+    ctx.fillRect(sx + (ph * (T - 3) | 0), sy + (ph2 * (T - 3) | 0), 2, 2);
   }
 
-  // Dark accent dots
-  if (h2 > 0.6) {
-    const dh = tileHash(tx * 5, ty * 9);
-    const dh2 = tileHash(tx + 31, ty * 7 + 3);
-    ctx.fillStyle = "#527830";
-    ctx.fillRect(sx + (dh * (T - 3) | 0), sy + (dh2 * (T - 3) | 0), 1, 2);
+  // Dark shadow dots — ground depth between blades
+  const shadowCount = 1 + (h4 * 3 | 0);
+  for (let i = 0; i < shadowCount; i++) {
+    const sh = tileHash(tx * 5 + i * 7, ty * 9 + i * 3);
+    const sh2 = tileHash(tx + i * 31, ty * 7 + i);
+    ctx.fillStyle = i % 2 === 0 ? "#3d6020" : "#4a7028";
+    ctx.fillRect(sx + (sh * (T - 2) | 0), sy + (sh2 * (T - 2) | 0), 1, 1);
   }
 
-  // 1–2 grass blade clusters — cleaner, more upright
-  const blades = 1 + (h1 > 0.6 ? 1 : 0);
-  for (let i = 0; i < blades; i++) {
-    const bh = tileHash(tx * 7 + i * 3, ty + i * 11);
-    const bh2 = tileHash(tx + i * 13, ty * 5 + i * 7);
-    const gx = sx + 2 + (bh * (T - 6) | 0);
-    const gy = sy + 4 + (bh2 * (T - 8) | 0);
-    ctx.fillStyle = "#4a7028";
-    ctx.fillRect(gx, gy, 1, 4);
-    ctx.fillRect(gx + 3, gy + 1, 1, 3);
-    ctx.fillStyle = "#78b030";
-    ctx.fillRect(gx, gy, 1, 1);
-    ctx.fillRect(gx + 3, gy + 1, 1, 1);
+  // Grass blade tufts — leaning blades with angled tips (Eastward-style pixel art)
+  const bladeCount = 2 + (h1 > 0.45 ? 1 : 0);
+  for (let i = 0; i < bladeCount; i++) {
+    const bh  = tileHash(tx * 7 + i * 3, ty + i * 11);
+    const bh2 = tileHash(tx + i * 13,    ty * 5 + i * 7);
+    const bh3 = tileHash(tx + i * 23,    ty * 11 + i * 5);
+    const gx  = sx + 2 + (bh  * (T - 6) | 0);
+    const gy  = sy + 5 + (bh2 * (T - 9) | 0);
+    const lean = (bh3 > 0.5 ? 1 : -1);  // lean left or right
+    const bladeH = 3 + (bh3 * 2 | 0);
+    // Dark base (shadow side)
+    ctx.fillStyle = "#3a5c1e";
+    ctx.fillRect(gx,      gy,          1, bladeH);
+    ctx.fillRect(gx + 3,  gy + 1,      1, bladeH - 1);
+    // Mid blade
+    ctx.fillStyle = "#5a8c28";
+    ctx.fillRect(gx + 1,  gy,          1, bladeH);
+    ctx.fillRect(gx + 4,  gy + 1,      1, bladeH - 1);
+    // Bright tip — angled 1 px in the lean direction
+    ctx.fillStyle = "#8ac838";
+    ctx.fillRect(gx + 1 + lean, gy - 1, 1, 1);
+    ctx.fillRect(gx + 4 + lean, gy,     1, 1);
   }
 
-  // Occasional pebble (15%)
-  if (h3 < 0.15) {
+  // Occasional pebble (12%)
+  if (h3 < 0.12) {
     const stx = sx + 2 + (h1 * (T - 7) | 0);
-    const sty = sy + 3 + (h2 * (T - 6) | 0);
-    ctx.fillStyle = "#8a8068"; ctx.fillRect(stx, sty + 1, 4, 2);
-    ctx.fillStyle = "#c0b890"; ctx.fillRect(stx, sty, 4, 2);
-    ctx.fillStyle = "#d8d0b8"; ctx.fillRect(stx + 1, sty, 2, 1);
+    const sty = sy + 4 + (h2 * (T - 7) | 0);
+    ctx.fillStyle = "#5c5448"; ctx.fillRect(stx, sty + 1, 4, 2);  // shadow
+    ctx.fillStyle = "#b0a880"; ctx.fillRect(stx, sty, 4, 2);
+    ctx.fillStyle = "#d4ccaa"; ctx.fillRect(stx + 1, sty, 2, 1);  // highlight
   }
 
-  // Rare flower/clover (6%)
-  if (h1 > 0.94) {
-    const flx = sx + 3 + (h2 * (T - 7) | 0);
-    const fly = sy + 3 + (h3 * (T - 7) | 0);
-    ctx.fillStyle = "#e8f0a0";
-    ctx.fillRect(flx, fly, 1, 1); ctx.fillRect(flx + 2, fly, 1, 1);
-    ctx.fillRect(flx + 1, fly - 1, 1, 1); ctx.fillRect(flx + 1, fly + 1, 1, 1);
+  // Clover / small flower (8%)
+  if (h2 > 0.92) {
+    const flx = sx + 3 + (h4 * (T - 8) | 0);
+    const fly = sy + 4 + (h3 * (T - 9) | 0);
+    if (h1 > 0.5) {
+      // Tiny white daisy
+      ctx.fillStyle = "#d4e8a0";
+      ctx.fillRect(flx, fly, 1, 1); ctx.fillRect(flx + 2, fly, 1, 1);
+      ctx.fillRect(flx + 1, fly - 1, 1, 1); ctx.fillRect(flx + 1, fly + 1, 1, 1);
+      ctx.fillStyle = "#f8e060";
+      ctx.fillRect(flx + 1, fly, 1, 1);  // yellow centre
+    } else {
+      // Clover — tiny three-leaf cross
+      ctx.fillStyle = "#4a8428";
+      ctx.fillRect(flx + 1, fly, 1, 3);  // stem
+      ctx.fillStyle = "#68b040";
+      ctx.fillRect(flx, fly, 3, 1); ctx.fillRect(flx + 1, fly - 1, 1, 1);
+    }
   }
 }
 
@@ -159,38 +182,55 @@ function drawHillTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, 
   }
 }
 
-// Forest floor: tree-shadow patches, dappled light, fallen leaves, root hints.
+// Forest floor: deep shadows, dappled light beams, fallen leaves, exposed roots.
 function drawForestTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
   const h1 = tileHash(tx, ty);
   const h2 = tileHash(tx + 31, ty + 71);
   const h3 = tileHash(tx * 5, ty * 3 + 17);
+  const h4 = tileHash(tx * 9 + 17, ty * 3 + 41);
   const T = TILE_SIZE;
 
-  // Dark canopy-shadow patch
-  ctx.fillStyle = "#283a1e";
-  ctx.fillRect(sx + (h1 * (T - 9) | 0), sy + (h2 * (T - 7) | 0), 8, 5);
+  // Mossy ground micro-variation — 3-5 dark/mid patches to break up the flat base
+  const patchCount = 2 + (h4 * 3 | 0);
+  for (let i = 0; i < patchCount; i++) {
+    const ph  = tileHash(tx + i * 19, ty + i * 13);
+    const ph2 = tileHash(tx * 3 + i * 7, ty + i);
+    ctx.fillStyle = i % 3 === 0 ? "#1e3016" : i % 3 === 1 ? "#2a3e1c" : "#223418";
+    ctx.fillRect(sx + (ph * (T - 3) | 0), sy + (ph2 * (T - 3) | 0), 3, 3);
+  }
 
-  // Dappled-light ellipse (~60% of tiles)
-  if (h1 > 0.4) {
+  // Dappled sunlight patch — a warm shaft cutting through the canopy
+  if (h1 > 0.42) {
+    ctx.fillStyle = "#5a8e32";
+    const lx = sx + 2 + (h2 * (T - 8) | 0);
+    const ly = sy + 2 + (h3 * (T - 8) | 0);
+    ctx.fillRect(lx, ly, 5, 4);
     ctx.fillStyle = "#70a840";
-    ctx.beginPath();
-    ctx.ellipse(sx + 3 + (h2 * (T - 7) | 0), sy + 3 + (h3 * (T - 7) | 0), 4, 3, 0, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.fillRect(lx + 1, ly, 3, 2);    // brighter core
+    ctx.fillStyle = "#8cc04a";
+    ctx.fillRect(lx + 1, ly, 2, 1);    // sunlit highlight
   }
 
-  // Fallen leaves — warm brown/orange
-  if (h3 < 0.6) {
-    ctx.fillStyle = "#6a4820"; ctx.fillRect(sx + (h1 * (T - 5) | 0), sy + (h2 * (T - 5) | 0), 3, 1);
-    ctx.fillStyle = "#885028"; ctx.fillRect(sx + (h3 * (T - 4) | 0), sy + (h1 * (T - 4) | 0), 2, 1);
+  // Fallen leaves — warm autumn colours
+  const leafCount = 1 + (h2 < 0.6 ? 1 : 0) + (h4 < 0.3 ? 1 : 0);
+  for (let i = 0; i < leafCount; i++) {
+    const lh = tileHash(tx + i * 11, ty * 7 + i * 13);
+    const lh2 = tileHash(tx * 5 + i * 17, ty + i * 9);
+    const col = i % 3 === 0 ? "#6a4820" : i % 3 === 1 ? "#8a5028" : "#7a4418";
+    ctx.fillStyle = col;
+    ctx.fillRect(sx + (lh * (T - 4) | 0), sy + (lh2 * (T - 4) | 0), 2 + (i % 2), 1);
   }
 
-  // Root hint (~35% of tiles)
+  // Root tendrils (~35% of tiles) — angular pixel-art style
   if (h2 < 0.35) {
-    ctx.strokeStyle = "#3a2a14"; ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(sx + T / 2, sy + T - 3);
-    ctx.quadraticCurveTo(sx + T / 2 + 4, sy + T - 5, sx + T - 2, sy + T - 2);
-    ctx.stroke();
+    ctx.fillStyle = "#3a2a14";
+    const rx = sx + (h1 * (T * 0.4) | 0);
+    const ry = sy + T - 5;
+    ctx.fillRect(rx,     ry,     1, 4);  // vertical
+    ctx.fillRect(rx + 1, ry + 1, 3, 1); // horizontal branch
+    ctx.fillRect(rx + 4, ry,     1, 2); // fork up
+    ctx.fillStyle = "#5a4222";
+    ctx.fillRect(rx, ry, 1, 1);         // lighter knot at base
   }
 }
 
@@ -1690,13 +1730,29 @@ export class Game {
       }
     }
 
-    // Player position — bright white cross.
+    // Player position — animated amber beacon, hard to miss.
     if (me) {
       const px = ox + Math.round(me.x) * scale;
       const py = oy + Math.round(me.y) * scale;
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 350);
+      const rOuter = 5 + pulse * 4;
+      // Drop shadow so it reads on any tile colour
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.beginPath(); ctx.arc(px + 1, py + 1, rOuter + 1.5, 0, Math.PI * 2); ctx.fill();
+      // Pulsing outer ring
+      ctx.strokeStyle = `rgba(255,215,0,${0.45 + 0.5 * pulse})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(px, py, rOuter, 0, Math.PI * 2); ctx.stroke();
+      // Inner ring
+      ctx.strokeStyle = "rgba(255,255,180,0.85)";
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.stroke();
+      // Solid amber fill
+      ctx.fillStyle = "#ffca28";
+      ctx.beginPath(); ctx.arc(px, py, 3.5, 0, Math.PI * 2); ctx.fill();
+      // White hot centre
       ctx.fillStyle = "#ffffff";
-      ctx.fillRect(px - 1, py - scale, 3, scale * 3);
-      ctx.fillRect(px - scale, py - 1, scale * 3, 3);
+      ctx.beginPath(); ctx.arc(px, py, 1.8, 0, Math.PI * 2); ctx.fill();
     }
 
     // Border.
@@ -3153,66 +3209,117 @@ const TREE_SPECS: Record<string, TreeSpec> = {
   bigleafmaple:{ type:"broadleaf", trunk:"#7a6b54", canopy:["#5a8a32","#6fa23e","#88b955"], base:2.20, vary:1.20 },
 };
 
-// A layered conifer: trunk + stacked tiers of foliage tapering to a crown.
+// A layered conifer: dark outline tier-triangles → filled tiers → bright crown.
+// Eastward style: bold outlines, flat colour fills, highlight on sun-facing edge.
 function drawConifer(ctx: CanvasRenderingContext2D, x: number, y: number, R: number, spec: TreeSpec) {
   const shape = spec.shape ?? "cone";
   const wide = shape === "broad" ? 1.15 : shape === "scrub" ? 1.2 : shape === "column" ? 0.75 : shape === "dense" ? 1.0 : 0.95;
   const tall = shape === "column" ? 1.35 : shape === "scrub" ? 0.7 : shape === "dense" ? 0.8 : 1.1;
-  // shadow
-  ctx.fillStyle = "rgba(0,0,0,0.20)";
+  // Ground shadow ellipse
+  ctx.fillStyle = "rgba(0,0,0,0.22)";
   ctx.beginPath();
-  ctx.ellipse(x, y + R * 0.78, R * 0.85 * wide, R * 0.3, 0, 0, Math.PI * 2);
+  ctx.ellipse(x, y + R * 0.78, R * 0.85 * wide, R * 0.28, 0, 0, Math.PI * 2);
   ctx.fill();
-  // trunk
+  // Trunk with bark texture
   const trunkH = R * 0.9;
-  const tw = Math.max(2, R * 0.16);
+  const tw = Math.max(2, R * 0.18);
+  ctx.fillStyle = "#2a1a0a";                           // outline
+  ctx.fillRect(x - tw / 2 - 1, y - 1, tw + 2, trunkH + 2);
   ctx.fillStyle = spec.trunk;
   ctx.fillRect(x - tw / 2, y, tw, trunkH);
-  ctx.fillStyle = "rgba(0,0,0,0.25)";
-  ctx.fillRect(x + tw * 0.1, y, tw * 0.4, trunkH);
-  // foliage tiers (bottom widest), drawn as triangles, dark→light up the tree
+  ctx.fillStyle = "rgba(0,0,0,0.32)";                  // shadow stripe on right
+  ctx.fillRect(x + tw * 0.25, y, tw * 0.35, trunkH);
+  ctx.fillStyle = "rgba(255,255,255,0.10)";             // highlight on left
+  ctx.fillRect(x - tw / 2 + 1, y + 2, Math.max(1, tw * 0.2), trunkH - 4);
+  // Foliage tiers — outline first, then fill, then edge highlight
   const tiers = shape === "scrub" ? 2 : 4;
-  const topY = y - R * (0.35 + tall * 0.5);
-  const botY = y + R * 0.18;
+  const topY  = y - R * (0.35 + tall * 0.5);
+  const botY  = y + R * 0.18;
   const halfW = R * 0.95 * wide;
   for (let i = 0; i < tiers; i++) {
-    const f = i / tiers;
+    const f  = i / tiers;
     const cy = botY + (topY - botY) * f;
-    const w = halfW * (1 - f * 0.78);
-    const h = (botY - topY) / tiers * 1.5;
-    ctx.fillStyle = spec.canopy[Math.min(spec.canopy.length - 1, Math.floor(f * spec.canopy.length))];
+    const w  = halfW * (1 - f * 0.78);
+    const h  = (botY - topY) / tiers * 1.5;
+    const ci = Math.min(spec.canopy.length - 1, Math.floor(f * spec.canopy.length));
+    // Dark outline triangle (slightly larger)
+    ctx.fillStyle = "#0e1e0a";
     ctx.beginPath();
-    ctx.moveTo(x, cy - h);
+    ctx.moveTo(x,     cy - h - 2);
+    ctx.lineTo(x - w - 2, cy + h * 0.5 + 1);
+    ctx.lineTo(x + w + 2, cy + h * 0.5 + 1);
+    ctx.closePath();
+    ctx.fill();
+    // Coloured fill
+    ctx.fillStyle = spec.canopy[ci];
+    ctx.beginPath();
+    ctx.moveTo(x,     cy - h);
     ctx.lineTo(x - w, cy + h * 0.5);
     ctx.lineTo(x + w, cy + h * 0.5);
     ctx.closePath();
     ctx.fill();
+    // Left-edge highlight strip (sun hits left side)
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.beginPath();
+    ctx.moveTo(x,         cy - h);
+    ctx.lineTo(x - w,     cy + h * 0.5);
+    ctx.lineTo(x - w * 0.6, cy + h * 0.5);
+    ctx.lineTo(x - w * 0.1, cy - h + h * 0.3);
+    ctx.closePath();
+    ctx.fill();
   }
-  // sunlit crown tip
+  // Bright sunlit crown tip
+  ctx.fillStyle = "#0a180a";
+  ctx.beginPath(); ctx.arc(x, topY, R * 0.22, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = spec.canopy[spec.canopy.length - 1];
-  ctx.beginPath();
-  ctx.arc(x, topY, R * 0.18, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.beginPath(); ctx.arc(x, topY, R * 0.17, 0, Math.PI * 2); ctx.fill();
 }
 
-// A rounded broadleaf (alder/maple): trunk + clustered blob crown.
+// A rounded broadleaf (alder/maple): outlined cluster crown, lit and shadowed lobes.
 function drawBroadleaf(ctx: CanvasRenderingContext2D, x: number, y: number, R: number, spec: TreeSpec) {
-  ctx.fillStyle = "rgba(0,0,0,0.20)";
+  // Ground shadow
+  ctx.fillStyle = "rgba(0,0,0,0.22)";
   ctx.beginPath();
-  ctx.ellipse(x, y + R * 0.78, R * 0.85, R * 0.3, 0, 0, Math.PI * 2);
+  ctx.ellipse(x, y + R * 0.78, R * 0.85, R * 0.28, 0, 0, Math.PI * 2);
   ctx.fill();
+  // Trunk
   const trunkH = R * 0.85;
-  const tw = Math.max(2, R * 0.16);
+  const tw = Math.max(2, R * 0.18);
+  ctx.fillStyle = "#1e1008";
+  ctx.fillRect(x - tw / 2 - 1, y - 1, tw + 2, trunkH + 2);
   ctx.fillStyle = spec.trunk;
   ctx.fillRect(x - tw / 2, y, tw, trunkH);
+  ctx.fillStyle = "rgba(0,0,0,0.3)";
+  ctx.fillRect(x + tw * 0.2, y + 2, tw * 0.4, trunkH - 4);
+  // Crown blobs — draw dark outlines first (offset +1), then fill
   const top = y - R * 0.55;
-  for (const [ox, oy, r, ci] of [
-    [0, 0, R * 1.0, 0], [-R * 0.45, -R * 0.1, R * 0.66, 1], [R * 0.45, -R * 0.05, R * 0.62, 1],
-    [-R * 0.15, -R * 0.5, R * 0.66, 2], [R * 0.22, -R * 0.42, R * 0.56, 2],
-  ] as const) {
+  const BLOBS: [number, number, number, number][] = [
+    [0,           0,         R * 1.02, 0],
+    [-R * 0.45,  -R * 0.1,  R * 0.68, 1],
+    [ R * 0.45,  -R * 0.05, R * 0.63, 1],
+    [-R * 0.15,  -R * 0.5,  R * 0.68, 2],
+    [ R * 0.22,  -R * 0.42, R * 0.57, 2],
+  ];
+  // Outline pass
+  ctx.fillStyle = "#0e1a0a";
+  for (const [ox, oy, r] of BLOBS) {
+    ctx.beginPath();
+    ctx.arc(x + ox, top + oy, r + 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Fill pass
+  for (const [ox, oy, r, ci] of BLOBS) {
     ctx.fillStyle = spec.canopy[ci];
     ctx.beginPath();
     ctx.arc(x + ox, top + oy, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Highlight on upper-left lobes (sun direction)
+  ctx.fillStyle = "rgba(255,255,255,0.13)";
+  for (const [ox, oy, r, ci] of BLOBS) {
+    if (ci < 1) continue;
+    ctx.beginPath();
+    ctx.arc(x + ox - r * 0.25, top + oy - r * 0.25, r * 0.45, 0, Math.PI * 2);
     ctx.fill();
   }
 }

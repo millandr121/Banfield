@@ -10,8 +10,32 @@ import {
   newSpriteDoc, emptyFrame, emptyPixels, compositeFrame, normalizeLayers, renderFrame,
 } from "../../../shared/sprite";
 import baseChar from "../assets/base-character.json";
+import rawItemSheet from "../assets/item-sprites.json";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+
+// ── Editor mode ───────────────────────────────────────────────────────────────
+type EditorMode = "char" | "items";
+let editorMode: EditorMode = "char";
+
+// ── Item sprites state ────────────────────────────────────────────────────────
+interface ItemSheet { version: number; size: number; icons: Record<string, string[]>; }
+const ITEM_SHEET_KEY = "banfield-item-sprites";
+let itemSheet: ItemSheet = loadItemSheet();
+let currentItemId = "";       // which icon is being edited
+let itemPixels: string[] = []; // flat ITEM_SIZE×ITEM_SIZE editable copy
+const ITEM_SIZE: number = (rawItemSheet as unknown as ItemSheet).size;
+
+function loadItemSheet(): ItemSheet {
+  try {
+    const raw = localStorage.getItem(ITEM_SHEET_KEY);
+    if (raw) return JSON.parse(raw) as ItemSheet;
+  } catch { /* ignore */ }
+  return JSON.parse(JSON.stringify(rawItemSheet)) as ItemSheet;
+}
+function saveItemSheet() {
+  localStorage.setItem(ITEM_SHEET_KEY, JSON.stringify(itemSheet));
+}
 
 // ── Editor state ──────────────────────────────────────────────────────────────
 type Tool = "pencil" | "eraser" | "fill" | "pick";
@@ -45,6 +69,8 @@ const stage = $<HTMLCanvasElement>("stage");
 const sctx = stage.getContext("2d")!;
 const preview = $<HTMLCanvasElement>("preview");
 const pctx = preview.getContext("2d")!;
+const itemPreview = $<HTMLCanvasElement>("item-preview");
+const ipctx = itemPreview.getContext("2d")!;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function curFrame(): SpriteFrame { return doc.facings[facing][frameIdx]; }
@@ -64,16 +90,43 @@ function saveToStorage() {
 
 // ── Stage rendering ──────────────────────────────────────────────────────────
 function sizeStage() {
-  stage.width = doc.w * zoom;
-  stage.height = doc.h * zoom;
-  stage.style.width = stage.width + "px";
+  const w = editorMode === "items" ? ITEM_SIZE : doc.w;
+  const h = editorMode === "items" ? ITEM_SIZE : doc.h;
+  stage.width  = w * zoom;
+  stage.height = h * zoom;
+  stage.style.width  = stage.width  + "px";
   stage.style.height = stage.height + "px";
 }
 
 function drawStage() {
   sctx.clearRect(0, 0, stage.width, stage.height);
 
-  // Onion skin: faint previous frame of this facing.
+  if (editorMode === "items") {
+    // Items mode: paint the flat 16×16 pixel array directly.
+    const W = ITEM_SIZE, H = ITEM_SIZE;
+    paintPixels(sctx, itemPixels, zoom);
+    if (showGrid && zoom >= 6) {
+      sctx.strokeStyle = "rgba(255,255,255,0.09)";
+      sctx.lineWidth = 1;
+      for (let x = 0; x <= W; x++) {
+        sctx.beginPath(); sctx.moveTo(x * zoom + .5, 0); sctx.lineTo(x * zoom + .5, stage.height); sctx.stroke();
+      }
+      for (let y = 0; y <= H; y++) {
+        sctx.beginPath(); sctx.moveTo(0, y * zoom + .5); sctx.lineTo(stage.width, y * zoom + .5); sctx.stroke();
+      }
+    }
+    // Update item preview (scaled up)
+    ipctx.clearRect(0, 0, itemPreview.width, itemPreview.height);
+    const sc = Math.floor(itemPreview.width / ITEM_SIZE);
+    const ox2 = (itemPreview.width  - ITEM_SIZE * sc) / 2;
+    const oy2 = (itemPreview.height - ITEM_SIZE * sc) / 2;
+    ipctx.save(); ipctx.translate(ox2, oy2);
+    paintPixels(ipctx, itemPixels, sc);
+    ipctx.restore();
+    return;
+  }
+
+  // Char mode: existing logic.
   if (onion) {
     const frames = doc.facings[facing];
     const prev = frames[(frameIdx - 1 + frames.length) % frames.length];
@@ -85,7 +138,6 @@ function drawStage() {
     }
   }
 
-  // Composite all visible layers of the current frame (tinted when previewing dyes).
   const comp = tintPreview
     ? renderFrame(doc, facing, frameIdx, tints, layerVisible)
     : compositeFrame(curFrame(), layerVisible, doc.w, doc.h);
@@ -144,11 +196,24 @@ function pointerToCell(e: PointerEvent): [number, number] | null {
   const r = stage.getBoundingClientRect();
   const x = Math.floor((e.clientX - r.left) / zoom);
   const y = Math.floor((e.clientY - r.top) / zoom);
-  if (x < 0 || y < 0 || x >= doc.w || y >= doc.h) return null;
+  const W = editorMode === "items" ? ITEM_SIZE : doc.w;
+  const H = editorMode === "items" ? ITEM_SIZE : doc.h;
+  if (x < 0 || y < 0 || x >= W || y >= H) return null;
   return [x, y];
 }
 
+function itemIdx(x: number, y: number) { return y * ITEM_SIZE + x; }
+
 function applyTool(x: number, y: number) {
+  if (editorMode === "items") {
+    const i = itemIdx(x, y);
+    if (tool === "pencil") itemPixels[i] = color;
+    else if (tool === "eraser") itemPixels[i] = "";
+    else if (tool === "pick") { const c = itemPixels[i]; if (c) setColor(c); return; }
+    else if (tool === "fill") floodFill(itemPixels, x, y, itemPixels[i], color, ITEM_SIZE, ITEM_SIZE);
+    drawStage();
+    return;
+  }
   const layer = curLayer();
   if (tool === "pencil") layer[idx(x, y)] = color;
   else if (tool === "eraser") layer[idx(x, y)] = "";
@@ -158,19 +223,20 @@ function applyTool(x: number, y: number) {
     if (c) setColor(c);
     return;
   } else if (tool === "fill") {
-    floodFill(layer, x, y, layer[idx(x, y)], color);
+    floodFill(layer, x, y, layer[idx(x, y)], color, doc.w, doc.h);  // char
   }
   drawStage();
 }
 
-function floodFill(layer: string[], sx: number, sy: number, target: string, repl: string) {
+function floodFill(layer: string[], sx: number, sy: number, target: string, repl: string, W: number, H: number) {
   if (target === repl) return;
+  const ii = (x: number, y: number) => y * W + x;
   const stack: [number, number][] = [[sx, sy]];
   while (stack.length) {
     const [x, y] = stack.pop()!;
-    if (x < 0 || y < 0 || x >= doc.w || y >= doc.h) continue;
-    if (layer[idx(x, y)] !== target) continue;
-    layer[idx(x, y)] = repl;
+    if (x < 0 || y < 0 || x >= W || y >= H) continue;
+    if (layer[ii(x, y)] !== target) continue;
+    layer[ii(x, y)] = repl;
     stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
   }
 }
@@ -392,7 +458,7 @@ $("btn-new").addEventListener("click", () => {
   layerVisible = doc.layerNames.map(() => true);
   saveToStorage(); refreshAll();
 });
-$("btn-save").addEventListener("click", () => { saveToStorage(); flash("Saved to browser ✓"); });
+$("btn-save").addEventListener("click", () => { saveToStorage(); flash("Character saved ✓"); });
 $("btn-load").addEventListener("click", () => {
   const d = loadFromStorage();
   if (!d) return flash("Nothing saved yet");
@@ -471,6 +537,109 @@ window.addEventListener("keydown", (e) => {
     for (const o of document.querySelectorAll("#tools button")) o.classList.toggle("active",
       (o as HTMLElement).dataset.tool === tool);
   }
+});
+
+// ── Item browser ─────────────────────────────────────────────────────────────
+function buildItemBrowser() {
+  const wrap = $<HTMLDivElement>("item-browser");
+  wrap.innerHTML = "";
+  for (const [id, pixels] of Object.entries(itemSheet.icons)) {
+    const c = document.createElement("canvas");
+    c.className = "iicon" + (id === currentItemId ? " sel" : "");
+    c.width  = ITEM_SIZE;
+    c.height = ITEM_SIZE;
+    c.title  = id;
+    const cx2 = c.getContext("2d")!;
+    for (let i = 0; i < pixels.length; i++) {
+      const col = pixels[i];
+      if (!col) continue;
+      cx2.fillStyle = col;
+      cx2.fillRect(i % ITEM_SIZE, i / ITEM_SIZE | 0, 1, 1);
+    }
+    c.addEventListener("click", () => selectItem(id));
+    wrap.appendChild(c);
+  }
+}
+
+function selectItem(id: string) {
+  currentItemId = id;
+  itemPixels = [...(itemSheet.icons[id] ?? Array(ITEM_SIZE * ITEM_SIZE).fill(""))];
+  $("item-name").textContent = id;
+  $("item-info").textContent = `Editing: ${id}  (${ITEM_SIZE}×${ITEM_SIZE})`;
+  for (const c of document.querySelectorAll<HTMLElement>(".iicon"))
+    c.classList.toggle("sel", c.title === id);
+  sizeStage();
+  drawStage();
+}
+
+// ── Editor mode switching ─────────────────────────────────────────────────────
+function setEditorMode(m: EditorMode) {
+  editorMode = m;
+  $("tab-char").classList.toggle("active",  m === "char");
+  $("tab-items").classList.toggle("active", m === "items");
+
+  // Header name area
+  $("docname").style.display        = m === "char"  ? "" : "none";
+  $("item-name").style.display      = m === "items" ? "" : "none";
+  $("char-ops").style.display       = m === "char"  ? "flex" : "none";
+  $("item-ops").style.display       = m === "items" ? "flex" : "none";
+
+  // Left panel
+  ($("item-browser-panel") as HTMLElement).style.display   = m === "items" ? "flex" : "none";
+
+  // Center preview
+  ($("char-preview-wrap") as HTMLElement).style.display    = m === "char"  ? "" : "none";
+  ($("item-preview-wrap") as HTMLElement).style.display    = m === "items" ? "" : "none";
+  ($("center-hint") as HTMLElement).textContent            = m === "char"
+    ? "Click / drag to paint · I = pick · scroll palette for more colours"
+    : "Paint this item's 16×16 icon · pick colour from palette · Save icon when done";
+
+  // Right panels
+  ($("char-right-panels") as HTMLElement).style.display   = m === "char"  ? "contents" : "none";
+  ($("item-right-panels") as HTMLElement).style.display   = m === "items" ? "block" : "none";
+
+  if (m === "items") {
+    buildItemBrowser();
+    if (!currentItemId && Object.keys(itemSheet.icons).length > 0) {
+      selectItem(Object.keys(itemSheet.icons)[0]);
+    } else if (currentItemId) {
+      sizeStage(); drawStage();
+    }
+  } else {
+    sizeStage(); drawStage();
+  }
+}
+
+$("tab-char").addEventListener("click",  () => setEditorMode("char"));
+$("tab-items").addEventListener("click", () => setEditorMode("items"));
+
+// ── Item save / export / import ───────────────────────────────────────────────
+$("btn-item-save").addEventListener("click", () => {
+  if (!currentItemId) return flash("Select an item first");
+  itemSheet.icons[currentItemId] = [...itemPixels];
+  saveItemSheet();
+  buildItemBrowser();
+  flash(`Saved icon: ${currentItemId} ✓`);
+});
+
+$("btn-item-export").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify(itemSheet, null, 2)], { type: "application/json" });
+  downloadBlob(blob, "item-sprites.json");
+  flash("Exported item-sprites.json ✓");
+});
+
+$("btn-item-import").addEventListener("click", () => $<HTMLInputElement>("file-item-import").click());
+$<HTMLInputElement>("file-item-import").addEventListener("change", async (e) => {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  if (!file) return;
+  try {
+    itemSheet = JSON.parse(await file.text()) as ItemSheet;
+    saveItemSheet();
+    currentItemId = "";
+    buildItemBrowser();
+    if (Object.keys(itemSheet.icons).length > 0) selectItem(Object.keys(itemSheet.icons)[0]);
+    flash("Item sprites imported ✓");
+  } catch { flash("Bad item-sprites.json file"); }
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────

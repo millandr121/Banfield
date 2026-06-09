@@ -173,15 +173,18 @@ function paint(a: Appearance, o: CharOpts) {
       F(b, dk(boot, 0.7), bKneeX - 1, FEET_R - 2, 4, 3);
   }
 
-  // ── Back arm (profile, skip when punching to avoid ghost limb) ───────────────
-  if (clipY > SHOU_Y && prof && !punching) {
+  // ── Back arm (profile) — retracted/pulled-back during punch, normal otherwise ─
+  if (clipY > SHOU_Y && prof) {
     const dir   = rt ? 1 : -1;
     const backX = CX - dir * 4 + lean;
-    const aOff  = Math.round(-aswing);
-    // Upper arm (sleeve)
-    F(b, dk(shirt, 0.68), backX - 1, SHOU_Y + 1, 3, 5);
-    // Forearm + hand as unit
-    F(b, dk(skin, 0.8), backX - 1 + aOff, SHOU_Y + 6, 3, 2);
+    if (punching) {
+      // Show sleeve only — arm is coiled back behind the torso
+      F(b, dk(shirt, 0.60), backX - 1, SHOU_Y + 1, 3, 4);
+    } else {
+      const aOff = Math.round(-aswing);
+      F(b, dk(shirt, 0.68), backX - 1, SHOU_Y + 1, 3, 5);
+      F(b, dk(skin, 0.8),   backX - 1 + aOff, SHOU_Y + 6, 3, 2);
+    }
   }
 
   // ── Left leg (front view, drawn before right for depth) ─────────────────────
@@ -233,12 +236,11 @@ function paint(a: Appearance, o: CharOpts) {
         F(b, skin, fax - 1 + aOff, SHOU_Y + 6, 3, 2);              // forearm+hand
         F(b, OL, fax - 2 + aOff, SHOU_Y + 7, 5, 1);                // hand outline
       } else {
-        // PUNCH — entire arm shifts forward as one unit.
-        const pOff = Math.round(atkT * 6 * dir);
-        OF(b, dk(shirt, 0.92), fax - 1 + pOff, SHOU_Y + 1, 3, 5);  // sleeve
-        F(b, skin, fax - 1 + pOff, SHOU_Y + 6, 3, 2);              // forearm+hand
+        // PUNCH — arm extends forward as one unit (capped so it stays on-body)
+        const pOff = Math.round(atkT * 4 * dir);   // was 6, capped to avoid out-of-body look
+        OF(b, dk(shirt, 0.92), fax - 1 + pOff, SHOU_Y + 1, 3, 5);
+        F(b, skin, fax - 1 + pOff, SHOU_Y + 6, 3, 2);
         F(b, OL, fax - 2 + pOff, SHOU_Y + 7, 5, 1);
-        // Impact flash
         if (atkT > 0.55) {
           F(b, "#ffe082", fax + pOff + dir, SHOU_Y + 4, 3, 3);
           F(b, "#fffde7", fax + pOff + dir + dir, SHOU_Y + 5, 2, 1);
@@ -257,10 +259,10 @@ function paint(a: Appearance, o: CharOpts) {
         F(b, skin, ax - 1 + aOff, SHOU_Y + 6, 3, 2);
       }
 
-      // Punch arm — whole arm moves.
+      // Punch arm — moves forward, capped to stay attached to body.
       if (punching) {
         const pax  = CX + pSide * sp + lean;
-        const pOff = Math.round(atkT * 7 * pSide);
+        const pOff = Math.round(atkT * 5 * pSide);   // was 7
         OF(b, dk(shirt, 0.92), pax - 1 + pOff, SHOU_Y + 1, 3, 5);
         F(b, skin, pax - 1 + pOff, SHOU_Y + 6, 3, 2);
         if (atkT > 0.55) F(b, "#ffe082", pax + pOff + pSide, SHOU_Y + 4, 3, 3);
@@ -284,8 +286,8 @@ function paint(a: Appearance, o: CharOpts) {
         if (clipY >= FEET_R - 1)
           OF(b, boot, fKneeX - 2, FEET_R - 2, 5, 3);
       } else {
-        // KICK — all three leg segments shift forward as one unit.
-        const kOff = Math.round(atkT * 7 * dir);
+        // KICK — leg shifts forward, capped to stay attached to hip.
+        const kOff = Math.round(atkT * 5 * dir);   // was 7
         OF(b, pants, CX + dir - 1 + kOff, HIP_Y, 3, KNEE_Y - HIP_Y);
         F(b, dk(pants, 0.88), CX + dir - 1 + kOff, KNEE_Y, 3, FEET_R - 1 - KNEE_Y);
         OF(b, boot, CX + dir - 2 + kOff, FEET_R - 2, 5, 3);
@@ -301,9 +303,9 @@ function paint(a: Appearance, o: CharOpts) {
       if (clipY >= FEET_R - 1)
         OF(b, boot, rx - 2 + kOff, FEET_R - 2, 5, 3);
     } else {
-      // KICK front/back — whole right leg.
+      // KICK front/back — capped offset to keep leg attached to hip.
       const rx      = CX + Math.round(2.5 * bw);
-      const kickOff = Math.round(atkT * 8);
+      const kickOff = Math.round(atkT * 5);   // was 8
       OF(b, pants, rx - 1 + kickOff, HIP_Y, 3, KNEE_Y - HIP_Y);
       F(b, dk(pants, 0.82), rx - 1 + kickOff, KNEE_Y, 3, FEET_R - 1 - KNEE_Y);
       OF(b, boot, rx - 2 + kickOff, FEET_R - 2, 5, 3);

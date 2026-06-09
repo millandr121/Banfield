@@ -79,23 +79,50 @@
     </style>
   </head>
   <body>
+    <style>
+      .mode-bar { display: flex; gap: 6px; align-items: center; }
+      .mode-bar button { padding: 4px 14px; font-size: 12px; }
+      #char-ops, #item-ops { display: flex; gap: 6px; align-items: center; }
+      #item-browser { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+        overflow-y: auto; max-height: 100%; }
+      .iicon { width: 40px; height: 40px; image-rendering: pixelated; cursor: pointer;
+        border: 2px solid transparent; border-radius: 4px; background: #0c1820; }
+      .iicon.sel { border-color: var(--gold); }
+      #item-name { color: var(--gold); font-size: 12px; font-weight: 700; min-width: 90px; }
+      .char-panels { display: contents; }
+      .item-panels { display: contents; }
+    </style>
     <header>
       <h1>✎ Banfield Sprite Editor</h1>
-      <input class="docname" id="docname" value="character" />
+      <div class="mode-bar">
+        <button id="tab-char" class="active" title="Edit character walk-cycle frames">Character</button>
+        <button id="tab-items" title="Browse and paint item icons">Items</button>
+      </div>
+      <input class="docname" id="docname" value="character" style="display:none" />
+      <span id="item-name" style="display:none"></span>
       <span class="spacer"></span>
       <a class="back" href="/">← back to game</a>
-      <button id="btn-new">New</button>
-      <button id="btn-save">Save</button>
-      <button id="btn-load">Load</button>
-      <button id="btn-export">Export JSON</button>
-      <button id="btn-import">Import</button>
-      <button id="btn-png">Export PNG</button>
+      <div id="char-ops" style="display:flex">
+        <button id="btn-new">New</button>
+        <button id="btn-save">Save</button>
+        <button id="btn-load">Load</button>
+        <button id="btn-export">Export JSON</button>
+        <button id="btn-import">Import</button>
+        <button id="btn-png">Export PNG</button>
+      </div>
+      <div id="item-ops" style="display:none">
+        <button id="btn-item-save">Save icon</button>
+        <button id="btn-item-export">Export item-sprites.json</button>
+        <button id="btn-item-import">Import item-sprites.json</button>
+        <input type="file" id="file-item-import" accept="application/json" hidden />
+      </div>
       <input type="file" id="file-import" accept="application/json" hidden />
     </header>
     <main>
-      <!-- LEFT: tools, palette, colour -->
+      <!-- LEFT: tools + palette (shared), item browser (items mode) -->
       <div class="col left">
-        <div class="group">
+        <!-- shared tools -->
+        <div class="group" id="tools-panel">
           <h2>Tools</h2>
           <div class="row tools" id="tools">
             <button data-tool="pencil" class="active" title="Pencil (B)">✏️</button>
@@ -107,7 +134,7 @@
             <button id="btn-clear" title="Clear active layer">Clear layer</button>
           </div>
         </div>
-        <div class="group">
+        <div class="group" id="colour-panel">
           <h2>Colour</h2>
           <div class="row" style="margin-bottom:7px">
             <input type="color" id="colorpick" value="#e0ac69" />
@@ -115,7 +142,7 @@
           </div>
           <div class="palette" id="palette"></div>
         </div>
-        <div class="group">
+        <div class="group" id="canvas-panel">
           <h2>Canvas</h2>
           <div class="row">
             <label class="fld">Zoom
@@ -127,45 +154,74 @@
             <label><input type="checkbox" id="onion" /> Onion</label>
           </div>
         </div>
+        <!-- item browser (hidden until items mode) -->
+        <div class="group" id="item-browser-panel" style="display:none;flex:1;overflow:hidden;display:none;flex-direction:column">
+          <h2>Item Icons</h2>
+          <div id="item-browser"></div>
+        </div>
       </div>
 
       <!-- CENTER: stage + preview -->
       <div class="center">
         <canvas id="stage"></canvas>
-        <div class="hint">Click / drag to paint · I = pick · scroll palette for more colours</div>
-        <div class="previewWrap">
+        <div class="hint" id="center-hint">Click / drag to paint · I = pick · scroll palette for more colours</div>
+        <div class="previewWrap" id="char-preview-wrap">
           <label>Walk preview</label>
           <canvas id="preview" width="80" height="104"></canvas>
           <div class="row" style="justify-content:center;margin-top:6px">
             <button id="btn-play" class="active">▶ Play</button>
           </div>
         </div>
+        <div class="previewWrap" id="item-preview-wrap" style="display:none">
+          <label>Item preview</label>
+          <canvas id="item-preview" width="80" height="80"></canvas>
+        </div>
       </div>
 
-      <!-- RIGHT: facings, frames, layers -->
+      <!-- RIGHT: facings/frames/layers (char) or item info (items) -->
       <div class="col right">
-        <div class="group">
-          <h2>Facing</h2>
-          <div class="facings" id="facings"></div>
-        </div>
-        <div class="group">
-          <h2>Frames</h2>
-          <div class="frames" id="frames"></div>
-          <div class="row" style="margin-top:7px">
-            <button id="frame-add">+ Frame</button>
-            <button id="frame-dup">Duplicate</button>
-            <button id="frame-del">Delete</button>
+        <div id="char-right-panels" style="display:contents">
+          <div class="group">
+            <h2>Facing</h2>
+            <div class="facings" id="facings"></div>
+          </div>
+          <div class="group">
+            <h2>Frames</h2>
+            <div class="frames" id="frames"></div>
+            <div class="row" style="margin-top:7px">
+              <button id="frame-add">+ Frame</button>
+              <button id="frame-dup">Duplicate</button>
+              <button id="frame-del">Delete</button>
+            </div>
+          </div>
+          <div class="group">
+            <h2>Layers</h2>
+            <div id="layers"></div>
+          </div>
+          <div class="group">
+            <h2>Playback</h2>
+            <label class="fld">FPS
+              <input type="number" id="fps" min="1" max="24" value="6" />
+            </label>
           </div>
         </div>
-        <div class="group">
-          <h2>Layers</h2>
-          <div id="layers"></div>
-        </div>
-        <div class="group">
-          <h2>Playback</h2>
-          <label class="fld">FPS
-            <input type="number" id="fps" min="1" max="24" value="6" />
-          </label>
+        <div id="item-right-panels" style="display:none">
+          <div class="group">
+            <h2>Item info</h2>
+            <div id="item-info" class="hint">Select an item icon from the left panel to begin editing.</div>
+          </div>
+          <div class="group">
+            <h2>Tips</h2>
+            <div class="hint" style="line-height:1.7">
+              16×16 icon canvas<br>
+              B = pencil · E = eraser<br>
+              G = fill · I = eyedropper<br>
+              Pick from palette<br>
+              Save icon updates the<br>
+              in-game sprite sheet<br>
+              Export to download JSON
+            </div>
+          </div>
         </div>
       </div>
     </main>
