@@ -88,12 +88,20 @@
       .creature-card canvas { background: #0c1820; }
       .app-row { display: flex; gap: 6px; align-items: center; margin-bottom: 5px; }
       .app-row label { font-size: 11px; color: var(--muted); width: 36px; flex-shrink: 0; }
+      .terrain-row { display: flex; align-items: center; gap: 7px; padding: 5px 4px;
+        border-radius: 5px; margin-bottom: 3px; background: var(--panel2); border: 1px solid var(--border); }
+      .terrain-row .tswatch { width: 36px; height: 28px; border-radius: 4px; border: 1px solid rgba(0,0,0,.4); flex-shrink: 0; }
+      .terrain-row .tlabel { flex: 1; font-size: 12px; }
+      .terrain-row input[type=color] { width: 34px; height: 26px; }
+      .new-sprite-form { display: flex; flex-direction: column; gap: 6px; }
+      .new-sprite-form input[type=text] { background: var(--panel2); border: 1px solid var(--border);
+        color: var(--text); border-radius: 4px; padding: 4px 7px; font-size: 12px; }
     </style>
   </head>
   <body>
     <style>
-      .mode-bar { display: flex; gap: 6px; align-items: center; }
-      .mode-bar button { padding: 4px 14px; font-size: 12px; }
+      .mode-bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+      .mode-bar button { padding: 4px 12px; font-size: 12px; }
       #char-ops, #item-ops { display: flex; gap: 6px; align-items: center; }
       #item-browser { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
         overflow-y: auto; max-height: 100%; }
@@ -107,12 +115,13 @@
     <header>
       <h1>✎ Banfield Sprite Editor</h1>
       <div class="mode-bar">
-        <button id="tab-char" class="active" title="Edit character walk-cycle frames">Character</button>
-        <button id="tab-items" title="Browse and paint item icons">Items</button>
-        <button id="tab-npcs" title="Edit NPC appearances">NPCs</button>
+        <button id="tab-char"     title="Edit character walk-cycle frames">Character</button>
+        <button id="tab-items"    title="Browse and paint item icons">Items</button>
+        <button id="tab-npcs"     title="Edit NPC appearances">NPCs</button>
         <button id="tab-creatures" title="Preview creature sprites">Creatures</button>
+        <button id="tab-terrain"  title="Edit terrain tile colours">Terrain</button>
       </div>
-      <input class="docname" id="docname" value="character" style="display:none" />
+      <input class="docname" id="docname" value="character" />
       <span id="item-name" style="display:none"></span>
       <span class="spacer"></span>
       <a class="back" href="/">← back to game</a>
@@ -134,8 +143,10 @@
         <button id="btn-npc-save">Save NPCs</button>
         <button id="btn-npc-reset">Reset to defaults</button>
       </div>
-      <div id="creature-ops" style="display:none">
-        <!-- creatures are view-only previews -->
+      <div id="creature-ops" style="display:none"></div>
+      <div id="terrain-ops" style="display:none">
+        <button id="btn-terrain-save">Save terrain</button>
+        <button id="btn-terrain-reset">Reset defaults</button>
       </div>
       <input type="file" id="file-import" accept="application/json" hidden />
     </header>
@@ -190,6 +201,22 @@
           <h2>Creatures</h2>
           <div class="creature-grid" id="creature-grid"></div>
         </div>
+        <!-- Terrain panel -->
+        <div class="group" id="terrain-panel" style="display:none;flex:1;overflow-y:auto;flex-direction:column">
+          <h2>Tile Colours</h2>
+          <div id="terrain-rows"></div>
+          <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
+            <h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 7px">New sprite file</h2>
+            <div class="new-sprite-form">
+              <input type="text" id="new-sprite-name" placeholder="name (e.g. grassVariant)" />
+              <select id="new-sprite-category" style="font-size:12px;padding:4px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:4px">
+                <option value="items">Item icon (16×16)</option>
+                <option value="char">Character sprite</option>
+              </select>
+              <button id="btn-new-sprite">Create new sprite</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- CENTER: stage + preview -->
@@ -214,6 +241,10 @@
         <div class="previewWrap" id="creature-preview-wrap" style="display:none">
           <label>Creature</label>
           <canvas id="creature-stage" width="96" height="96"></canvas>
+        </div>
+        <div class="previewWrap" id="terrain-preview-wrap" style="display:none">
+          <label>Tile preview (3×3)</label>
+          <canvas id="terrain-preview" width="144" height="144"></canvas>
         </div>
       </div>
 
@@ -275,9 +306,22 @@
             <h2>Creatures</h2>
             <div class="hint" style="line-height:1.7">
               Procedural canvas art.<br>
-              Preview all creature<br>
-              types here. Direct<br>
-              pixel editing coming soon.
+              Pixel editing coming soon.
+            </div>
+          </div>
+        </div>
+        <div id="terrain-right-panels" style="display:none">
+          <div class="group">
+            <h2>Terrain tips</h2>
+            <div class="hint" style="line-height:1.7">
+              Change tile base colours<br>
+              in the left panel.<br>
+              Save writes to the game<br>
+              — hot-reloads instantly.<br><br>
+              New sprite: create a blank<br>
+              icon or character file<br>
+              from the form below the<br>
+              colour list.
             </div>
           </div>
         </div>

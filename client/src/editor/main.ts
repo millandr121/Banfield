@@ -12,14 +12,30 @@ import {
 import baseChar from "../assets/base-character.json";
 import rawItemSheet from "../assets/item-sprites.json";
 import npcLooksData from "../assets/npc-looks.json";
+import rawTerrainData from "../assets/terrain-settings.json";
 import { drawCharacterPixel } from "../pixelchar";
 import type { Appearance } from "../../../shared/protocol";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ── Editor mode ───────────────────────────────────────────────────────────────
-type EditorMode = "char" | "items" | "npcs" | "creatures";
+type EditorMode = "char" | "items" | "npcs" | "creatures" | "terrain";
 let editorMode: EditorMode = "char";
+
+// ── Terrain settings state ────────────────────────────────────────────────────
+const TERRAIN_KEY = "banfield-terrain";
+interface TerrainSettings { colors: Record<string, string>; }
+const TERRAIN_DEFAULTS = (rawTerrainData as unknown as TerrainSettings).colors;
+const TERRAIN_LABELS: Record<string, string> = {
+  grass: "Grass", forest: "Forest", sand: "Sand", hill: "Hill",
+  rock: "Rock", road: "Road", water: "Water (sea)", freshwater: "Fresh Water", dock: "Dock",
+};
+let terrainSettings: TerrainSettings = loadTerrainSettings();
+function loadTerrainSettings(): TerrainSettings {
+  try { const r = localStorage.getItem(TERRAIN_KEY); if (r) return JSON.parse(r); } catch { /* ignore */ }
+  return { colors: { ...TERRAIN_DEFAULTS } };
+}
+function saveTerrainSettings() { localStorage.setItem(TERRAIN_KEY, JSON.stringify(terrainSettings)); }
 
 // ── Item sprites state ────────────────────────────────────────────────────────
 interface ItemSheet { version: number; size: number; icons: Record<string, string[]>; }
@@ -737,40 +753,52 @@ function buildCreatureGrid() {
 }
 
 // ── Editor mode switching ─────────────────────────────────────────────────────
+function show(id: string, val: boolean, display = "block") {
+  const el = document.getElementById(id);
+  if (el) el.style.display = val ? display : "none";
+}
+
 function setEditorMode(m: EditorMode) {
   editorMode = m;
-  // tab buttons
-  for (const [id, val] of [["tab-char","char"],["tab-items","items"],["tab-npcs","npcs"],["tab-creatures","creatures"]] as const)
-    $(id).classList.toggle("active", m === val);
+  const ALL: EditorMode[] = ["char","items","npcs","creatures","terrain"];
+  for (const v of ALL) {
+    const btn = document.getElementById(`tab-${v}`);
+    if (btn) btn.classList.toggle("active", m === v);
+  }
 
-  // header
-  $("docname").style.display = m === "char" ? "" : "none";
-  $("item-name").style.display = m === "items" ? "" : "none";
-  $("char-ops").style.display  = m === "char" ? "flex" : "none";
-  $("item-ops").style.display  = m === "items" ? "flex" : "none";
-  ($("npc-ops") as HTMLElement).style.display = m === "npcs" ? "flex" : "none";
-  ($("creature-ops") as HTMLElement).style.display = m === "creatures" ? "flex" : "none";
+  // Header
+  show("docname",   m === "char");
+  show("item-name", m === "items");
+  show("char-ops",    m === "char",     "flex");
+  show("item-ops",    m === "items",    "flex");
+  show("npc-ops",     m === "npcs",     "flex");
+  show("creature-ops",m === "creatures","flex");
+  show("terrain-ops", m === "terrain",  "flex");
 
-  // left panels
-  ($("item-browser-panel") as HTMLElement).style.display = m === "items" ? "flex" : "none";
-  ($("npc-grid-panel") as HTMLElement).style.display = m === "npcs" ? "flex" : "none";
-  ($("creature-grid-panel") as HTMLElement).style.display = m === "creatures" ? "flex" : "none";
+  // Left panels (hide tools + palette for terrain/npc/creature)
+  show("tools-panel",  m === "char" || m === "items");
+  show("colour-panel", m === "char" || m === "items");
+  show("canvas-panel", m === "char" || m === "items");
+  show("item-browser-panel",  m === "items",    "flex");
+  show("npc-grid-panel",      m === "npcs",     "flex");
+  show("creature-grid-panel", m === "creatures","flex");
+  show("terrain-panel",       m === "terrain",  "flex");
 
-  // center previews
-  ($("char-preview-wrap") as HTMLElement).style.display = m === "char" ? "" : "none";
-  ($("item-preview-wrap") as HTMLElement).style.display = m === "items" ? "" : "none";
-  ($("npc-preview-wrap") as HTMLElement).style.display = m === "npcs" ? "" : "none";
-  ($("creature-preview-wrap") as HTMLElement).style.display = m === "creatures" ? "" : "none";
-
-  // right panels
-  ($("char-right-panels") as HTMLElement).style.display = m === "char" ? "contents" : "none";
-  ($("item-right-panels") as HTMLElement).style.display = m === "items" ? "block" : "none";
-  ($("npc-right-panels") as HTMLElement).style.display = m === "npcs" ? "block" : "none";
-  ($("creature-right-panels") as HTMLElement).style.display = m === "creatures" ? "block" : "none";
-
-  // stage visibility: hide stage for npcs/creatures (they don't use it)
+  // Center
   stage.style.display = (m === "char" || m === "items") ? "" : "none";
-  ($("center-hint") as HTMLElement).style.display = (m === "char" || m === "items") ? "" : "none";
+  show("center-hint",         m === "char" || m === "items");
+  show("char-preview-wrap",   m === "char");
+  show("item-preview-wrap",   m === "items");
+  show("npc-preview-wrap",    m === "npcs");
+  show("creature-preview-wrap", m === "creatures");
+  show("terrain-preview-wrap",  m === "terrain");
+
+  // Right panels
+  ($("char-right-panels") as HTMLElement).style.display = m === "char" ? "contents" : "none";
+  show("item-right-panels",     m === "items");
+  show("npc-right-panels",      m === "npcs");
+  show("creature-right-panels", m === "creatures");
+  show("terrain-right-panels",  m === "terrain");
 
   if (m === "items") {
     buildItemBrowser();
@@ -781,6 +809,8 @@ function setEditorMode(m: EditorMode) {
     if (!currentNpcKind && NPC_KINDS.length > 0) selectNpc(NPC_KINDS[0]);
   } else if (m === "creatures") {
     buildCreatureGrid();
+  } else if (m === "terrain") {
+    buildTerrainRows();
   } else {
     sizeStage(); drawStage();
   }
@@ -854,13 +884,99 @@ $("btn-npc-reset").addEventListener("click", () => {
   flash("Reset to defaults ✓");
 });
 
+// ── Terrain tab ──────────────────────────────────────────────────────────────
+const terrainCanvas = $<HTMLCanvasElement>("terrain-preview");
+const terrainPctx = terrainCanvas?.getContext("2d");
+
+function buildTerrainRows() {
+  const wrap = $("terrain-rows");
+  wrap.innerHTML = "";
+  for (const [key, label] of Object.entries(TERRAIN_LABELS)) {
+    const row = document.createElement("div");
+    row.className = "terrain-row";
+    const swatch = document.createElement("div");
+    swatch.className = "tswatch";
+    swatch.style.background = terrainSettings.colors[key] ?? TERRAIN_DEFAULTS[key] ?? "#888";
+    const lbl = document.createElement("span");
+    lbl.className = "tlabel";
+    lbl.textContent = label;
+    const inp = document.createElement("input");
+    inp.type = "color";
+    inp.value = terrainSettings.colors[key] ?? TERRAIN_DEFAULTS[key] ?? "#888888";
+    inp.addEventListener("input", () => {
+      terrainSettings.colors[key] = inp.value;
+      swatch.style.background = inp.value;
+      renderTerrainPreview();
+    });
+    row.appendChild(swatch); row.appendChild(lbl); row.appendChild(inp);
+    wrap.appendChild(row);
+  }
+  renderTerrainPreview();
+}
+
+function renderTerrainPreview() {
+  if (!terrainPctx) return;
+  const c = terrainCanvas;
+  terrainPctx.clearRect(0, 0, c.width, c.height);
+  const keys = Object.keys(TERRAIN_LABELS);
+  const cellW = c.width / 3, cellH = c.height / 3;
+  for (let i = 0; i < Math.min(9, keys.length); i++) {
+    const col = terrainSettings.colors[keys[i]] ?? "#888";
+    terrainPctx.fillStyle = col;
+    terrainPctx.fillRect((i % 3) * cellW, Math.floor(i / 3) * cellH, cellW, cellH);
+    terrainPctx.font = "bold 10px system-ui";
+    terrainPctx.fillStyle = "rgba(0,0,0,0.5)";
+    terrainPctx.fillText(TERRAIN_LABELS[keys[i]], (i % 3) * cellW + 4, Math.floor(i / 3) * cellH + 13);
+  }
+}
+
+$("btn-terrain-save")?.addEventListener("click", async () => {
+  saveTerrainSettings();
+  try {
+    await fetch("/api/save-asset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "terrain-settings.json", data: terrainSettings }),
+    });
+    flash("Terrain colours saved to game ✓");
+  } catch { flash("Terrain saved (localStorage only)"); }
+});
+
+$("btn-terrain-reset")?.addEventListener("click", () => {
+  terrainSettings = { colors: { ...TERRAIN_DEFAULTS } };
+  saveTerrainSettings();
+  buildTerrainRows();
+  flash("Terrain reset to defaults ✓");
+});
+
+// ── New sprite file ────────────────────────────────────────────────────────────
+$("btn-new-sprite")?.addEventListener("click", () => {
+  const name = ($<HTMLInputElement>("new-sprite-name")).value.trim();
+  if (!name) return flash("Enter a sprite file name first");
+  const cat = ($("new-sprite-category") as unknown as HTMLSelectElement).value;
+  if (cat === "items") {
+    if (itemSheet.icons[name]) return flash(`Item "${name}" already exists — select it in the Items tab`);
+    itemSheet.icons[name] = Array(ITEM_SIZE * ITEM_SIZE).fill("");
+    saveItemSheet();
+    flash(`Created item icon "${name}" ✓ — switch to Items tab to paint it`);
+  } else {
+    doc = newSpriteDoc(name);
+    layerVisible = doc.layerNames.map(() => true);
+    saveToStorage();
+    flash(`Created character sprite "${name}" ✓`);
+    setEditorMode("char");
+  }
+  ($<HTMLInputElement>("new-sprite-name")).value = "";
+});
+
+$("tab-terrain").addEventListener("click", () => setEditorMode("terrain"));
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 function refreshAll() {
   $<HTMLInputElement>("docname").value = doc.name;
   $<HTMLInputElement>("fps").value = String(doc.fps);
-  sizeStage();
   buildPalette(); buildFacings(); buildFrames(); buildLayers(); buildDyePanel();
   setColor(color);
-  drawStage();
+  setEditorMode(editorMode);  // properly initialise all panel states
 }
 refreshAll();

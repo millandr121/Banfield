@@ -1,0 +1,13 @@
+{
+  "colors": {
+    "water":      "#287ab0",
+    "freshwater": "#2a8878",
+    "sand":       "#d4c070",
+    "grass":      "#88b040",
+    "forest":     "#3a6228",
+    "hill":       "#8a7850",
+    "rock":       "#8a8278",
+    "road":       "#606050",
+    "dock":       "#8a6038"
+  }
+}

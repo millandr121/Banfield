@@ -18,6 +18,7 @@ import {
   PlayerMode,
   PlayerState,
   ResourceNode,
+  RoomDef,
   ServerMessage,
   ShopDef,
   SKILL_NAMES,
@@ -41,21 +42,23 @@ import { SPECIES, resourceSpeciesKey } from "../../shared/species";
 import { Net } from "./net";
 import { drawCharacterPixel, type CharOpts as PixelCharOpts } from "./pixelchar";
 import npcLooksData from "./assets/npc-looks.json";
+import terrainData from "./assets/terrain-settings.json";
 import { drawItemIcon } from "./itemicon";
 
 const CHARGE_MAX_MS = 600; // hold Space this long for a full-power swing
 const HARVEST_RANGE_PX = 1.8 * TILE_SIZE; // client-side prompt range (cosmetic only)
 
+const tc = (terrainData as { colors: Record<string, string> }).colors;
 const TILE_COLORS: Record<Tile, string> = {
-  [Tile.Water]: "#287ab0",
-  [Tile.FreshWater]: "#2a8878",
-  [Tile.Sand]: "#d4c070",
-  [Tile.Grass]: "#88b040",   // warm yellow-green — Eastward vibe
-  [Tile.Forest]: "#3a6228",
-  [Tile.Hill]: "#8a7850",
-  [Tile.Rock]: "#8a8278",
-  [Tile.Road]: "#606050",
-  [Tile.Dock]: "#8a6038",
+  [Tile.Water]:      tc.water      ?? "#287ab0",
+  [Tile.FreshWater]: tc.freshwater ?? "#2a8878",
+  [Tile.Sand]:       tc.sand       ?? "#d4c070",
+  [Tile.Grass]:      tc.grass      ?? "#88b040",
+  [Tile.Forest]:     tc.forest     ?? "#3a6228",
+  [Tile.Hill]:       tc.hill       ?? "#8a7850",
+  [Tile.Rock]:       tc.rock       ?? "#8a8278",
+  [Tile.Road]:       tc.road       ?? "#606050",
+  [Tile.Dock]:       tc.dock       ?? "#8a6038",
 };
 
 // ── Eastward-style tile texture helpers ──────────────────────────────────────
@@ -373,6 +376,16 @@ export class Game {
   private invHits: Array<{ x: number; y: number; w: number; h: number; id: ItemId }> = [];
   private invBounds: { x: number; y: number; w: number; h: number } | null = null;
 
+  // Paint-wand tile overrides — persisted to localStorage.
+  private tileOverrides = new Map<string, Tile>(); // "x,y" -> tile type
+  private wandPanel: { tx: number; ty: number; scrollIdx: number } | null = null;
+  private static readonly TILE_OVERRIDE_KEY = "banfield-tile-overrides";
+
+  // Interior room state
+  private room: RoomDef | null = null;
+  private roomX = 0; // player tile position inside room
+  private roomY = 0;
+
   // Login-screen hooks (main.ts wires these before the game proper starts).
   onNameStatus?: (name: string, taken: boolean) => void;
   onJoinDenied?: (reason: string) => void;
@@ -387,6 +400,15 @@ export class Game {
     window.addEventListener("keydown", (e) => this.onKey(e, true));
     window.addEventListener("keyup", (e) => this.onKey(e, false));
     this.canvas.addEventListener("mousedown", (e) => this.onCanvasMouseDown(e));
+    this.canvas.addEventListener("wheel", (e) => this.onCanvasWheel(e), { passive: false });
+    // Restore saved tile overrides
+    try {
+      const raw = localStorage.getItem(Game.TILE_OVERRIDE_KEY);
+      if (raw) {
+        const obj = JSON.parse(raw) as Record<string, number>;
+        for (const [k, v] of Object.entries(obj)) this.tileOverrides.set(k, v as Tile);
+      }
+    } catch { /* ignore */ }
   }
 
   // HUD clicks: corner icons (bottom-right), quick-key belt, and the top-right
@@ -427,9 +449,49 @@ export class Game {
         return;
       }
     }
+    // Wand panel click — dismiss or select a tile type
+    if (this.wandPanel && this.wandHits.length) {
+      for (const h of this.wandHits) {
+        if (mx >= h.x && mx <= h.x + h.w && my >= h.y && my <= h.y + h.h) {
+          h.act(mx, my);
+          e.preventDefault();
+          return;
+        }
+      }
+      this.wandPanel = null;
+      return;
+    }
+    // Paint-wand world click — open tile picker at clicked tile
+    const me = this.snap?.players.find((p) => p.id === this.myId);
+    if (me?.equipped === "paintWand" && this.map) {
+      const z = this.zoom;
+      const tx = Math.floor((mx / z + this.cam.x) / TILE_SIZE);
+      const ty = Math.floor((my / z + this.cam.y) / TILE_SIZE);
+      if (tx >= 0 && ty >= 0 && tx < this.map.width && ty < this.map.height) {
+        const key = `${tx},${ty}`;
+        const curTile = (this.tileOverrides.get(key) ?? this.map.tiles[ty * this.map.width + tx]) as Tile;
+        const opts = this.wandOptions(tx, ty);
+        // Start scroll at the current tile type if found
+        let startIdx = opts.findIndex(([t]) => t === curTile);
+        if (startIdx < 0) startIdx = 0;
+        this.wandPanel = { tx, ty, scrollIdx: startIdx };
+        e.preventDefault();
+        return;
+      }
+    }
+  }
+
+  private onCanvasWheel(e: WheelEvent) {
+    if (this.wandPanel) {
+      const opts = this.wandOptions(this.wandPanel.tx, this.wandPanel.ty);
+      const dir = e.deltaY > 0 ? 1 : -1;
+      this.wandPanel.scrollIdx = (this.wandPanel.scrollIdx + dir + opts.length) % opts.length;
+      e.preventDefault();
+    }
   }
 
   private compassHit: { cx: number; cy: number; r: number } | null = null;
+  private wandHits: Array<{ x: number; y: number; w: number; h: number; act: (mx: number, my: number) => void }> = [];
 
   // Open the drawer at a given tab; clicking the active tab's icon closes it.
   private togglePanel(tab: typeof this.panelTab) {
@@ -532,14 +594,25 @@ export class Game {
         if (k === "f") {
           this.net.send({ t: "board" });
         } else if (k === "e") {
-          // Near an NPC? Talk instead of harvesting.
-          const npc = this.nearbyNpc();
-          if (npc) {
-            this.npcOpen = this.npcOpen === npc.id ? null : npc.id;
+          // Inside a room? E exits it.
+          if (this.room) {
+            this.net.send({ t: "exit-building" });
           } else {
-            this.net.send({ t: "harvest" });
-            this.net.send({ t: "repair" });
-            this.net.send({ t: "drink" }); // sip from fresh water if beside a lake
+            // Near an NPC? Talk instead of harvesting.
+            const npc = this.nearbyNpc();
+            if (npc) {
+              this.npcOpen = this.npcOpen === npc.id ? null : npc.id;
+            } else {
+              // Near a building with a door? Enter it.
+              const bld = this.nearbyBuilding();
+              if (bld) {
+                this.net.send({ t: "enter-building", buildingId: bld.id });
+              } else {
+                this.net.send({ t: "harvest" });
+                this.net.send({ t: "repair" });
+                this.net.send({ t: "drink" }); // sip from fresh water if beside a lake
+              }
+            }
           }
         } else if (k === "n") {
           const npc = this.nearbyNpc();
@@ -603,6 +676,19 @@ export class Game {
           this.logbookOpen = false;
           this.leaderboardOpen = false;
           this.inspectKey = null;
+          this.wandPanel = null;
+          this.room = null;
+          e.preventDefault();
+        } else if (this.wandPanel && (k === "a" || k === "arrowleft")) {
+          const opts = this.wandOptions(this.wandPanel.tx, this.wandPanel.ty);
+          this.wandPanel.scrollIdx = (this.wandPanel.scrollIdx - 1 + opts.length) % opts.length;
+          e.preventDefault();
+        } else if (this.wandPanel && (k === "d" || k === "arrowright")) {
+          const opts = this.wandOptions(this.wandPanel.tx, this.wandPanel.ty);
+          this.wandPanel.scrollIdx = (this.wandPanel.scrollIdx + 1) % opts.length;
+          e.preventDefault();
+        } else if (this.wandPanel && k === "enter") {
+          this.applyWandSelection();
           e.preventDefault();
         } else if (k === "b") {
           // In combat mode, B is BLOCK (break a grab in high stance / soften hits).
@@ -669,7 +755,35 @@ export class Game {
     return this.snap?.players.find((p) => p.id === this.myId);
   }
 
+  private roomMoveTimer = 0;
   private sendInput() {
+    // Room movement is local — no server input needed
+    if (this.room) {
+      const now = performance.now();
+      if (now - this.roomMoveTimer > 180) {
+        let rx = 0, ry = 0;
+        if (this.keys.has("w") || this.keys.has("arrowup")) ry -= 1;
+        if (this.keys.has("s") || this.keys.has("arrowdown")) ry += 1;
+        // Don't intercept A/D for room movement when wand panel is open
+        if (!this.wandPanel) {
+          if (this.keys.has("a") || this.keys.has("arrowleft")) rx -= 1;
+          if (this.keys.has("d") || this.keys.has("arrowright")) rx += 1;
+        }
+        if (rx !== 0 || ry !== 0) {
+          this.roomMoveTimer = now;
+          const nx = this.roomX + rx, ny = this.roomY + ry;
+          if (nx >= 0 && ny >= 0 && nx < this.room.width && ny < this.room.height) {
+            const tile = this.room.tiles[ny * this.room.width + nx];
+            if (tile.kind !== "wall") {
+              this.roomX = nx; this.roomY = ny;
+              // Standing on the door tile exits the room
+              if (tile.kind === "door") this.net.send({ t: "exit-building" });
+            }
+          }
+        }
+      }
+      return;
+    }
     let dx = 0;
     let dy = 0;
     if (this.keys.has("w") || this.keys.has("arrowup")) dy -= 1;
@@ -738,6 +852,12 @@ export class Game {
       this.logLines.push(`${prefix}${m.from}: ${m.msg}`);
       if (this.logLines.length > 6) this.logLines.shift();
       this.renderLog();
+    } else if (m.t === "room") {
+      this.room = m.def;
+      this.roomX = m.playerX;
+      this.roomY = m.playerY;
+    } else if (m.t === "room-exit") {
+      this.room = null;
     }
   }
 
@@ -802,10 +922,12 @@ export class Game {
     if (this.panelOpen && this.panelTab === "equip") this.drawEquipPanel(me);
     if (this.panelOpen && this.panelTab === "skills") this.drawSkillsPanel(me);
     if (this.craftOpen) this.drawCraftPanel(me);
+    if (this.room) this.drawRoom();
     if (this.shopId) this.drawShopPanel(me);
     if (this.invOpen) this.drawInventoryPanel(me);
     if (this.npcOpen) this.drawNpcDialogue(me);
     if (this.mapOpen) this.drawMapOverlay(me);
+    if (this.wandPanel) this.drawWandPanel(me);
     if (this.inspectKey) this.drawInspectCard();
     if (this.logbookOpen) this.drawLogbook();
     if (this.leaderboardOpen) this.drawLeaderboard();
@@ -1201,7 +1323,7 @@ export class Game {
     for (let y = startY; y < endY; y++) {
       for (let x = startX; x < endX; x++) {
         const i = y * map.width + x;
-        const tile = map.tiles[i] as Tile;
+        const tile = (this.tileOverrides.get(`${x},${y}`) ?? map.tiles[i]) as Tile;
         const elev = map.elevation[i];
         const { sx, sy } = this.toScreen(x, y);
         const depth = snap.waterline - elev; // >0 means under water right now
@@ -1774,6 +1896,235 @@ export class Game {
     ctx.fillText("■ You   ■ Buildings   ■ Bus stop   ■ Sea route   ■ Gate   — Press M or Esc to close", this.canvas.width / 2, legendY);
   }
 
+  // --- interior room renderer -----------------------------------------------
+  private drawRoom() {
+    if (!this.room) return;
+    const ctx = this.ctx;
+    const W = this.canvas.width, H = this.canvas.height;
+    const R = this.room;
+    const TS = 40; // room tile size in pixels
+    const offX = Math.floor(W / 2 - this.roomX * TS - TS / 2);
+    const offY = Math.floor(H / 2 - this.roomY * TS - TS / 2);
+
+    // Black overlay
+    ctx.fillStyle = "rgba(0,0,0,0.92)";
+    ctx.fillRect(0, 0, W, H);
+
+    // Draw room tiles
+    for (let ry = 0; ry < R.height; ry++) {
+      for (let rx = 0; rx < R.width; rx++) {
+        const tile = R.tiles[ry * R.width + rx];
+        const sx = offX + rx * TS, sy = offY + ry * TS;
+        // Tile base colour
+        switch (tile.kind) {
+          case "wall":    ctx.fillStyle = (tile.variant ?? 0) % 2 === 0 ? "#5c4a3a" : "#6b5848"; break;
+          case "floor":   ctx.fillStyle = (tile.variant ?? 0) % 2 === 0 ? "#c8b89a" : "#bfae8f"; break;
+          case "door":    ctx.fillStyle = "#8b5e3c"; break;
+          case "window":  ctx.fillStyle = "#4a8aaa"; break;
+          case "rug":     ctx.fillStyle = "#7a4a8c"; break;
+          case "stairs":  ctx.fillStyle = "#a09070"; break;
+          default:        ctx.fillStyle = "#888";
+        }
+        ctx.fillRect(sx, sy, TS, TS);
+        // Tile border
+        ctx.strokeStyle = "rgba(0,0,0,0.25)"; ctx.lineWidth = 1;
+        ctx.strokeRect(sx, sy, TS, TS);
+        // Door marker
+        if (tile.kind === "door") {
+          ctx.font = "18px serif"; ctx.textAlign = "center";
+          ctx.fillStyle = "#f5deb3";
+          ctx.fillText("🚪", sx + TS / 2, sy + TS / 2 + 6);
+        }
+        // Window detail
+        if (tile.kind === "window") {
+          ctx.strokeStyle = "#9dd8f0"; ctx.lineWidth = 1.5;
+          ctx.strokeRect(sx + 6, sy + 6, TS - 12, TS - 12);
+        }
+        // Rug pattern
+        if (tile.kind === "rug") {
+          ctx.strokeStyle = "#a06cc0"; ctx.lineWidth = 2;
+          ctx.strokeRect(sx + 5, sy + 5, TS - 10, TS - 10);
+        }
+      }
+    }
+
+    // Player avatar (simple circle)
+    const px = offX + this.roomX * TS + TS / 2;
+    const py2 = offY + this.roomY * TS + TS / 2;
+    ctx.fillStyle = "#ffd54f";
+    ctx.beginPath(); ctx.arc(px, py2, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(px, py2, 10, 0, Math.PI * 2); ctx.stroke();
+
+    // HUD: building name + exit hint
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.fillRect(0, 0, W, 32);
+    ctx.font = "bold 14px system-ui"; ctx.textAlign = "center";
+    ctx.fillStyle = "#ffd54f";
+    ctx.fillText("Interior  ·  Walk to door or press E to exit", W / 2, 21);
+  }
+
+  // --- paint-wand tile picker -----------------------------------------------
+  private saveTileOverrides() {
+    const obj: Record<string, number> = {};
+    for (const [k, v] of this.tileOverrides) obj[k] = v;
+    localStorage.setItem(Game.TILE_OVERRIDE_KEY, JSON.stringify(obj));
+  }
+
+  // Returns the tile options compatible with the tile at (tx,ty).
+  // Land tiles can only be swapped with land, water with water.
+  private wandOptions(tx: number, ty: number): [Tile, string][] {
+    const LAND: [Tile, string][] = [
+      [Tile.Grass, "Grass"], [Tile.Forest, "Forest"], [Tile.Sand, "Sand"],
+      [Tile.Hill, "Hill"], [Tile.Rock, "Rock"], [Tile.Road, "Road"],
+    ];
+    const WATER: [Tile, string][] = [
+      [Tile.Water, "Ocean"], [Tile.FreshWater, "Fresh Water"], [Tile.Dock, "Dock"],
+    ];
+    if (!this.map) return LAND;
+    const t = (this.tileOverrides.get(`${tx},${ty}`) ?? this.map.tiles[ty * this.map.width + tx]) as Tile;
+    return (t === Tile.Water || t === Tile.FreshWater || t === Tile.Dock) ? WATER : LAND;
+  }
+
+  // Draw the scrollable bottom-bar wand picker.
+  private drawWandPanel(_me?: PlayerState) {
+    if (!this.wandPanel || !this.map) return;
+    const ctx = this.ctx;
+    const { tx, ty, scrollIdx } = this.wandPanel;
+    const key = `${tx},${ty}`;
+    const curTile = (this.tileOverrides.get(key) ?? this.map.tiles[ty * this.map.width + tx]) as Tile;
+    const opts = this.wandOptions(tx, ty);
+
+    this.wandHits = [];
+    const W = this.canvas.width, H = this.canvas.height;
+
+    // ── Apply-mode buttons row (above the swatch bar) ──────────────────────
+    const BTN_H = 22, BTN_Y = H - 88;
+    const MODES: Array<{ label: string; key: string; act: () => void }> = [
+      { label: "This tile [Enter]", key: "single",
+        act: () => this.applyTileOverride(tx, ty, curTile, "single") },
+      { label: "All similar", key: "all",
+        act: () => this.applyTileOverride(tx, ty, curTile, "all") },
+      { label: "Radius 5", key: "radius",
+        act: () => this.applyTileOverride(tx, ty, curTile, "radius") },
+      { label: "Clear tile", key: "clear",
+        act: () => { this.tileOverrides.delete(key); this.saveTileOverrides(); this.wandPanel = null; } },
+      { label: "✕ Cancel", key: "close",
+        act: () => { this.wandPanel = null; } },
+    ];
+    const totalBW = W - 40, bW = Math.floor(totalBW / MODES.length) - 4;
+    for (let i = 0; i < MODES.length; i++) {
+      const bx = 20 + i * (bW + 4);
+      const isClear = MODES[i].key === "clear" || MODES[i].key === "close";
+      ctx.fillStyle = isClear ? "rgba(100,30,30,0.8)" : "rgba(0,80,110,0.9)";
+      ctx.fillRect(bx, BTN_Y, bW, BTN_H);
+      ctx.strokeStyle = isClear ? "#a05050" : "#0098b8"; ctx.lineWidth = 1;
+      ctx.strokeRect(bx, BTN_Y, bW, BTN_H);
+      ctx.font = "11px system-ui"; ctx.textAlign = "center";
+      ctx.fillStyle = "#d8eef5";
+      ctx.fillText(MODES[i].label, bx + bW / 2, BTN_Y + 15);
+      const act = MODES[i].act;
+      this.wandHits.push({ x: bx, y: BTN_Y, w: bW, h: BTN_H, act: () => act() });
+    }
+
+    // ── Scrollable swatch row ───────────────────────────────────────────────
+    const CELL = 60, VISIBLE = Math.min(opts.length, Math.floor((W - 80) / CELL));
+    const BAR_H = 60, BAR_Y = H - BAR_H;
+    const totalW = VISIBLE * CELL;
+    const startX = Math.floor(W / 2 - totalW / 2);
+
+    // Dark bar background
+    ctx.fillStyle = "rgba(6,18,28,0.95)";
+    ctx.fillRect(0, BAR_Y - 2, W, BAR_H + 2);
+    ctx.strokeStyle = "#007b94"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, BAR_Y - 2); ctx.lineTo(W, BAR_Y - 2); ctx.stroke();
+
+    // Label above bar
+    ctx.font = "11px system-ui"; ctx.textAlign = "center"; ctx.fillStyle = "#ffd54f";
+    ctx.fillText(`✦ Paint Wand  ·  (${tx},${ty})  ·  current: ${Tile[curTile] ?? curTile}  ·  ◄ A/D or scroll ►  ·  Enter to apply`, W / 2, BAR_Y - 6);
+
+    // Draw the center ± half visible slots
+    const half = Math.floor(VISIBLE / 2);
+    for (let slot = 0; slot < VISIBLE; slot++) {
+      const optIdx = ((scrollIdx - half + slot) % opts.length + opts.length) % opts.length;
+      const [tileType, name] = opts[optIdx];
+      const isCenter = slot === half;
+      const cx2 = startX + slot * CELL;
+      const cy2 = BAR_Y + 2;
+      const cw = CELL - 4, ch = BAR_H - 8;
+
+      // Highlight center
+      if (isCenter) {
+        ctx.fillStyle = "rgba(0,188,212,0.3)";
+        ctx.fillRect(cx2 - 2, cy2 - 2, cw + 4, ch + 4);
+        ctx.strokeStyle = "#00bcd4"; ctx.lineWidth = 2;
+        ctx.strokeRect(cx2 - 2, cy2 - 2, cw + 4, ch + 4);
+      }
+
+      // Colour swatch
+      ctx.fillStyle = TILE_COLORS[tileType] ?? "#555";
+      ctx.fillRect(cx2 + 4, cy2 + 4, cw - 8, cw - 8);
+      ctx.strokeStyle = isCenter ? "#00e5ff" : "rgba(0,0,0,0.5)"; ctx.lineWidth = 1;
+      ctx.strokeRect(cx2 + 4, cy2 + 4, cw - 8, cw - 8);
+
+      // Name
+      ctx.font = isCenter ? "bold 10px system-ui" : "10px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillStyle = isCenter ? "#ffffff" : "#8fb4c9";
+      ctx.fillText(name, cx2 + cw / 2, cy2 + ch - 4);
+
+      // Click → scroll to this option
+      const capturedOptIdx = optIdx;
+      this.wandHits.push({ x: cx2, y: cy2, w: cw, h: ch, act: () => {
+        this.wandPanel!.scrollIdx = capturedOptIdx;
+      }});
+    }
+
+    // Scroll arrow hints
+    ctx.font = "18px system-ui"; ctx.fillStyle = "rgba(0,188,212,0.7)";
+    ctx.textAlign = "center";
+    ctx.fillText("◄", startX - 16, BAR_Y + BAR_H / 2);
+    ctx.fillText("►", startX + totalW + 16, BAR_Y + BAR_H / 2);
+  }
+
+  private applyWandSelection() {
+    if (!this.wandPanel || !this.map) return;
+    const { tx, ty, scrollIdx } = this.wandPanel;
+    const opts = this.wandOptions(tx, ty);
+    const [tileType] = opts[scrollIdx % opts.length];
+    this.tileOverrides.set(`${tx},${ty}`, tileType);
+    this.saveTileOverrides();
+    this.wandPanel = null;
+  }
+
+  private applyTileOverride(tx: number, ty: number, _fromTile: Tile, mode: "single" | "all" | "radius") {
+    if (!this.wandPanel || !this.map) return;
+    const opts = this.wandOptions(tx, ty);
+    const [newTile] = opts[this.wandPanel.scrollIdx % opts.length];
+    this.tileOverrides.set(`${tx},${ty}`, newTile);
+    if (mode === "all") {
+      const srcTile = this.map.tiles[ty * this.map.width + tx] as Tile;
+      for (let y = 0; y < this.map.height; y++) {
+        for (let x = 0; x < this.map.width; x++) {
+          const t = this.map.tiles[y * this.map.width + x] as Tile;
+          if (t === srcTile) this.tileOverrides.set(`${x},${y}`, newTile);
+        }
+      }
+    } else if (mode === "radius") {
+      for (let dy = -5; dy <= 5; dy++) for (let dx = -5; dx <= 5; dx++) {
+        if (dx * dx + dy * dy > 25) continue;
+        const nx = tx + dx, ny = ty + dy;
+        if (nx < 0 || ny < 0 || nx >= this.map.width || ny >= this.map.height) continue;
+        const t = this.map.tiles[ny * this.map.width + nx] as Tile;
+        if (t === (this.map.tiles[ty * this.map.width + tx] as Tile)) {
+          this.tileOverrides.set(`${nx},${ny}`, newTile);
+        }
+      }
+    }
+    this.saveTileOverrides();
+    this.wandPanel = null;
+  }
+
   // --- shops ----------------------------------------------------------------
   private nearbyShop(): BuildingState | undefined {
     if (!this.snap) return undefined;
@@ -1971,6 +2322,19 @@ export class Game {
   }
 
   // --- NPCs -----------------------------------------------------------------
+  private nearbyBuilding(): BuildingState | undefined {
+    if (!this.snap) return undefined;
+    const me = this.snap.players.find((p) => p.id === this.myId);
+    if (!me) return undefined;
+    let best: BuildingState | undefined;
+    let bestD = 6;
+    for (const b of this.snap.buildings ?? []) {
+      const d = Math.hypot(b.x + b.w / 2 - me.x, b.y + b.h / 2 - me.y);
+      if (d <= bestD) { bestD = d; best = b; }
+    }
+    return best;
+  }
+
   private nearbyNpc(): NpcState | undefined {
     if (!this.snap) return undefined;
     const me = this.snap.players.find((p) => p.id === this.myId);
@@ -2199,6 +2563,20 @@ export class Game {
           ? `Pull flowering ${INVASIVE_LABEL[pl.kind]} — KILL it! (E)`
           : `Cut ${INVASIVE_LABEL[pl.kind]} (E) — wait for flower to kill`;
         color = flowering ? "#ffd54f" : "#9c6f3a";
+      }
+    }
+    // Nearby building entry prompt (shows if no harvest prompt)
+    if (!label) {
+      const bld = this.nearbyBuilding();
+      if (bld) {
+        const bName = bld.name ?? "building";
+        if (bld.locked && bld.ownerId) {
+          label = `${bld.ownerName ? `${bld.ownerName}'s` : "This"} ${bName} is locked`;
+          color = "#f44336";
+        } else {
+          label = `Press E — enter ${bName}`;
+          color = "#a0c8e0";
+        }
       }
     }
     if (!label) return;

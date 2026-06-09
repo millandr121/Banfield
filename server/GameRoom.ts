@@ -54,6 +54,8 @@ import {
   submergedAt,
   isWaterTile,
   phaseForTide,
+  RoomDef,
+  RoomTile,
 } from "../shared/protocol";
 import { DEFAULT_REGION, PlantDef, RegionDef, ResourceNodeDef, buildRegions } from "../shared/map";
 import { SPECIES, resourceSpeciesKey } from "../shared/species";
@@ -403,6 +405,9 @@ export class GameRoom {
   private env: Env;
   private nextSave = 0;                       // periodic autosave timer
   private savedNames = new Map<string, string>(); // playerId → db name (claimed account)
+  // Interior rooms: one room per building, generated on first enter.
+  private rooms = new Map<string, RoomDef>();  // buildingId → room definition
+  private playerInRoom = new Map<string, string>(); // playerId → buildingId
 
   constructor(_state: DurableObjectState, env: Env) {
     this.env = env;
@@ -748,6 +753,12 @@ export class GameRoom {
         break;
       case "listen":
         this.doListen(s.playerId);
+        break;
+      case "enter-building":
+        this.doEnterBuilding(ws, s.playerId, msg.buildingId);
+        break;
+      case "exit-building":
+        this.doExitBuilding(ws, s.playerId);
         break;
     }
   }
@@ -2380,7 +2391,8 @@ export class GameRoom {
         if (!isNaN(n0)) { qty = n0; target = parts[1] ?? ""; }
         else { target = parts[0]; qty = isNaN(n1) ? 1 : n1; }
       } else { target = parts[0] ?? ""; }
-      const sk = target.toLowerCase();
+      let sk = target.toLowerCase();
+      if (sk === "wand") sk = "paintwand"; // alias
       if (sk === "wings") {
         const secs = isNaN(qty) ? 30 : Math.min(qty, 600);
         this.speedBoostUntil.set(p.id, Date.now() + secs * 1000);
@@ -2529,8 +2541,56 @@ export class GameRoom {
       this.tell(p, `(${Math.round(p.x)}, ${Math.round(p.y)}) in ${p.region} | HP: ${Math.round(p.hp)}/${p.maxHp} | $${p.money}`);
       return;
     }
+    if (msg === "/setspawn" || msg === "/sethome") {
+      p.homeRegion = p.region;
+      p.homeX = Math.round(p.x);
+      p.homeY = Math.round(p.y);
+      this.tell(p, `Home spawn set to (${p.homeX}, ${p.homeY}) in ${p.region}. You'll respawn here after death.`);
+      return;
+    }
+    if (msg === "/delhome" || msg === "/clearspawn") {
+      delete p.homeRegion; delete p.homeX; delete p.homeY;
+      this.tell(p, "Home spawn cleared — you'll respawn at the default beach.");
+      return;
+    }
+    if (msg === "/claim") {
+      const region = this.regions.get(p.region);
+      const b = region ? this.nearestBuilding(region, p.x, p.y, 6) : null;
+      if (!b) { this.tell(p, "No building nearby to claim. Walk up to one first."); return; }
+      if (b.ownerId && b.ownerId !== p.id) {
+        this.tell(p, `Already claimed by ${b.ownerName ?? "another player"}.`);
+        return;
+      }
+      b.ownerId = p.id; b.ownerName = p.name;
+      this.tell(p, `You claimed "${b.name ?? "this building"}" as your property! Use /lock and /unlock to control access.`);
+      return;
+    }
+    if (msg === "/unclaim") {
+      const region = this.regions.get(p.region);
+      const b = region ? this.nearestBuilding(region, p.x, p.y, 6) : null;
+      if (!b || b.ownerId !== p.id) { this.tell(p, "You don't own a building nearby."); return; }
+      delete b.ownerId; delete b.ownerName; b.locked = false;
+      this.tell(p, "Property released.");
+      return;
+    }
+    if (msg === "/lock") {
+      const region = this.regions.get(p.region);
+      const b = region ? this.nearestBuilding(region, p.x, p.y, 6) : null;
+      if (!b || b.ownerId !== p.id) { this.tell(p, "You don't own a building nearby."); return; }
+      b.locked = true;
+      this.tell(p, `${b.name ?? "Building"} locked. Only you can enter.`);
+      return;
+    }
+    if (msg === "/unlock") {
+      const region = this.regions.get(p.region);
+      const b = region ? this.nearestBuilding(region, p.x, p.y, 6) : null;
+      if (!b || b.ownerId !== p.id) { this.tell(p, "You don't own a building nearby."); return; }
+      b.locked = false;
+      this.tell(p, `${b.name ?? "Building"} unlocked. Anyone can enter.`);
+      return;
+    }
     if (msg === "/help" || msg === "/commands") {
-      this.tell(p, "Commands: /give [qty] [item|skill|wings] | /remove [item|wings] | /money [n] | /tp [x] [y] | /god | /tide [tsunami|king|none] | /spawn [creature|car|boat] | /kill | /heal | /where | /who | /team [name]");
+      this.tell(p, "Commands: /give [qty] [item|skill|wings] | /remove [item|wings] | /money [n] | /tp [x] [y] | /god | /tide [tsunami|king|none] | /spawn [creature|car|boat] | /kill | /heal | /where | /who | /team [name] | /setspawn | /claim | /unclaim | /lock | /unlock");
       return;
     }
     // ---- End admin commands -------------------------------------------------
@@ -3378,15 +3438,20 @@ export class GameRoom {
     }
     this.broadcastLog(`${p.name} was dragged under. Skills and standing took a hit.`);
     setTimeout(() => {
-      const region = this.regions.get(p.region);
       p.dead = false;
       p.hp = p.maxHp;
       p.stamina = p.maxStamina;
       p.hunger = p.maxHunger;
-      if (region) {
-        const sp = this.landSpawn(region, region.spawn.x, region.spawn.y);
-        p.x = sp.x;
-        p.y = sp.y;
+      // Use custom home spawn if set and in a valid region, else default beach
+      const homeRegion = p.homeRegion && this.regions.has(p.homeRegion) ? this.regions.get(p.homeRegion)! : null;
+      const fallbackRegion = this.regions.get(p.region);
+      if (homeRegion && p.homeX !== undefined && p.homeY !== undefined) {
+        p.region = homeRegion.id;
+        const sp = this.landSpawn(homeRegion, p.homeX, p.homeY);
+        p.x = sp.x; p.y = sp.y;
+      } else if (fallbackRegion) {
+        const sp = this.landSpawn(fallbackRegion, fallbackRegion.spawn.x, fallbackRegion.spawn.y);
+        p.x = sp.x; p.y = sp.y;
       }
     }, 4000);
   }
@@ -3590,6 +3655,70 @@ export class GameRoom {
       v.kind === "boat" ? `${driver.name} sailed into ${dest.name}.`
                         : `${driver.name} drove into ${dest.name}.`,
     );
+  }
+
+  // --- Interior rooms -------------------------------------------------------
+  private generateRoom(b: BuildingState): RoomDef {
+    const W = Math.max(8, Math.min(16, b.w + 2));
+    const H = Math.max(6, Math.min(12, b.h + 2));
+    const tiles: RoomTile[] = [];
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const isEdge = x === 0 || y === 0 || x === W - 1 || y === H - 1;
+        // Window every 3 tiles on side walls
+        const isWindow = isEdge && !( y === 0 || y === H-1 ) && x % 3 === 1;
+        // Door at bottom center
+        const isDoor = y === H - 1 && x === Math.floor(W / 2);
+        // Rug in the center area
+        const cx = Math.floor(W / 2), cy = Math.floor(H / 2);
+        const isRug = !isEdge && Math.abs(x - cx) <= 1 && Math.abs(y - cy) <= 1;
+        if (isDoor) tiles.push({ kind: "door" });
+        else if (isWindow) tiles.push({ kind: "window" });
+        else if (isEdge) tiles.push({ kind: "wall", variant: (x + y) % 3 });
+        else if (isRug) tiles.push({ kind: "rug", variant: 0 });
+        else tiles.push({ kind: "floor", variant: (x * 3 + y * 7) % 4 });
+      }
+    }
+    return {
+      id: b.id,
+      width: W, height: H, tiles,
+      doorX: Math.floor(W / 2), doorY: H - 1,
+      spawnX: Math.floor(W / 2), spawnY: H - 2,
+    };
+  }
+
+  private doEnterBuilding(ws: WebSocket, playerId: string, buildingId: string) {
+    const p = this.players.get(playerId);
+    if (!p) return;
+    const region = this.regions.get(p.region);
+    if (!region) return;
+    const b = region.buildings.find((bb) => bb.id === buildingId);
+    if (!b) return;
+    // Range check: must be within 4 tiles of the building
+    const dist = Math.hypot(b.x + b.w / 2 - p.x, b.y + b.h / 2 - p.y);
+    if (dist > 6) { this.tell(p, "You need to be closer to enter."); return; }
+    // Lock check
+    if (b.locked && b.ownerId && b.ownerId !== playerId) {
+      this.tell(p, `${b.ownerName ? `${b.ownerName}'s` : "This"} property is locked.`);
+      return;
+    }
+    let room = this.rooms.get(buildingId);
+    if (!room) {
+      room = this.generateRoom(b);
+      this.rooms.set(buildingId, room);
+      b.hasRoom = true;
+    }
+    this.playerInRoom.set(playerId, buildingId);
+    p.inRoom = buildingId;
+    this.send(ws, { t: "room", def: room, playerX: room.spawnX, playerY: room.spawnY });
+  }
+
+  private doExitBuilding(ws: WebSocket, playerId: string) {
+    const p = this.players.get(playerId);
+    if (!p) return;
+    this.playerInRoom.delete(playerId);
+    p.inRoom = null;
+    this.send(ws, { t: "room-exit" });
   }
 
   private nearestBuilding(region: Region, x: number, y: number, range: number): BuildingState | null {

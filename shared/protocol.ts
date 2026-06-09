@@ -175,6 +175,8 @@ export const ITEM_IDS = [
   "binoculars", "butterflyNet", "listeningDevice", "fieldNotebook",
   // profession tools
   "pickaxe", "fishingCage", "surveyFlag",
+  // dev/creative tools
+  "paintWand",
 ] as const;
 export type ItemId = (typeof ITEM_IDS)[number];
 export type Inventory = Partial<Record<ItemId, number>>;
@@ -205,6 +207,7 @@ export const ITEM_LABEL: Record<ItemId, string> = {
   binoculars: "Binoculars", butterflyNet: "Butterfly Net",
   listeningDevice: "Listening Device", fieldNotebook: "Field Notebook",
   pickaxe: "Pickaxe", fishingCage: "Fishing Cage", surveyFlag: "Survey Flag",
+  paintWand: "Paint Wand",
 };
 
 // What eating an item restores.
@@ -383,6 +386,12 @@ export interface PlayerState {
   jumping: boolean;        // in the air
   jumpPhase: number;       // 0..1 arc
   listenMode: boolean;     // research "listen" posture active
+  // --- Home spawn (set with /setspawn) ---
+  homeRegion?: RegionId;
+  homeX?: number;
+  homeY?: number;
+  // --- Property interiors ---
+  inRoom?: string | null;  // buildingId if inside a room, else null/undefined
 }
 
 export type CreatureKind =
@@ -450,6 +459,20 @@ export interface ShopDef {
 
 export const STARTING_MONEY = 20;
 
+// --- Interior rooms ---------------------------------------------------------
+export type RoomTileKind = "floor" | "wall" | "door" | "window" | "stairs" | "rug";
+export interface RoomTile { kind: RoomTileKind; variant?: number; }
+export interface RoomDef {
+  id: string;        // same as the buildingId that owns it
+  width: number;
+  height: number;
+  tiles: RoomTile[]; // row-major, length = width * height
+  doorX: number;     // exit door tile x inside the room
+  doorY: number;
+  spawnX: number;    // where the player appears when entering
+  spawnY: number;
+}
+
 export type BuildingKind = "house" | "shop" | "boathouse" | "dock" | "rubble";
 
 export interface BuildingState {
@@ -463,6 +486,11 @@ export interface BuildingState {
   maxHp: number;
   shop?: ShopDef; // present if you can trade here
   name?: string;  // real-world name from OSM (e.g. "Flora's Restaurant")
+  // Property ownership
+  ownerId?: string;
+  ownerName?: string;
+  locked?: boolean;
+  hasRoom?: boolean; // true when this building has a generated interior room
 }
 
 // --- NPCs -------------------------------------------------------------------
@@ -550,7 +578,9 @@ export type ClientMessage =
   | { t: "hide" }         // toggle hiding behind a tree/bush
   | { t: "playDead" }     // toggle play dead (research only)
   | { t: "jump" }         // jump
-  | { t: "listen" };      // research listen mode toggle
+  | { t: "listen" }       // research listen mode toggle
+  | { t: "enter-building"; buildingId: string } // walk inside a building
+  | { t: "exit-building" };                     // leave current room
 
 // --- Messages: server -> client --------------------------------------------
 export interface Snapshot {
@@ -588,7 +618,9 @@ export type ServerMessage =
   // Login screen support: live name-availability + a rejected sign-in.
   | { t: "nameStatus"; name: string; taken: boolean }
   | { t: "joinDenied"; reason: string }
-  | { t: "chat"; from: string; msg: string; channel: "global" | "team" | "private" };
+  | { t: "chat"; from: string; msg: string; channel: "global" | "team" | "private" }
+  | { t: "room"; def: RoomDef; playerX: number; playerY: number }
+  | { t: "room-exit" };
 
 // Helper shared by both sides: a tile is under water when its (per-tile)
 // elevation sits below the current waterline.
