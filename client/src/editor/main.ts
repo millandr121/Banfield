@@ -7,15 +7,17 @@
 
 import {
   Facing, FACINGS, SpriteDoc, SpriteFrame, DyeRole, DYE_ROLES, Tints,
-  newSpriteDoc, emptyFrame, emptyPixels, compositeFrame, normalizeLayers, renderFrame,
+  newSpriteDoc, newCreatureDoc, emptyFrame, emptyPixels, compositeFrame, normalizeLayers, renderFrame,
+  docHasPaint, CREATURE_W, CREATURE_H,
 } from "../../../shared/sprite";
 import baseChar from "../assets/base-character.json";
 import rawItemSheet from "../assets/item-sprites.json";
 import npcLooksData from "../assets/npc-looks.json";
 import rawTerrainData from "../assets/terrain-settings.json";
 import rawAnimData from "../assets/anim-settings.json";
+import rawCreatureSheet from "../assets/creature-sprites.json";
 import { drawCharacterPixel } from "../pixelchar";
-import { drawFullCreature } from "../creatures";
+import { drawFullCreature, rasterizeCreatureToPixels, setCreatureDocProvider } from "../creatures";
 import type { Appearance } from "../../../shared/protocol";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -95,6 +97,38 @@ const CREATURE_DISPLAY: Record<string, string> = {
   orca: "Orca", humpback: "Humpback Whale", greywhale: "Grey Whale",
 };
 
+// ── Creature sprite docs (layered, frame-based — same model as characters) ─────
+interface CreatureSheet { version: number; w: number; h: number; layers: string[]; docs: Record<string, SpriteDoc>; }
+const CREATURE_SHEET_KEY = "banfield-creature-sprites";
+let creatureSheet: CreatureSheet = loadCreatureSheet();
+function loadCreatureSheet(): CreatureSheet {
+  let base = JSON.parse(JSON.stringify(rawCreatureSheet)) as CreatureSheet;
+  try {
+    const raw = localStorage.getItem(CREATURE_SHEET_KEY);
+    if (raw) base = JSON.parse(raw) as CreatureSheet;
+  } catch { /* ignore */ }
+  if (!base.docs) base.docs = {};
+  for (const k of Object.keys(base.docs)) base.docs[k] = normalizeLayers(base.docs[k]);
+  return base;
+}
+function saveCreatureSheet() { localStorage.setItem(CREATURE_SHEET_KEY, JSON.stringify(creatureSheet)); }
+// Return the editable doc for a kind, creating a blank one on first edit.
+function creatureDocFor(kind: string): SpriteDoc {
+  if (!creatureSheet.docs[kind]) {
+    creatureSheet.docs[kind] = newCreatureDoc(kind, creatureSheet.w ?? CREATURE_W, creatureSheet.h ?? CREATURE_H);
+  }
+  return creatureSheet.docs[kind];
+}
+
+// Editor-side sprite provider: painted creature docs render in the grid,
+// preview, and Actions tab; unpainted kinds fall back to the vector art.
+setCreatureDocProvider((kind) => {
+  const d = creatureSheet.docs[kind];
+  if (!d || !docHasPaint(d)) return null;
+  const frames = d.facings.down?.length ?? 1;
+  return { doc: d, frameIdx: Math.floor(performance.now() / 180) % Math.max(1, frames) };
+});
+
 // ── Editor state ──────────────────────────────────────────────────────────────
 type Tool = "pencil" | "eraser" | "fill" | "pick";
 const STORAGE_KEY = "banfield-sprite-doc";
@@ -104,6 +138,10 @@ let tints: Tints = { skin: "#d8a870", hair: "#5a4632", shirt: "#3f8a44", pants: 
 let tintPreview = false;
 
 let doc: SpriteDoc = loadFromStorage() ?? normalizeLayers(JSON.parse(JSON.stringify(baseChar)) as SpriteDoc);
+// The character doc is held separately so creature editing can borrow `doc`
+// (and the whole paint/frame/layer pipeline) without losing the character.
+let charDoc: SpriteDoc = doc;
+let editingCreature: string | null = null; // kind currently loaded into `doc`, else null
 let facing: Facing = "down";
 let frameIdx = 0;
 let layerIdx = 0;
@@ -145,6 +183,9 @@ function loadFromStorage(): SpriteDoc | null {
   } catch { return null; }
 }
 function saveToStorage() {
+  // When editing a creature, `doc` is the creature's sheet entry (same ref),
+  // so persisting the whole sheet captures the edit. Otherwise save the char.
+  if (editingCreature) { saveCreatureSheet(); return; }
   localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
 }
 
@@ -725,33 +766,63 @@ function buildNpcAppEditor(kind: string) {
   }
 }
 
-// ── Creature grid ─────────────────────────────────────────────────────────────
+// ── Creature grid + editor ─────────────────────────────────────────────────────
+let currentCreatureKind = "";
 function buildCreatureGrid() {
   const wrap = $<HTMLDivElement>("creature-grid");
   wrap.innerHTML = "";
   for (const kind of CREATURE_KINDS) {
     const card = document.createElement("div");
-    card.className = "creature-card";
+    card.className = "creature-card" + (kind === currentCreatureKind ? " sel" : "");
     const c = document.createElement("canvas");
     c.width = 72; c.height = 72;
     const cx2 = c.getContext("2d")!;
     cx2.fillStyle = "#0e2030";
     cx2.fillRect(0, 0, 72, 72);
-    // placeholder: write creature name (drawing requires game.ts internals)
-    cx2.fillStyle = "#5a8a40";
-    cx2.font = "bold 9px system-ui";
-    cx2.textAlign = "center";
-    cx2.fillText("◆", 36, 36);
-    cx2.fillStyle = "#8fbbdd";
-    cx2.font = "8px system-ui";
-    cx2.fillText(CREATURE_DISPLAY[kind] ?? kind, 36, 52);
+    // Painted sprite (via provider) or vector silhouette — drawFullCreature
+    // dispatches to whichever exists for this kind.
+    cx2.save();
+    cx2.translate(36, 40);
+    cx2.scale(1.4, 1.4);
+    try { drawFullCreature(cx2 as unknown as CanvasRenderingContext2D, kind, 0, 0); } catch { /* ignore */ }
+    cx2.restore();
+    const painted = creatureSheet.docs[kind] && docHasPaint(creatureSheet.docs[kind]);
+    if (painted) {
+      cx2.fillStyle = "#ffd54f"; cx2.font = "8px system-ui"; cx2.textAlign = "right";
+      cx2.fillText("✎", 70, 10);
+    }
     const lbl = document.createElement("div");
     lbl.className = "npc-label";
     lbl.textContent = CREATURE_DISPLAY[kind] ?? kind;
+    card.style.cursor = "pointer";
     card.appendChild(c);
     card.appendChild(lbl);
+    card.addEventListener("click", () => selectCreature(kind));
     wrap.appendChild(card);
   }
+}
+
+// Load a creature's sprite-doc into the shared paint pipeline for editing.
+function selectCreature(kind: string) {
+  currentCreatureKind = kind;
+  editingCreature = kind;
+  doc = creatureDocFor(kind);          // same reference stored in the sheet
+  facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
+  layerVisible = doc.layerNames.map(() => true);
+  buildCreatureGrid(); buildFacings(); buildFrames(); buildLayers();
+  $("creature-edit-title").textContent = `Editing: ${CREATURE_DISPLAY[kind] ?? kind}`;
+  sizeStage(); drawStage();
+}
+
+// Seed the current creature frame's body layer from the procedural vector art.
+function rasterizeCurrentCreature() {
+  if (!editingCreature) return;
+  const px = rasterizeCreatureToPixels(editingCreature, doc.w, doc.h);
+  const bodyIdx = Math.max(0, doc.layerNames.indexOf("body"));
+  curFrame().layers[bodyIdx] = px;
+  saveToStorage();
+  buildCreatureGrid(); drawStage();
+  flash(`Rasterized ${CREATURE_DISPLAY[editingCreature] ?? editingCreature} from vector art ✓`);
 }
 
 // ── Animation Actions tab ──────────────────────────────────────────────────────
@@ -1024,10 +1095,13 @@ function setEditorMode(m: EditorMode) {
   show("terrain-ops", m === "terrain",  "flex");
   show("actions-ops", m === "actions",  "flex");
 
-  // Left panels (hide tools + palette for terrain/npc/creature/actions)
-  show("tools-panel",  m === "char" || m === "items");
-  show("colour-panel", m === "char" || m === "items");
-  show("canvas-panel", m === "char" || m === "items");
+  // Creatures share the full paint pipeline with the character editor.
+  const paints = m === "char" || m === "items" || m === "creatures";
+
+  // Left panels
+  show("tools-panel",  paints);
+  show("colour-panel", paints);
+  show("canvas-panel", paints);
   show("item-browser-panel",  m === "items",    "flex");
   show("npc-grid-panel",      m === "npcs",     "flex");
   show("creature-grid-panel", m === "creatures","flex");
@@ -1035,22 +1109,30 @@ function setEditorMode(m: EditorMode) {
   show("actions-subject-panel", m === "actions","flex");
 
   // Center
-  stage.style.display = (m === "char" || m === "items") ? "" : "none";
-  show("center-hint",         m === "char" || m === "items");
-  show("char-preview-wrap",   m === "char");
+  stage.style.display = paints ? "" : "none";
+  show("center-hint",         paints);
+  show("char-preview-wrap",   m === "char" || m === "creatures");
   show("item-preview-wrap",   m === "items");
   show("npc-preview-wrap",    m === "npcs");
-  show("creature-preview-wrap", m === "creatures");
   show("terrain-preview-wrap",  m === "terrain");
   show("actions-stage-wrap",    m === "actions", "flex");
 
-  // Right panels
-  ($("char-right-panels") as HTMLElement).style.display = m === "char" ? "contents" : "none";
+  // Right panels — char/creatures both use the facings/frames/layers stack.
+  ($("char-right-panels") as HTMLElement).style.display =
+    (m === "char" || m === "creatures") ? "contents" : "none";
   show("item-right-panels",     m === "items");
   show("npc-right-panels",      m === "npcs");
-  show("creature-right-panels", m === "creatures");
   show("terrain-right-panels",  m === "terrain");
   show("actions-right-panels",  m === "actions");
+
+  // Restore the character doc when returning to the char tab.
+  if (m === "char" && editingCreature) {
+    editingCreature = null;
+    doc = charDoc;
+    facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
+    layerVisible = doc.layerNames.map(() => true);
+    buildFacings(); buildFrames(); buildLayers();
+  }
 
   if (m === "items") {
     buildItemBrowser();
@@ -1061,6 +1143,7 @@ function setEditorMode(m: EditorMode) {
     if (!currentNpcKind && NPC_KINDS.length > 0) selectNpc(NPC_KINDS[0]);
   } else if (m === "creatures") {
     buildCreatureGrid();
+    selectCreature(currentCreatureKind || CREATURE_KINDS[0]);
   } else if (m === "terrain") {
     buildTerrainRows();
   } else if (m === "actions") {
@@ -1076,6 +1159,31 @@ $("tab-items").addEventListener("click", () => setEditorMode("items"));
 $("tab-npcs").addEventListener("click", () => setEditorMode("npcs" as EditorMode));
 $("tab-creatures").addEventListener("click", () => setEditorMode("creatures" as EditorMode));
 $("tab-actions").addEventListener("click", () => setEditorMode("actions" as EditorMode));
+
+// ── Creature sprite: rasterize / clear / save ──────────────────────────────────
+$("btn-creature-raster")?.addEventListener("click", () => rasterizeCurrentCreature());
+$("btn-creature-clear")?.addEventListener("click", () => {
+  if (!editingCreature) return;
+  if (!confirm(`Clear ${CREATURE_DISPLAY[editingCreature] ?? editingCreature}'s sprite? It reverts to the built-in art.`)) return;
+  delete creatureSheet.docs[editingCreature];
+  saveCreatureSheet();
+  selectCreature(editingCreature); // recreates a blank doc to keep editing
+  flash("Creature sprite cleared ✓");
+});
+$("btn-creature-save")?.addEventListener("click", async () => {
+  // Drop empty docs so unpainted creatures keep using the vector fallback.
+  const out: CreatureSheet = { version: creatureSheet.version, w: creatureSheet.w, h: creatureSheet.h, layers: creatureSheet.layers, docs: {} };
+  for (const [k, d] of Object.entries(creatureSheet.docs)) if (docHasPaint(d)) out.docs[k] = d;
+  saveCreatureSheet();
+  try {
+    await fetch("/api/save-asset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "creature-sprites.json", data: out }),
+    });
+    flash("Creature sprites saved to game ✓");
+  } catch { flash("Creature sprites saved (localStorage only)"); }
+});
 
 // ── Actions: save / reset tuning ───────────────────────────────────────────────
 $("btn-actions-save")?.addEventListener("click", async () => {

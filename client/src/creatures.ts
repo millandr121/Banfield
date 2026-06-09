@@ -6,8 +6,94 @@
 // surface by depth. These functions are pure: they only touch the passed ctx.
 
 import { TILE_SIZE, DEPTH_ANKLE, DEPTH_SWIM, DEPTH_DEEP } from "../../shared/protocol";
+import { SpriteDoc, compositeFrame } from "../../shared/sprite";
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+// ── Authored sprite docs override the vector art ────────────────────────────
+// The game (and editor) register a provider that returns a painted SpriteDoc +
+// current walk-cycle frame for a creature kind. When present, drawFullCreature
+// blits the pixel sprite instead of drawing the procedural vector silhouette,
+// so authored creature art flows through every existing call site unchanged
+// (land animals, marine surface-reveal, minimap thumbnails).
+let creatureDocProvider: ((kind: string) => { doc: SpriteDoc; frameIdx: number } | null) | null = null;
+export function setCreatureDocProvider(
+  fn: ((kind: string) => { doc: SpriteDoc; frameIdx: number } | null) | null,
+) { creatureDocProvider = fn; }
+
+function rgbToHex(r: number, g: number, b: number): string {
+  const h = (v: number) => v.toString(16).padStart(2, "0");
+  return "#" + h(r) + h(g) + h(b);
+}
+
+/** Blit a composited creature sprite-doc frame, centered on (x, y). */
+export function drawCreatureDoc(
+  ctx: CanvasRenderingContext2D,
+  doc: SpriteDoc,
+  frameIdx: number,
+  x: number,
+  y: number,
+  scale = 1,
+) {
+  const frames = doc.facings.down ?? [];
+  if (frames.length === 0) return;
+  const frame = frames[((frameIdx % frames.length) + frames.length) % frames.length];
+  const comp = compositeFrame(frame, doc.layerNames.map(() => true), doc.w, doc.h);
+  const ox = Math.round(x - (doc.w * scale) / 2);
+  const oy = Math.round(y - (doc.h * scale) / 2);
+  for (let py = 0; py < doc.h; py++) {
+    for (let px = 0; px < doc.w; px++) {
+      const col = comp[py * doc.w + px];
+      if (!col) continue;
+      ctx.fillStyle = col;
+      ctx.fillRect(ox + px * scale, oy + py * scale, scale, scale);
+    }
+  }
+}
+
+/**
+ * Rasterize the procedural vector art for a creature into a flat pixel buffer of
+ * size w×h, bounding-box-fit and centered — a starting point the artist can then
+ * refine in the editor. Browser-only (uses OffscreenCanvas).
+ */
+export function rasterizeCreatureToPixels(kind: string, w: number, h: number): string[] {
+  const out = new Array(w * h).fill("");
+  const S = 96;
+  let img: Uint8ClampedArray;
+  try {
+    const cv = new OffscreenCanvas(S, S);
+    const c = cv.getContext("2d")!;
+    drawCreatureVector(c as unknown as CanvasRenderingContext2D, kind, S / 2, S / 2);
+    img = c.getImageData(0, 0, S, S).data;
+  } catch { return out; }
+
+  let minX = S, minY = S, maxX = 0, maxY = 0, found = false;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      if (img[(y * S + x) * 4 + 3] > 20) {
+        found = true;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (!found) return out;
+  const bw = maxX - minX + 1, bh = maxY - minY + 1;
+  const scale = Math.min((w - 2) / bw, (h - 2) / bh);
+  const dw = bw * scale, dh = bh * scale;
+  const offX = (w - dw) / 2, offY = (h - dh) / 2;
+  for (let ty = 0; ty < h; ty++) {
+    for (let tx = 0; tx < w; tx++) {
+      const sx = minX + (tx + 0.5 - offX) / scale;
+      const sy = minY + (ty + 0.5 - offY) / scale;
+      if (sx < minX || sx > maxX || sy < minY || sy > maxY) continue;
+      const i = (((sy | 0) * S) + (sx | 0)) * 4;
+      if (img[i + 3] < 40) continue;
+      out[ty * w + tx] = rgbToHex(img[i], img[i + 1], img[i + 2]);
+    }
+  }
+  return out;
+}
 
 export const MARINE_KINDS = new Set([
   "crab", "octopus", "dogfish", "sixgill", "orca",
@@ -15,6 +101,17 @@ export const MARINE_KINDS = new Set([
 ]);
 
 export function drawFullCreature(ctx: CanvasRenderingContext2D, kind: string, x: number, y: number) {
+  // Authored pixel sprite takes precedence over the procedural vector art.
+  if (creatureDocProvider) {
+    const r = creatureDocProvider(kind);
+    if (r) { drawCreatureDoc(ctx, r.doc, r.frameIdx, x, y, 1); return; }
+  }
+  drawCreatureVector(ctx, kind, x, y);
+}
+
+// The procedural vector silhouette, always — used as the fallback and as the
+// seed for rasterization (so it never recurses into an authored sprite).
+export function drawCreatureVector(ctx: CanvasRenderingContext2D, kind: string, x: number, y: number) {
   switch (kind) {
     case "crab":      return drawCrab(ctx, x, y);
     case "octopus":   return drawOctopus(ctx, x, y);

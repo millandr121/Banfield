@@ -64,6 +64,13 @@ export interface SpriteDoc {
 export const DEFAULT_LAYERS = ["skin", "hair", "shirt", "pants", "accessory"];
 export const DEFAULT_DYES: DyeRole[] = ["skin", "hair", "shirt", "pants", "accent"];
 
+// Creatures are authored the same way as characters — layered, frame-based
+// pixel art — but with body-oriented layers and no runtime dyeing.
+export const CREATURE_LAYERS = ["body", "shade", "detail"];
+export const CREATURE_DYES: DyeRole[] = ["none", "none", "none"];
+export const CREATURE_W = 32;
+export const CREATURE_H = 24;
+
 export function emptyPixels(w: number, h: number): Pixels {
   return new Array(w * h).fill("");
 }
@@ -90,6 +97,25 @@ export function newSpriteDoc(
     layerDye: [...layerDye],
     facings, fps: 6,
   };
+}
+
+/** A blank creature sprite doc (body/shade/detail layers, no dyeing). */
+export function newCreatureDoc(name = "creature", w = CREATURE_W, h = CREATURE_H): SpriteDoc {
+  return newSpriteDoc(name, w, h, CREATURE_LAYERS, CREATURE_DYES);
+}
+
+/** True if any layer of any frame/facing has at least one painted pixel. */
+export function docHasPaint(doc: SpriteDoc): boolean {
+  for (const f of FACINGS) {
+    const frames = doc.facings[f];
+    if (!frames) continue;
+    for (const frame of frames) {
+      for (const layer of frame.layers) {
+        for (const px of layer) if (px) return true;
+      }
+    }
+  }
+  return false;
 }
 
 // ── Dye / tint engine ─────────────────────────────────────────────────────────

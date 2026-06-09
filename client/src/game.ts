@@ -45,7 +45,27 @@ import npcLooksData from "./assets/npc-looks.json";
 import terrainData from "./assets/terrain-settings.json";
 import animData from "./assets/anim-settings.json";
 import { drawItemIcon } from "./itemicon";
-import { drawFullCreature, drawCreatureSprite, MARINE_KINDS } from "./creatures";
+import { drawFullCreature, drawCreatureSprite, MARINE_KINDS, setCreatureDocProvider } from "./creatures";
+import creatureSpriteData from "./assets/creature-sprites.json";
+import { SpriteDoc, normalizeLayers, docHasPaint } from "../../shared/sprite";
+
+// Painted creature sprite-docs (authored in the editor). Empty docs fall back
+// to the procedural vector art. Each kind animates through its "down" frames.
+const PAINTED_CREATURES = new Map<string, SpriteDoc>();
+{
+  const docs = (creatureSpriteData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
+  for (const [kind, raw] of Object.entries(docs)) {
+    const doc = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
+    if (docHasPaint(doc)) PAINTED_CREATURES.set(kind, doc);
+  }
+}
+setCreatureDocProvider((kind) => {
+  const doc = PAINTED_CREATURES.get(kind);
+  if (!doc) return null;
+  const frames = doc.facings.down?.length ?? 1;
+  const frameIdx = Math.floor(performance.now() / 180) % Math.max(1, frames);
+  return { doc, frameIdx };
+});
 
 const ANIM_G = animData as Record<string, number>;
 const JUMP_HEIGHT = ANIM_G.jumpHeight ?? 0.8;
