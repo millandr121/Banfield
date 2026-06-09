@@ -210,6 +210,18 @@ function maskIcon(c) {
   rect(g, 8, 4, 2, 6, sh(c, 0.8));
   return g;
 }
+function hatIcon(c) {
+  // Wide-brimmed field hat: full brim, rounded crown, crease, inner shadow.
+  const g = make();
+  rect(g, 1, 10, 14, 2, sh(c, 0.8));  // brim shadow underside
+  rect(g, 1,  9, 14, 2, c);            // brim top
+  rect(g, 3,  4, 10, 6, c);            // crown
+  rect(g, 4,  3,  8, 1, sh(c, 1.2));   // crown top highlight
+  rect(g, 3,  4, 10, 1, sh(c, 1.15));  // crown front edge
+  rect(g, 5,  6,  6, 1, sh(c, 0.75));  // crease line
+  rect(g, 1,  9, 14, 1, sh(c, 1.2));   // brim top highlight
+  return g;
+}
 
 // Weapons (side profile).
 function stickIcon() { const g = make(); line(g, 3, 13, 12, 4, "#8d6e63"); line(g, 4, 13, 13, 4, "#7a5d50"); P(g, 12, 4, "#6b4f44"); return g; }
@@ -335,6 +347,7 @@ add("bullet", ammoIcon("#caa83a", "bullet"));
 
 add("clothShirt", shirtIcon("#d98fb0"));
 add("clothPants", pantsIcon("#7f9ad0"));
+add("fieldHat",  hatIcon("#c2a35a"));
 add("waxedJacket", jacketIcon("#6b7b3a"));
 add("rainCoat", jacketIcon("#e8c43a"));
 add("woolSweater", shirtIcon("#9a7a54"));
