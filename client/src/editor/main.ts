@@ -13,13 +13,15 @@ import baseChar from "../assets/base-character.json";
 import rawItemSheet from "../assets/item-sprites.json";
 import npcLooksData from "../assets/npc-looks.json";
 import rawTerrainData from "../assets/terrain-settings.json";
+import rawAnimData from "../assets/anim-settings.json";
 import { drawCharacterPixel } from "../pixelchar";
+import { drawFullCreature } from "../creatures";
 import type { Appearance } from "../../../shared/protocol";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ── Editor mode ───────────────────────────────────────────────────────────────
-type EditorMode = "char" | "items" | "npcs" | "creatures" | "terrain";
+type EditorMode = "char" | "items" | "npcs" | "creatures" | "terrain" | "actions";
 let editorMode: EditorMode = "char";
 
 // ── Terrain settings state ────────────────────────────────────────────────────
@@ -752,6 +754,252 @@ function buildCreatureGrid() {
   }
 }
 
+// ── Animation Actions tab ──────────────────────────────────────────────────────
+// Live-previews every procedural animation a character or creature can perform,
+// and exposes tunable parameters (punch reach, jump height, etc.) that are saved
+// to anim-settings.json — the same file the game's renderer reads.
+const ANIM_KEY = "banfield-anim-settings";
+type AnimSettings = Record<string, number>;
+const ANIM_DEFAULTS = rawAnimData as AnimSettings;
+let animSettings: AnimSettings = loadAnimSettings();
+function loadAnimSettings(): AnimSettings {
+  try { const r = localStorage.getItem(ANIM_KEY); if (r) return { ...ANIM_DEFAULTS, ...JSON.parse(r) }; }
+  catch { /* ignore */ }
+  return { ...ANIM_DEFAULTS };
+}
+function saveAnimSettingsLocal() { localStorage.setItem(ANIM_KEY, JSON.stringify(animSettings)); }
+
+// Which character actions exist, and the opts they drive in drawCharacterPixel.
+type ActionId = "idle" | "walk" | "run" | "punch" | "kick" | "jump" | "transform" | "swim";
+const CHAR_ACTIONS: { id: ActionId; label: string }[] = [
+  { id: "idle", label: "Idle" }, { id: "walk", label: "Walk" }, { id: "run", label: "Run" },
+  { id: "punch", label: "Punch" }, { id: "kick", label: "Kick" }, { id: "jump", label: "Jump" },
+  { id: "transform", label: "Mode-switch" }, { id: "swim", label: "Swim" },
+];
+const CREATURE_ACTIONS: { id: ActionId; label: string }[] = [
+  { id: "idle", label: "Idle" }, { id: "walk", label: "Walk" }, { id: "run", label: "Run" },
+];
+
+// Tuning sliders: key in anim-settings, label, min/max/step.
+const ANIM_SLIDERS: { key: string; label: string; min: number; max: number; step: number }[] = [
+  { key: "punchReachProfile", label: "Punch reach (side)",  min: 0, max: 12, step: 1 },
+  { key: "punchReachFront",   label: "Punch reach (front)", min: 0, max: 12, step: 1 },
+  { key: "kickReachProfile",  label: "Kick reach (side)",   min: 0, max: 12, step: 1 },
+  { key: "kickReachFront",    label: "Kick reach (front)",  min: 0, max: 12, step: 1 },
+  { key: "walkStride",        label: "Walk stride",         min: 0, max: 6,  step: 1 },
+  { key: "runStrideMult",     label: "Run stride mult",     min: 1, max: 3,  step: 0.1 },
+  { key: "armSwing",          label: "Arm swing",           min: 0, max: 4,  step: 1 },
+  { key: "jumpHeight",        label: "Jump height",         min: 0, max: 2,  step: 0.1 },
+  { key: "transformSpeed",    label: "Mode-switch speed",   min: 30, max: 200, step: 10 },
+  { key: "creatureWalkBob",   label: "Creature bob",        min: 0, max: 6,  step: 0.5 },
+  { key: "creatureWalkSway",  label: "Creature sway",       min: 0, max: 4,  step: 0.5 },
+];
+
+type SubjectKind = "person" | "npc" | "creature";
+interface Subject { kind: SubjectKind; id: string; label: string; }
+let actionSubjects: Subject[] = [];
+let currentSubject: Subject = { kind: "person", id: "default", label: "Default Person" };
+let currentAction: ActionId = "idle";
+let actionFacing: Facing = "down";
+
+const actionsStage = $<HTMLCanvasElement>("actions-stage");
+const actionsCtx = actionsStage.getContext("2d")!;
+
+function buildActionSubjects() {
+  actionSubjects = [
+    { kind: "person", id: "default", label: "Default Person" },
+    ...NPC_KINDS.map((k) => ({ kind: "npc" as SubjectKind, id: k, label: NPC_DISPLAY[k] ?? k })),
+    ...CREATURE_KINDS.map((k) => ({ kind: "creature" as SubjectKind, id: k, label: CREATURE_DISPLAY[k] ?? k })),
+  ];
+  const wrap = $("actions-subjects");
+  wrap.innerHTML = "";
+  for (const s of actionSubjects) {
+    const b = document.createElement("button");
+    b.textContent = s.label;
+    b.style.cssText = "display:block;width:100%;text-align:left;margin-bottom:3px;font-size:11px";
+    b.className = (s.kind === currentSubject.kind && s.id === currentSubject.id) ? "active" : "";
+    b.addEventListener("click", () => {
+      currentSubject = s;
+      // Creatures only support locomotion actions.
+      if (s.kind === "creature" && !CREATURE_ACTIONS.some((a) => a.id === currentAction)) currentAction = "walk";
+      buildActionSubjects(); buildActionList(); updateActionLabel();
+    });
+    wrap.appendChild(b);
+  }
+}
+
+function buildActionList() {
+  const wrap = $("actions-list");
+  wrap.innerHTML = "";
+  const acts = currentSubject.kind === "creature" ? CREATURE_ACTIONS : CHAR_ACTIONS;
+  for (const a of acts) {
+    const b = document.createElement("button");
+    b.textContent = a.label;
+    b.style.cssText = "flex:1;min-width:54px;font-size:11px";
+    b.className = a.id === currentAction ? "active" : "";
+    b.addEventListener("click", () => { currentAction = a.id; buildActionList(); updateActionLabel(); });
+    wrap.appendChild(b);
+  }
+}
+
+function buildActionFacings() {
+  const wrap = $("actions-facings");
+  wrap.innerHTML = "";
+  const labels: Record<Facing, string> = {
+    down: "↓", downright: "↘", right: "→", upright: "↗",
+    up: "↑", upleft: "↖", left: "←", downleft: "↙",
+  };
+  for (const f of FACINGS) {
+    const b = document.createElement("button");
+    b.textContent = labels[f];
+    b.className = f === actionFacing ? "active" : "";
+    b.addEventListener("click", () => { actionFacing = f; buildActionFacings(); });
+    wrap.appendChild(b);
+  }
+}
+
+function buildActionSliders() {
+  const wrap = $("actions-sliders");
+  wrap.innerHTML = "";
+  for (const s of ANIM_SLIDERS) {
+    const row = document.createElement("div");
+    row.style.cssText = "margin-bottom:8px";
+    const lbl = document.createElement("div");
+    lbl.style.cssText = "font-size:10px;color:var(--muted);display:flex;justify-content:space-between";
+    const valSpan = document.createElement("span");
+    const cur = animSettings[s.key] ?? ANIM_DEFAULTS[s.key] ?? 0;
+    valSpan.textContent = String(cur);
+    lbl.innerHTML = `<span>${s.label}</span>`;
+    lbl.appendChild(valSpan);
+    const inp = document.createElement("input");
+    inp.type = "range";
+    inp.min = String(s.min); inp.max = String(s.max); inp.step = String(s.step);
+    inp.value = String(cur);
+    inp.style.width = "100%";
+    inp.addEventListener("input", () => {
+      animSettings[s.key] = parseFloat(inp.value);
+      valSpan.textContent = inp.value;
+      saveAnimSettingsLocal();
+    });
+    row.appendChild(lbl); row.appendChild(inp);
+    wrap.appendChild(row);
+  }
+}
+
+function updateActionLabel() {
+  const acts = currentSubject.kind === "creature" ? CREATURE_ACTIONS : CHAR_ACTIONS;
+  const a = acts.find((x) => x.id === currentAction);
+  $("actions-label").textContent = `${currentSubject.label} — ${a?.label ?? currentAction}`;
+}
+
+// Default-person appearance for the Actions preview.
+const DEFAULT_LOOK: Appearance = { skin: "#d8a870", hair: "#5a4632", shirt: "#3f8a44", pants: "#36507e", hairStyle: "short", bodyBuild: "medium" };
+
+let actionsLoopRunning = false;
+function renderActionsFrame(t: number) {
+  if (editorMode !== "actions") { actionsLoopRunning = false; return; }
+  const W = actionsStage.width, H = actionsStage.height;
+  actionsCtx.clearRect(0, 0, W, H);
+  // Ground line
+  actionsCtx.strokeStyle = "rgba(255,255,255,0.08)";
+  actionsCtx.beginPath(); actionsCtx.moveTo(0, H * 0.72); actionsCtx.lineTo(W, H * 0.72); actionsCtx.stroke();
+
+  const cx = W / 2, groundY = H * 0.72;
+
+  if (currentSubject.kind === "creature") {
+    // Idle: gentle bob. Walk/Run: bob + horizontal sway to fake a gait.
+    const speed = currentAction === "run" ? 7 : currentAction === "walk" ? 4 : 1.5;
+    const bob = currentAction === "idle"
+      ? Math.sin(t / 400) * (animSettings.creatureWalkBob ?? 1.5) * 0.5
+      : Math.abs(Math.sin(t / (260 / speed))) * (animSettings.creatureWalkBob ?? 1.5);
+    const sway = currentAction === "idle" ? 0
+      : Math.sin(t / (260 / speed)) * (animSettings.creatureWalkSway ?? 1);
+    actionsCtx.save();
+    actionsCtx.translate(cx + sway, groundY - 30 - bob);
+    actionsCtx.scale(2, 2); // creatures are drawn small; scale up for the preview
+    drawFullCreature(actionsCtx, currentSubject.id, 0, 0);
+    actionsCtx.restore();
+    requestAnimationFrame(renderActionsFrame);
+    return;
+  }
+
+  // Character / NPC: drive drawCharacterPixel with action-specific opts.
+  const look = currentSubject.kind === "npc"
+    ? (npcLooks[currentSubject.id] ?? (npcLooksData as Record<string, Appearance>)[currentSubject.id])
+    : DEFAULT_LOOK;
+
+  const phase = (t / 130) % (Math.PI * 2);
+  let opts: Parameters<typeof drawCharacterPixel>[4] = {
+    facing: actionFacing, phase, moving: false,
+  };
+  let yOff = 0;
+  let squash = 1;
+
+  switch (currentAction) {
+    case "idle":
+      opts = { facing: actionFacing, phase: 0, moving: false };
+      break;
+    case "walk":
+      opts = { facing: actionFacing, phase, moving: true };
+      break;
+    case "run":
+      opts = { facing: actionFacing, phase, moving: true, running: true };
+      break;
+    case "punch": {
+      const pt = (t / 260) % 1; // 0..1 swing loop
+      opts = { facing: actionFacing, phase: 0, moving: false, attack: { phase: pt, stance: "high" } };
+      break;
+    }
+    case "kick": {
+      const kt = (t / 260) % 1;
+      opts = { facing: actionFacing, phase: 0, moving: false, attack: { phase: kt, stance: "low" } };
+      break;
+    }
+    case "jump": {
+      const jt = (t / 700) % 1;
+      yOff = -Math.sin(jt * Math.PI) * 90 * (animSettings.jumpHeight ?? 0.8);
+      opts = { facing: actionFacing, phase: 0, moving: false };
+      break;
+    }
+    case "transform": {
+      const tt = t / (animSettings.transformSpeed ?? 90);
+      squash = Math.abs(Math.cos(tt)) * 0.85 + 0.15;
+      opts = { facing: "down", phase: tt, moving: true };
+      break;
+    }
+    case "swim":
+      opts = { facing: actionFacing, phase, moving: true, submerge: 0.46 };
+      break;
+  }
+
+  actionsCtx.save();
+  if (squash !== 1) {
+    actionsCtx.translate(cx, 0); actionsCtx.scale(squash, 1); actionsCtx.translate(-cx, 0);
+  }
+  drawCharacterPixel(actionsCtx, cx, groundY + yOff, look, opts);
+  actionsCtx.restore();
+
+  // Transform sparkle
+  if (currentAction === "transform") {
+    const tt = t / (animSettings.transformSpeed ?? 90);
+    for (let i = 0; i < 5; i++) {
+      const a = tt * 0.6 + i * 1.3;
+      actionsCtx.fillStyle = `hsla(${(tt * 4 + i * 60) % 360},90%,80%,0.9)`;
+      actionsCtx.beginPath();
+      actionsCtx.arc(cx + Math.cos(a) * 30, groundY - 30 + Math.sin(a) * 26, 3, 0, Math.PI * 2);
+      actionsCtx.fill();
+    }
+  }
+
+  requestAnimationFrame(renderActionsFrame);
+}
+
+function startActionsLoop() {
+  if (actionsLoopRunning) return;
+  actionsLoopRunning = true;
+  requestAnimationFrame(renderActionsFrame);
+}
+
 // ── Editor mode switching ─────────────────────────────────────────────────────
 function show(id: string, val: boolean, display = "block") {
   const el = document.getElementById(id);
@@ -760,7 +1008,7 @@ function show(id: string, val: boolean, display = "block") {
 
 function setEditorMode(m: EditorMode) {
   editorMode = m;
-  const ALL: EditorMode[] = ["char","items","npcs","creatures","terrain"];
+  const ALL: EditorMode[] = ["char","items","npcs","creatures","terrain","actions"];
   for (const v of ALL) {
     const btn = document.getElementById(`tab-${v}`);
     if (btn) btn.classList.toggle("active", m === v);
@@ -774,8 +1022,9 @@ function setEditorMode(m: EditorMode) {
   show("npc-ops",     m === "npcs",     "flex");
   show("creature-ops",m === "creatures","flex");
   show("terrain-ops", m === "terrain",  "flex");
+  show("actions-ops", m === "actions",  "flex");
 
-  // Left panels (hide tools + palette for terrain/npc/creature)
+  // Left panels (hide tools + palette for terrain/npc/creature/actions)
   show("tools-panel",  m === "char" || m === "items");
   show("colour-panel", m === "char" || m === "items");
   show("canvas-panel", m === "char" || m === "items");
@@ -783,6 +1032,7 @@ function setEditorMode(m: EditorMode) {
   show("npc-grid-panel",      m === "npcs",     "flex");
   show("creature-grid-panel", m === "creatures","flex");
   show("terrain-panel",       m === "terrain",  "flex");
+  show("actions-subject-panel", m === "actions","flex");
 
   // Center
   stage.style.display = (m === "char" || m === "items") ? "" : "none";
@@ -792,6 +1042,7 @@ function setEditorMode(m: EditorMode) {
   show("npc-preview-wrap",    m === "npcs");
   show("creature-preview-wrap", m === "creatures");
   show("terrain-preview-wrap",  m === "terrain");
+  show("actions-stage-wrap",    m === "actions", "flex");
 
   // Right panels
   ($("char-right-panels") as HTMLElement).style.display = m === "char" ? "contents" : "none";
@@ -799,6 +1050,7 @@ function setEditorMode(m: EditorMode) {
   show("npc-right-panels",      m === "npcs");
   show("creature-right-panels", m === "creatures");
   show("terrain-right-panels",  m === "terrain");
+  show("actions-right-panels",  m === "actions");
 
   if (m === "items") {
     buildItemBrowser();
@@ -811,6 +1063,9 @@ function setEditorMode(m: EditorMode) {
     buildCreatureGrid();
   } else if (m === "terrain") {
     buildTerrainRows();
+  } else if (m === "actions") {
+    buildActionSubjects(); buildActionList(); buildActionFacings(); buildActionSliders(); updateActionLabel();
+    startActionsLoop();
   } else {
     sizeStage(); drawStage();
   }
@@ -820,6 +1075,26 @@ $("tab-char").addEventListener("click",  () => setEditorMode("char"));
 $("tab-items").addEventListener("click", () => setEditorMode("items"));
 $("tab-npcs").addEventListener("click", () => setEditorMode("npcs" as EditorMode));
 $("tab-creatures").addEventListener("click", () => setEditorMode("creatures" as EditorMode));
+$("tab-actions").addEventListener("click", () => setEditorMode("actions" as EditorMode));
+
+// ── Actions: save / reset tuning ───────────────────────────────────────────────
+$("btn-actions-save")?.addEventListener("click", async () => {
+  saveAnimSettingsLocal();
+  try {
+    await fetch("/api/save-asset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "anim-settings.json", data: animSettings }),
+    });
+    flash("Animation tuning saved to game ✓");
+  } catch { flash("Animation tuning saved (localStorage only)"); }
+});
+$("btn-actions-reset")?.addEventListener("click", () => {
+  animSettings = { ...ANIM_DEFAULTS };
+  saveAnimSettingsLocal();
+  buildActionSliders();
+  flash("Animation tuning reset ✓");
+});
 
 // ── Item save / export / import ───────────────────────────────────────────────
 $("btn-item-save").addEventListener("click", async () => {

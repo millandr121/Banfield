@@ -119,6 +119,7 @@
         <button id="tab-items"    title="Browse and paint item icons">Items</button>
         <button id="tab-npcs"     title="Edit NPC appearances">NPCs</button>
         <button id="tab-creatures" title="Preview creature sprites">Creatures</button>
+        <button id="tab-actions"  title="Preview & tune animation actions">Actions</button>
         <button id="tab-terrain"  title="Edit terrain tile colours">Terrain</button>
       </div>
       <input class="docname" id="docname" value="character" />
@@ -144,6 +145,10 @@
         <button id="btn-npc-reset">Reset to defaults</button>
       </div>
       <div id="creature-ops" style="display:none"></div>
+      <div id="actions-ops" style="display:none">
+        <button id="btn-actions-save">Save animation tuning</button>
+        <button id="btn-actions-reset">Reset defaults</button>
+      </div>
       <div id="terrain-ops" style="display:none">
         <button id="btn-terrain-save">Save terrain</button>
         <button id="btn-terrain-reset">Reset defaults</button>
@@ -201,6 +206,11 @@
           <h2>Creatures</h2>
           <div class="creature-grid" id="creature-grid"></div>
         </div>
+        <!-- Actions subject panel -->
+        <div class="group" id="actions-subject-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
+          <h2>Subject</h2>
+          <div id="actions-subjects" style="overflow-y:auto"></div>
+        </div>
         <!-- Terrain panel -->
         <div class="group" id="terrain-panel" style="display:none;flex:1;overflow-y:auto;flex-direction:column">
           <h2>Tile Colours</h2>
@@ -245,6 +255,13 @@
         <div class="previewWrap" id="terrain-preview-wrap" style="display:none">
           <label>Tile preview (3×3)</label>
           <canvas id="terrain-preview" width="144" height="144"></canvas>
+        </div>
+        <!-- Actions: big centered live preview -->
+        <div id="actions-stage-wrap" style="display:none;flex-direction:column;align-items:center;gap:10px">
+          <div id="actions-label" style="color:var(--gold);font-size:14px;font-weight:700">Default Person — Idle</div>
+          <canvas id="actions-stage" width="240" height="280"
+            style="image-rendering:pixelated;border:1px solid var(--border);background:#0c1820;border-radius:6px"></canvas>
+          <div class="hint" id="actions-hint">Pick a subject on the left, an action on the right.</div>
         </div>
       </div>
 
@@ -308,6 +325,21 @@
               Procedural canvas art.<br>
               Pixel editing coming soon.
             </div>
+          </div>
+        </div>
+        <div id="actions-right-panels" style="display:none">
+          <div class="group">
+            <h2>Action</h2>
+            <div class="row" id="actions-list"></div>
+          </div>
+          <div class="group">
+            <h2>Facing</h2>
+            <div class="facings" id="actions-facings"></div>
+          </div>
+          <div class="group">
+            <h2>Tuning</h2>
+            <div id="actions-sliders"></div>
+            <div class="hint" style="margin-top:6px">Sliders tweak the live animation. Save writes anim-settings.json into the game.</div>
           </div>
         </div>
         <div id="terrain-right-panels" style="display:none">

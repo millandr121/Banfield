@@ -12,6 +12,21 @@
 //  • During attacks the WHOLE limb (sleeve+forearm+hand) moves as one unit.
 
 import { Appearance, ItemId, TILE_SIZE } from "../../shared/protocol";
+import animData from "./assets/anim-settings.json";
+
+// Tunable animation parameters — authored in the editor's Actions tab and
+// saved to anim-settings.json. Fallbacks keep the renderer working if a key
+// is missing from an older settings file.
+const AN = animData as Record<string, number>;
+const ANIM = {
+  punchReachProfile: AN.punchReachProfile ?? 4,
+  punchReachFront:   AN.punchReachFront   ?? 5,
+  kickReachProfile:  AN.kickReachProfile  ?? 5,
+  kickReachFront:    AN.kickReachFront     ?? 5,
+  walkStride:        AN.walkStride         ?? 2,
+  runStrideMult:     AN.runStrideMult      ?? 1.6,
+  armSwing:          AN.armSwing           ?? 1,
+};
 
 export type Facing =
   | "down" | "up" | "left" | "right"
@@ -111,12 +126,13 @@ function paint(a: Appearance, o: CharOpts) {
 
   const fr   = wf(o.phase);
   const run  = o.running ?? false;
-  const runF = run ? 1.6 : 1.0;
+  const runF = run ? ANIM.runStrideMult : 1.0;
   const lean = run ? (lt ? -1 : rt ? 1 : 0) : 0;
 
   // Stride offsets: positive = forward in the facing direction.
-  const stride = (fr === 1 ? 2 : fr === 3 ? -2 : 0) * runF;
-  const aswing = (fr === 1 ? 1 : fr === 3 ? -1 : 0) * runF;
+  const ST = ANIM.walkStride, SW2 = ANIM.armSwing;
+  const stride = (fr === 1 ? ST : fr === 3 ? -ST : 0) * runF;
+  const aswing = (fr === 1 ? SW2 : fr === 3 ? -SW2 : 0) * runF;
 
   // Build-scale affects body width but not height.
   const bw = a.bodyBuild === "sturdy" ? 1.15 : a.bodyBuild === "slight" ? 0.88 : 1.0;
@@ -237,7 +253,7 @@ function paint(a: Appearance, o: CharOpts) {
         F(b, OL, fax - 2 + aOff, SHOU_Y + 7, 5, 1);                // hand outline
       } else {
         // PUNCH — arm extends forward as one unit (capped so it stays on-body)
-        const pOff = Math.round(atkT * 4 * dir);   // was 6, capped to avoid out-of-body look
+        const pOff = Math.round(atkT * ANIM.punchReachProfile * dir);
         OF(b, dk(shirt, 0.92), fax - 1 + pOff, SHOU_Y + 1, 3, 5);
         F(b, skin, fax - 1 + pOff, SHOU_Y + 6, 3, 2);
         F(b, OL, fax - 2 + pOff, SHOU_Y + 7, 5, 1);
@@ -262,7 +278,7 @@ function paint(a: Appearance, o: CharOpts) {
       // Punch arm — moves forward, capped to stay attached to body.
       if (punching) {
         const pax  = CX + pSide * sp + lean;
-        const pOff = Math.round(atkT * 5 * pSide);   // was 7
+        const pOff = Math.round(atkT * ANIM.punchReachFront * pSide);
         OF(b, dk(shirt, 0.92), pax - 1 + pOff, SHOU_Y + 1, 3, 5);
         F(b, skin, pax - 1 + pOff, SHOU_Y + 6, 3, 2);
         if (atkT > 0.55) F(b, "#ffe082", pax + pOff + pSide, SHOU_Y + 4, 3, 3);
@@ -287,7 +303,7 @@ function paint(a: Appearance, o: CharOpts) {
           OF(b, boot, fKneeX - 2, FEET_R - 2, 5, 3);
       } else {
         // KICK — leg shifts forward, capped to stay attached to hip.
-        const kOff = Math.round(atkT * 5 * dir);   // was 7
+        const kOff = Math.round(atkT * ANIM.kickReachProfile * dir);
         OF(b, pants, CX + dir - 1 + kOff, HIP_Y, 3, KNEE_Y - HIP_Y);
         F(b, dk(pants, 0.88), CX + dir - 1 + kOff, KNEE_Y, 3, FEET_R - 1 - KNEE_Y);
         OF(b, boot, CX + dir - 2 + kOff, FEET_R - 2, 5, 3);
@@ -305,7 +321,7 @@ function paint(a: Appearance, o: CharOpts) {
     } else {
       // KICK front/back — capped offset to keep leg attached to hip.
       const rx      = CX + Math.round(2.5 * bw);
-      const kickOff = Math.round(atkT * 5);   // was 8
+      const kickOff = Math.round(atkT * ANIM.kickReachFront);
       OF(b, pants, rx - 1 + kickOff, HIP_Y, 3, KNEE_Y - HIP_Y);
       F(b, dk(pants, 0.82), rx - 1 + kickOff, KNEE_Y, 3, FEET_R - 1 - KNEE_Y);
       OF(b, boot, rx - 2 + kickOff, FEET_R - 2, 5, 3);

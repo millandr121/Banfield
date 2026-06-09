@@ -1,0 +1,13 @@
+{
+  "punchReachProfile": 4,
+  "punchReachFront": 5,
+  "kickReachProfile": 5,
+  "kickReachFront": 5,
+  "walkStride": 2,
+  "runStrideMult": 1.6,
+  "armSwing": 1,
+  "jumpHeight": 0.8,
+  "transformSpeed": 90,
+  "creatureWalkBob": 1.5,
+  "creatureWalkSway": 1.0
+}
