@@ -5,12 +5,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:client": "vite build",
+    "build:client": "node --max-old-space-size=4096 node_modules/vite/bin/vite.js build",
     "dev": "npm run build:client && concurrently -k -n SERVER,CLIENT -c blue,green \"wrangler dev\" \"vite\"",
     "deploy": "npm run build:client && wrangler deploy",
     "import-map": "node tools/import-image-map.mjs",
     "import-osm": "node tools/import-osm.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc --noEmit"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240909.0",
