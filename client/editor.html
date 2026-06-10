@@ -7,416 +7,315 @@
     <style>
       :root {
         font-family: system-ui, -apple-system, sans-serif;
-        --bg: #11202b;
-        --panel: #162a38;
-        --panel2: #1e3a4c;
-        --border: #2b5067;
-        --text: #eaf2f8;
-        --muted: #8fb4c9;
-        --accent: #2e9bd6;
-        --accent-hi: #54b8ef;
-        --gold: #ffd54f;
+        --bg: #11202b; --panel: #162a38; --panel2: #1e3a4c;
+        --border: #2b5067; --text: #eaf2f8; --muted: #8fb4c9;
+        --accent: #2e9bd6; --accent-hi: #54b8ef; --gold: #ffd54f;
       }
       * { box-sizing: border-box; }
-      body {
-        margin: 0; background: var(--bg); color: var(--text);
-        height: 100vh; display: flex; flex-direction: column; overflow: hidden;
-        font-size: 13px;
-      }
-      header {
-        display: flex; align-items: center; gap: 12px; padding: 8px 14px;
-        background: var(--panel); border-bottom: 1px solid var(--border);
-      }
-      header h1 { font-size: 15px; margin: 0; color: var(--gold); font-weight: 700; }
+      body { margin: 0; background: var(--bg); color: var(--text);
+        height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-size: 13px; }
+      header { display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+        background: var(--panel); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+      header h1 { font-size: 14px; margin: 0; color: var(--gold); font-weight: 700; white-space: nowrap; }
       header .spacer { flex: 1; }
-      header input.docname {
-        background: var(--panel2); border: 1px solid var(--border); color: var(--text);
-        border-radius: 5px; padding: 4px 8px; font-size: 13px; width: 160px;
-      }
-      button, select {
-        background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-        border-radius: 5px; padding: 5px 9px; cursor: pointer; font-size: 12px;
-      }
+      header input.docname { background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+        border-radius: 5px; padding: 4px 8px; font-size: 12px; width: 140px; }
+      button, select { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 5px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
       button:hover { background: var(--accent); border-color: var(--accent-hi); }
       button.active { background: var(--accent); border-color: var(--accent-hi); color: #fff; }
+      select#category-select { font-size: 12px; padding: 4px 8px; }
+      #subject-title { color: var(--gold); font-size: 12px; font-weight: 700; min-width: 80px; }
+      a.back { color: var(--accent-hi); text-decoration: none; font-size: 12px; }
       main { flex: 1; display: flex; min-height: 0; }
-      .col { display: flex; flex-direction: column; gap: 10px; padding: 10px; overflow-y: auto; }
-      .left { width: 190px; background: var(--panel); border-right: 1px solid var(--border); }
-      .right { width: 210px; background: var(--panel); border-left: 1px solid var(--border); }
-      .center { flex: 1; display: flex; flex-direction: column; align-items: center;
-        justify-content: center; gap: 12px; background: #0c1820; position: relative; }
-      .group { background: var(--panel2); border: 1px solid var(--border); border-radius: 7px; padding: 9px; }
-      .group h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-        color: var(--muted); margin: 0 0 7px; }
-      .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-      .tools button { width: 38px; height: 34px; font-size: 16px; padding: 0; }
+      .left { width: 182px; background: var(--panel); border-right: 1px solid var(--border);
+        display: flex; flex-direction: column; overflow: hidden; }
+      .right { width: 188px; background: var(--panel); border-left: 1px solid var(--border);
+        display: flex; flex-direction: column; overflow-y: auto; gap: 8px; padding: 8px; }
+      .center { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #0c1820; }
+      .canvas-area { flex: 1; display: flex; align-items: center; justify-content: center;
+        position: relative; overflow: hidden; }
+      .group { background: var(--panel2); border: 1px solid var(--border); border-radius: 7px; padding: 8px; }
+      .group h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+        color: var(--muted); margin: 0 0 6px; }
+      .row { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+      .tools button { width: 34px; height: 30px; font-size: 15px; padding: 0; }
       .palette { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
       .swatch { width: 100%; aspect-ratio: 1; border-radius: 3px; cursor: pointer;
         border: 1px solid rgba(0,0,0,.4); }
       .swatch.sel { outline: 2px solid var(--gold); outline-offset: 1px; }
-      .curcolor { width: 100%; height: 28px; border-radius: 5px; border: 1px solid var(--border); }
-      .layer { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 5px;
-        cursor: pointer; border: 1px solid transparent; }
+      .curcolor { width: 100%; height: 26px; border-radius: 5px; border: 1px solid var(--border); }
+      .layer { display: flex; align-items: center; gap: 5px; padding: 4px 5px; border-radius: 5px;
+        cursor: pointer; border: 1px solid transparent; font-size: 11px; }
       .layer.sel { background: var(--panel); border-color: var(--accent); }
-      .layer .vis { width: 18px; text-align: center; }
+      .layer .vis { width: 16px; text-align: center; }
       .layer .nm { flex: 1; }
-      .facings, .frames { display: flex; gap: 5px; flex-wrap: wrap; }
-      .facings button { flex: 1; min-width: 42px; }
-      #stage { image-rendering: pixelated; background:
-        repeating-conic-gradient(#1a2c38 0% 25%, #16242e 0% 50%) 50% / 20px 20px;
-        border: 1px solid var(--border); cursor: crosshair; }
-      #preview { image-rendering: pixelated; border: 1px solid var(--border);
-        background: #0c1820; }
-      .previewWrap { position: absolute; top: 14px; right: 14px; text-align: center; }
-      .previewWrap label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
-      .hint { color: var(--muted); font-size: 11px; line-height: 1.5; }
+      input[type=color] { width: 32px; height: 26px; padding: 0; border: 1px solid var(--border);
+        border-radius: 4px; background: none; cursor: pointer; }
       label.fld { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
-      label.fld input[type=number] { width: 60px; background: var(--panel); color: var(--text);
+      label.fld input[type=number] { width: 56px; background: var(--panel); color: var(--text);
         border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px; }
-      input[type=color] { width: 34px; height: 28px; padding: 0; border: 1px solid var(--border);
-        border-radius: 5px; background: none; cursor: pointer; }
-      a.back { color: var(--accent-hi); text-decoration: none; font-size: 12px; }
-      .npc-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; overflow-y: auto; }
-      .npc-card { background: var(--panel2); border: 2px solid var(--border); border-radius: 6px;
-        padding: 6px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-      .npc-card.sel { border-color: var(--gold); }
-      .npc-card canvas { image-rendering: pixelated; }
-      .npc-label { font-size: 10px; color: var(--muted); text-align: center; }
-      .creature-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; overflow-y: auto; }
-      .creature-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
-        padding: 6px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-      .creature-card canvas { background: #0c1820; }
-      .app-row { display: flex; gap: 6px; align-items: center; margin-bottom: 5px; }
-      .app-row label { font-size: 11px; color: var(--muted); width: 36px; flex-shrink: 0; }
-      .terrain-row { display: flex; align-items: center; gap: 7px; padding: 5px 4px;
+      .hint { color: var(--muted); font-size: 11px; line-height: 1.5; }
+
+      /* Subject grid (left scroll area) */
+      #subject-scroll { flex: 1; overflow-y: auto; padding: 8px; display: grid;
+        grid-template-columns: repeat(2, 1fr); gap: 6px; align-content: start; }
+      .subj-card { background: var(--panel2); border: 2px solid var(--border); border-radius: 6px;
+        padding: 5px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+      .subj-card.sel { border-color: var(--gold); }
+      .subj-card canvas { image-rendering: pixelated; }
+      .subj-label { font-size: 9px; color: var(--muted); text-align: center; word-break: break-word; }
+      .terrain-row { display: flex; align-items: center; gap: 6px; padding: 4px;
         border-radius: 5px; margin-bottom: 3px; background: var(--panel2); border: 1px solid var(--border); }
-      .terrain-row .tswatch { width: 36px; height: 28px; border-radius: 4px; border: 1px solid rgba(0,0,0,.4); flex-shrink: 0; }
-      .terrain-row .tlabel { flex: 1; font-size: 12px; }
-      .terrain-row input[type=color] { width: 34px; height: 26px; }
-      .new-sprite-form { display: flex; flex-direction: column; gap: 6px; }
-      .new-sprite-form input[type=text] { background: var(--panel2); border: 1px solid var(--border);
-        color: var(--text); border-radius: 4px; padding: 4px 7px; font-size: 12px; }
+      .terrain-row .tswatch { width: 32px; height: 24px; border-radius: 4px; border: 1px solid rgba(0,0,0,.4); flex-shrink: 0; }
+      .terrain-row .tlabel { flex: 1; font-size: 11px; }
+      .terrain-row input[type=color] { width: 30px; height: 22px; }
+      .app-row { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+      .app-row label { font-size: 11px; color: var(--muted); width: 34px; flex-shrink: 0; }
+
+      /* Stage */
+      #stage { image-rendering: pixelated;
+        background: repeating-conic-gradient(#1a2c38 0% 25%, #16242e 0% 50%) 50% / 20px 20px;
+        border: 1px solid var(--border); cursor: crosshair; }
+      #preview { image-rendering: pixelated; border: 1px solid var(--border); background: #0c1820; }
+
+      /* Item icon browser */
+      .iicon { width: 38px; height: 38px; image-rendering: pixelated; cursor: pointer;
+        border: 2px solid transparent; border-radius: 4px; background: #0c1820; }
+      .iicon.sel { border-color: var(--gold); }
+
+      /* NPC/creature stage area */
+      #npc-stage-wrap { flex-direction: column; align-items: center; gap: 10px; }
+      #npc-stage-wrap canvas { image-rendering: pixelated; border: 1px solid var(--border); background: #0c1820; border-radius: 6px; }
+      #terrain-stage-wrap { flex-direction: column; align-items: center; gap: 8px; }
+      #terrain-stage-wrap canvas { image-rendering: pixelated; border: 1px solid var(--border); border-radius: 6px; }
+
+      /* Timeline bar */
+      #timeline { background: var(--panel); border-top: 1px solid var(--border);
+        padding: 5px 10px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; }
+      .tl-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 28px; }
+      .tl-sep { width: 1px; background: var(--border); align-self: stretch; margin: 0 3px; }
+      .tl-label { font-size: 10px; color: var(--muted); white-space: nowrap; }
+      #tl-clips, #tl-facings { display: flex; gap: 3px; flex-wrap: wrap; }
+      #tl-frames { display: flex; gap: 3px; overflow-x: auto; max-width: 400px; padding-bottom: 2px; }
+      .frame-thumb { image-rendering: pixelated; cursor: pointer;
+        border: 2px solid var(--border); border-radius: 3px; flex-shrink: 0; }
+      .frame-thumb.sel { border-color: var(--gold); }
+      #tl-frames::-webkit-scrollbar { height: 4px; }
+      #tl-frames::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+      /* Left bottom tool/palette panels */
+      #tools-group, #palette-group, #canvas-options { padding: 7px; flex-shrink: 0; }
+      #tools-group { border-top: 1px solid var(--border); }
+      #palette-group { border-top: 1px solid var(--border); }
+      #canvas-options { border-top: 1px solid var(--border); }
     </style>
   </head>
   <body>
-    <style>
-      .mode-bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-      .mode-bar button { padding: 4px 12px; font-size: 12px; }
-      #char-ops, #item-ops { display: flex; gap: 6px; align-items: center; }
-      #item-browser { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
-        overflow-y: auto; max-height: 100%; }
-      .iicon { width: 40px; height: 40px; image-rendering: pixelated; cursor: pointer;
-        border: 2px solid transparent; border-radius: 4px; background: #0c1820; }
-      .iicon.sel { border-color: var(--gold); }
-      #item-name { color: var(--gold); font-size: 12px; font-weight: 700; min-width: 90px; }
-      .char-panels { display: contents; }
-      .item-panels { display: contents; }
-    </style>
     <header>
-      <h1>✎ Banfield Sprite Editor</h1>
-      <div class="mode-bar">
-        <button id="tab-char"     title="Edit character walk-cycle frames">Character</button>
-        <button id="tab-items"    title="Browse and paint item icons">Items</button>
-        <button id="tab-npcs"     title="Edit NPC appearances">NPCs</button>
-        <button id="tab-creatures" title="Preview creature sprites">Creatures</button>
-        <button id="tab-actions"   title="Preview & tune animation actions">Actions</button>
-        <button id="tab-terrain"   title="Edit terrain tile colours">Terrain</button>
-        <button id="tab-clothing"  title="Paint clothing item sprites">Clothing</button>
-        <button id="tab-objects"   title="Paint environment object sprites">Objects</button>
-      </div>
-      <input class="docname" id="docname" value="character" />
-      <span id="item-name" style="display:none"></span>
+      <h1>✎ Banfield</h1>
+      <select id="category-select">
+        <option value="characters">Characters</option>
+        <option value="creatures">Creatures</option>
+        <option value="clothing">Clothing</option>
+        <option value="objects">Objects</option>
+        <option value="items">Items</option>
+        <option value="terrain">Terrain</option>
+      </select>
+      <span id="subject-title"></span>
       <span class="spacer"></span>
-      <a class="back" href="/">← back to game</a>
-      <div id="char-ops" style="display:flex">
+      <a class="back" href="/">← game</a>
+
+      <!-- paint ops (char / creatures / clothing / objects) -->
+      <div id="paint-ops" style="display:none;gap:6px;align-items:center">
+        <input class="docname" id="docname" value="character" />
         <button id="btn-new">New</button>
         <button id="btn-save">Save</button>
-        <button id="btn-load">Load</button>
         <button id="btn-export">Export JSON</button>
         <button id="btn-import">Import</button>
-        <button id="btn-png">Export PNG</button>
+        <button id="btn-png">PNG sheet</button>
+        <input type="file" id="file-import" accept="application/json" hidden />
       </div>
-      <div id="item-ops" style="display:none">
+
+      <!-- item ops -->
+      <div id="item-ops" style="display:none;gap:6px;align-items:center">
         <button id="btn-item-save">Save icon</button>
-        <button id="btn-item-export">Export item-sprites.json</button>
-        <button id="btn-item-import">Import item-sprites.json</button>
+        <button id="btn-item-export">Export JSON</button>
+        <button id="btn-item-import">Import JSON</button>
         <input type="file" id="file-item-import" accept="application/json" hidden />
       </div>
-      <div id="npc-ops" style="display:none">
-        <button id="btn-npc-save">Save NPCs</button>
-        <button id="btn-npc-reset">Reset to defaults</button>
-      </div>
-      <div id="creature-ops" style="display:none;align-items:center;gap:8px">
-        <span id="creature-edit-title" style="color:var(--gold);font-size:12px;font-weight:700">Creatures</span>
-        <button id="btn-creature-raster" title="Seed pixels from the built-in vector art">⟳ Rasterize from vector</button>
-        <button id="btn-creature-clear" title="Clear this creature back to procedural fallback">Clear sprite</button>
-        <button id="btn-creature-save">Save creatures</button>
-      </div>
-      <div id="actions-ops" style="display:none">
-        <button id="btn-actions-save">Save animation tuning</button>
-        <button id="btn-actions-reset">Reset defaults</button>
-      </div>
-      <div id="terrain-ops" style="display:none">
+
+      <!-- terrain ops -->
+      <div id="terrain-ops" style="display:none;gap:6px;align-items:center">
         <button id="btn-terrain-save">Save terrain</button>
         <button id="btn-terrain-reset">Reset defaults</button>
       </div>
-      <div id="clothing-ops" style="display:none;align-items:center;gap:8px">
-        <span id="clothing-edit-title" style="color:var(--gold);font-size:12px;font-weight:700">Clothing</span>
-        <button id="btn-clothing-clear" title="Clear this item's sprite">Clear sprite</button>
+
+      <!-- npc ops (shown when charSubject is an NPC) -->
+      <div id="npc-ops" style="display:none;gap:6px;align-items:center">
+        <button id="btn-npc-save">Save NPCs</button>
+        <button id="btn-npc-reset">Reset defaults</button>
+      </div>
+
+      <!-- creature extra ops (when editingCreature) -->
+      <div id="creature-extra-ops" style="display:none;gap:6px;align-items:center">
+        <button id="btn-creature-raster" title="Seed from built-in vector art">⟳ Rasterize</button>
+        <button id="btn-creature-clear">Clear sprite</button>
+        <button id="btn-creature-save">Save creatures</button>
+      </div>
+
+      <!-- clothing ops -->
+      <div id="clothing-ops" style="display:none;gap:6px;align-items:center">
+        <button id="btn-clothing-clear">Clear sprite</button>
         <button id="btn-clothing-save">Save clothing</button>
       </div>
-      <div id="objects-ops" style="display:none;align-items:center;gap:8px">
-        <span id="objects-edit-title" style="color:var(--gold);font-size:12px;font-weight:700">Objects</span>
-        <button id="btn-object-clear" title="Clear this object's sprite">Clear sprite</button>
+
+      <!-- objects ops -->
+      <div id="objects-ops" style="display:none;gap:6px;align-items:center">
+        <button id="btn-object-clear">Clear sprite</button>
         <button id="btn-objects-save">Save objects</button>
       </div>
-      <input type="file" id="file-import" accept="application/json" hidden />
     </header>
+
     <main>
-      <!-- LEFT: tools + palette (shared), item browser (items mode), npc grid, creature grid -->
-      <div class="col left">
-        <!-- shared tools -->
-        <div class="group" id="tools-panel">
-          <h2>Tools</h2>
-          <div class="row tools" id="tools">
+      <!-- LEFT COLUMN -->
+      <div class="left">
+        <div id="subject-scroll"></div>
+
+        <!-- Tools -->
+        <div id="tools-group" style="display:none">
+          <div class="row tools" id="tools" style="margin-bottom:5px">
             <button data-tool="pencil" class="active" title="Pencil (B)">✏️</button>
             <button data-tool="eraser" title="Eraser (E)">🧽</button>
             <button data-tool="fill" title="Fill (G)">🪣</button>
-            <button data-tool="pick" title="Eyedropper (I)">💧</button>
+            <button data-tool="pick" title="Pick (I)">💧</button>
           </div>
-          <div class="row" style="margin-top:7px">
-            <button id="btn-clear" title="Clear active layer">Clear layer</button>
+          <div class="row">
+            <button id="btn-clear" style="font-size:11px;padding:3px 7px">Clear layer</button>
           </div>
         </div>
-        <div class="group" id="colour-panel">
-          <h2>Colour</h2>
-          <div class="row" style="margin-bottom:7px">
+
+        <!-- Palette -->
+        <div id="palette-group" style="display:none">
+          <div class="row" style="margin-bottom:6px">
             <input type="color" id="colorpick" value="#e0ac69" />
             <div class="curcolor" id="curcolor" style="background:#e0ac69"></div>
           </div>
           <div class="palette" id="palette"></div>
         </div>
-        <div class="group" id="canvas-panel">
-          <h2>Canvas</h2>
+
+        <!-- Canvas options (zoom, grid, onion) -->
+        <div id="canvas-options" style="display:none">
           <div class="row">
-            <label class="fld">Zoom
+            <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+              <span style="font-size:10px;color:var(--muted)">Zoom</span>
               <input type="range" id="zoom" min="4" max="28" step="1" value="14" />
             </label>
           </div>
-          <div class="row" style="margin-top:6px">
-            <label><input type="checkbox" id="grid" checked /> Grid</label>
-            <label><input type="checkbox" id="onion" /> Onion</label>
-          </div>
-        </div>
-        <!-- item browser (hidden until items mode) -->
-        <div class="group" id="item-browser-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
-          <h2>Item Icons</h2>
-          <div id="item-browser"></div>
-        </div>
-        <!-- NPC grid panel -->
-        <div class="group" id="npc-grid-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
-          <h2>NPC Characters</h2>
-          <div class="npc-grid" id="npc-grid"></div>
-        </div>
-        <!-- Creature grid panel -->
-        <div class="group" id="creature-grid-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
-          <h2>Creatures</h2>
-          <div class="creature-grid" id="creature-grid"></div>
-        </div>
-        <!-- Clothing grid panel -->
-        <div class="group" id="clothing-grid-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
-          <h2>Clothing Items</h2>
-          <div class="creature-grid" id="clothing-grid"></div>
-        </div>
-        <!-- Objects grid panel -->
-        <div class="group" id="objects-grid-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
-          <h2>Environment Objects</h2>
-          <div class="creature-grid" id="objects-grid"></div>
-        </div>
-        <!-- Actions subject panel -->
-        <div class="group" id="actions-subject-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
-          <h2>Subject</h2>
-          <div id="actions-subjects" style="overflow-y:auto"></div>
-        </div>
-        <!-- Terrain panel -->
-        <div class="group" id="terrain-panel" style="display:none;flex:1;overflow-y:auto;flex-direction:column">
-          <h2>Tile Colours</h2>
-          <div id="terrain-rows"></div>
-          <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
-            <h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 7px">New sprite file</h2>
-            <div class="new-sprite-form">
-              <input type="text" id="new-sprite-name" placeholder="name (e.g. grassVariant)" />
-              <select id="new-sprite-category" style="font-size:12px;padding:4px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:4px">
-                <option value="items">Item icon (16×16)</option>
-                <option value="char">Character sprite</option>
-              </select>
-              <button id="btn-new-sprite">Create new sprite</button>
-            </div>
+          <div class="row" style="margin-top:4px">
+            <label style="font-size:11px"><input type="checkbox" id="grid" checked /> Grid</label>
+            <label style="font-size:11px"><input type="checkbox" id="onion" /> Onion</label>
           </div>
         </div>
       </div>
 
-      <!-- CENTER: stage + preview -->
+      <!-- CENTER COLUMN -->
       <div class="center">
-        <canvas id="stage"></canvas>
-        <div class="hint" id="center-hint">Click / drag to paint · I = pick · scroll palette for more colours</div>
-        <div class="previewWrap" id="char-preview-wrap">
-          <label>Walk preview</label>
-          <canvas id="preview" width="80" height="104"></canvas>
-          <div class="row" style="justify-content:center;margin-top:6px">
-            <button id="btn-play" class="active">▶ Play</button>
+        <div class="canvas-area">
+          <!-- Paint canvas -->
+          <canvas id="stage" style="display:none"></canvas>
+          <!-- Item preview (top-right overlay) -->
+          <div id="item-preview-wrap" style="display:none;position:absolute;top:12px;right:12px;text-align:center">
+            <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Preview</div>
+            <canvas id="item-preview" width="80" height="80" style="image-rendering:pixelated;border:1px solid var(--border);background:#0c1820"></canvas>
+          </div>
+          <!-- canvas placeholder for modes without a paint canvas -->
+          <div id="canvas-placeholder" style="display:none;color:var(--muted);font-size:12px;text-align:center;padding:20px">
+            Select a subject on the left to begin.
+          </div>
+          <!-- NPC animated preview area -->
+          <div id="npc-stage-wrap" style="display:none;flex-direction:column;align-items:center;gap:10px">
+            <canvas id="npc-preview" width="100" height="130"
+              style="image-rendering:pixelated;border:1px solid var(--border);background:#0c1820;border-radius:6px"></canvas>
+          </div>
+          <!-- Terrain preview area -->
+          <div id="terrain-stage-wrap" style="display:none;flex-direction:column;align-items:center;gap:8px">
+            <div style="color:var(--muted);font-size:11px">Tile preview (3×3)</div>
+            <canvas id="terrain-preview" width="192" height="192"
+              style="image-rendering:pixelated;border:1px solid var(--border);border-radius:6px"></canvas>
           </div>
         </div>
-        <div class="previewWrap" id="item-preview-wrap" style="display:none">
-          <label>Item preview</label>
-          <canvas id="item-preview" width="80" height="80"></canvas>
-        </div>
-        <div class="previewWrap" id="npc-preview-wrap" style="display:none">
-          <label>NPC preview</label>
-          <canvas id="npc-preview" width="80" height="104"></canvas>
-        </div>
-        <div class="previewWrap" id="creature-preview-wrap" style="display:none">
-          <label>Creature</label>
-          <canvas id="creature-stage" width="96" height="96"></canvas>
-        </div>
-        <div class="previewWrap" id="terrain-preview-wrap" style="display:none">
-          <label>Tile preview (3×3)</label>
-          <canvas id="terrain-preview" width="144" height="144"></canvas>
-        </div>
-        <!-- Actions: big centered live preview -->
-        <div id="actions-stage-wrap" style="display:none;flex-direction:column;align-items:center;gap:10px">
-          <div id="actions-label" style="color:var(--gold);font-size:14px;font-weight:700">Default Person — Idle</div>
-          <canvas id="actions-stage" width="240" height="280"
-            style="image-rendering:pixelated;border:1px solid var(--border);background:#0c1820;border-radius:6px"></canvas>
-          <div class="hint" id="actions-hint">Pick a subject on the left, an action on the right.</div>
+
+        <!-- TIMELINE BAR (bottom of center) -->
+        <div id="timeline" style="display:none">
+          <!-- Row 1: clips + facings -->
+          <div class="tl-row">
+            <span class="tl-label">Clip:</span>
+            <div id="tl-clips"></div>
+            <button id="clip-add" style="font-size:10px;padding:2px 6px" title="Add animation">+</button>
+            <button id="clip-del" style="font-size:10px;padding:2px 6px" title="Delete animation">✕</button>
+            <button id="clip-default" style="font-size:10px;padding:2px 6px" title="Make default">★</button>
+            <label style="font-size:10px;color:var(--muted);display:flex;gap:4px;align-items:center;margin-left:4px">
+              <input type="checkbox" id="clip-loop" checked />loop
+            </label>
+            <div class="tl-sep"></div>
+            <span class="tl-label">Facing:</span>
+            <div id="tl-facings"></div>
+          </div>
+          <!-- Row 2: play + frames + frame ops -->
+          <div class="tl-row">
+            <button id="btn-play" class="active" style="font-size:11px;padding:3px 7px">▶</button>
+            <label class="fld" style="flex-direction:row;align-items:center;gap:4px">
+              <span style="font-size:10px;color:var(--muted)">FPS</span>
+              <input type="number" id="fps" min="1" max="24" value="6" style="width:44px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px;font-size:11px" />
+            </label>
+            <div class="tl-sep"></div>
+            <div id="tl-frames"></div>
+            <div class="tl-sep"></div>
+            <button id="frame-add" style="font-size:10px;padding:2px 6px">+Frame</button>
+            <button id="frame-dup" style="font-size:10px;padding:2px 6px">Dup</button>
+            <button id="frame-del" style="font-size:10px;padding:2px 6px">Del</button>
+          </div>
         </div>
       </div>
 
-      <!-- RIGHT: facings/frames/layers (char) or item info (items) or npc editor or creature info -->
-      <div class="col right">
-        <div id="char-right-panels" style="display:contents">
-          <div class="group">
-            <h2>Animations</h2>
-            <div class="frames" id="clips"></div>
-            <div class="row" style="margin-top:7px">
-              <button id="clip-add" title="Add an animation timeline">+ Animation</button>
-              <button id="clip-del" title="Delete this animation">Delete</button>
-              <button id="clip-default" title="Make this the default clip">★ Default</button>
-            </div>
-            <label style="display:flex;gap:6px;align-items:center;margin-top:7px;font-size:11px;color:var(--muted)">
-              <input type="checkbox" id="clip-loop" checked /> loop this animation
-            </label>
-          </div>
-          <div class="group">
-            <h2>Facing</h2>
-            <div class="facings" id="facings"></div>
-          </div>
-          <div class="group">
-            <h2>Frames</h2>
-            <div class="frames" id="frames"></div>
-            <div class="row" style="margin-top:7px">
-              <button id="frame-add">+ Frame</button>
-              <button id="frame-dup">Duplicate</button>
-              <button id="frame-del">Delete</button>
-            </div>
-          </div>
-          <div class="group">
-            <h2>Layers</h2>
-            <div id="layers"></div>
-          </div>
-          <div class="group">
-            <h2>Playback</h2>
-            <label class="fld">FPS (this animation)
-              <input type="number" id="fps" min="1" max="24" value="6" />
-            </label>
+      <!-- RIGHT COLUMN -->
+      <div class="right">
+        <!-- Sprite preview (walk preview) -->
+        <div id="preview-group" class="group" style="display:none">
+          <h2 id="preview-label">Preview</h2>
+          <canvas id="preview" width="80" height="104"></canvas>
+          <div class="row" style="margin-top:5px;justify-content:center">
+            <!-- play is in timeline; this preview is passive -->
           </div>
         </div>
-        <div id="item-right-panels" style="display:none">
-          <div class="group">
-            <h2>Item info</h2>
-            <div id="item-info" class="hint">Select an item icon from the left panel to begin editing.</div>
-          </div>
-          <div class="group">
-            <h2>Tips</h2>
-            <div class="hint" style="line-height:1.7">
-              16×16 icon canvas<br>
-              B = pencil · E = eraser<br>
-              G = fill · I = eyedropper<br>
-              Pick from palette<br>
-              Save icon updates the<br>
-              in-game sprite sheet<br>
-              Export to download JSON
-            </div>
-          </div>
+
+        <!-- NPC appearance editor -->
+        <div id="npc-app-group" class="group" style="display:none">
+          <h2 id="npc-editor-title">NPC Appearance</h2>
+          <div id="npc-app-editor"><div class="hint">Select an NPC from the left.</div></div>
         </div>
-        <div id="npc-right-panels" style="display:none">
-          <div class="group">
-            <h2 id="npc-editor-title">NPC Appearance</h2>
-            <div id="npc-app-editor">
-              <div class="hint">Select an NPC from the left panel.</div>
-            </div>
-          </div>
+
+        <!-- Layers -->
+        <div id="layers-group" class="group" style="display:none">
+          <h2>Layers</h2>
+          <div id="layers"></div>
         </div>
-        <div id="creature-right-panels" style="display:none">
-          <div class="group">
-            <h2>Creatures</h2>
-            <div class="hint" style="line-height:1.7">
-              Procedural canvas art.<br>
-              Pixel editing coming soon.
-            </div>
-          </div>
+
+        <!-- Dye preview -->
+        <div id="dye-group" class="group" style="display:none">
+          <h2>Dye preview</h2>
+          <label style="display:flex;gap:5px;align-items:center;margin-bottom:6px;font-size:11px">
+            <input type="checkbox" id="tintToggle" /> show dyed colours
+          </label>
+          <div id="dye-rows"></div>
         </div>
-        <div id="actions-right-panels" style="display:none">
-          <div class="group">
-            <h2>Action</h2>
-            <div class="row" id="actions-list"></div>
-          </div>
-          <div class="group">
-            <h2>Facing</h2>
-            <div class="facings" id="actions-facings"></div>
-          </div>
-          <div class="group">
-            <h2>Tuning</h2>
-            <div id="actions-sliders"></div>
-            <div class="hint" style="margin-top:6px">Sliders tweak the live animation. Save writes anim-settings.json into the game.</div>
-          </div>
-        </div>
-        <div id="clothing-hint-panel" style="display:none" class="group">
-          <h2>Clothing mode</h2>
-          <div class="hint" style="line-height:1.7">
-            20×26 grid, same as the<br>
-            body. Character shows<br>
-            faintly as a guide.<br>
-            Enable tint preview to<br>
-            see chosen dye colours.<br>
-            base = main coloured<br>
-            area, detail = trim.
-          </div>
-        </div>
-        <div id="objects-hint-panel" style="display:none" class="group">
-          <h2>Object mode</h2>
-          <div class="hint" style="line-height:1.7">
-            32×32 canvas.<br>
-            idle = resting state,<br>
-            active = triggered state<br>
-            (campfire lit, chest<br>
-            open, door ajar…).<br>
-            Use fill for large areas.
-          </div>
-        </div>
-        <div id="terrain-right-panels" style="display:none">
-          <div class="group">
-            <h2>Terrain tips</h2>
-            <div class="hint" style="line-height:1.7">
-              Change tile base colours<br>
-              in the left panel.<br>
-              Save writes to the game<br>
-              — hot-reloads instantly.<br><br>
-              New sprite: create a blank<br>
-              icon or character file<br>
-              from the form below the<br>
-              colour list.
-            </div>
+
+        <!-- Canvas options panel (right side info for items/terrain) -->
+        <div id="canvas-options-group" class="group" style="display:none">
+          <h2>Canvas</h2>
+          <div class="hint" style="line-height:1.7" id="canvas-options-hint">
+            B = pencil · E = eraser<br>G = fill · I = eyedropper
           </div>
         </div>
       </div>
