@@ -6,9 +6,10 @@
 // and save / export to JSON or a PNG sprite sheet.
 
 import {
-  Facing, FACINGS, SpriteDoc, SpriteFrame, DyeRole, DYE_ROLES, Tints,
+  Facing, FACINGS, SpriteDoc, SpriteFrame, AnimationClip, DyeRole, DYE_ROLES, Tints,
   newSpriteDoc, newCreatureDoc, emptyFrame, emptyPixels, compositeFrame, normalizeLayers, renderFrame,
-  docHasPaint, CREATURE_W, CREATURE_H,
+  docHasPaint, CREATURE_W, CREATURE_H, getClip, listClips, addClip, deleteClip,
+  CHAR_CLIPS, CREATURE_CLIPS,
 } from "../../../shared/sprite";
 import baseChar from "../assets/base-character.json";
 import rawItemSheet from "../assets/item-sprites.json";
@@ -125,8 +126,9 @@ function creatureDocFor(kind: string): SpriteDoc {
 setCreatureDocProvider((kind) => {
   const d = creatureSheet.docs[kind];
   if (!d || !docHasPaint(d)) return null;
-  const frames = d.facings.down?.length ?? 1;
-  return { doc: d, frameIdx: Math.floor(performance.now() / 180) % Math.max(1, frames) };
+  const clip = d.animations.walk ? "walk" : d.defaultClip;
+  const frames = d.animations[clip]?.facings.down?.length ?? 1;
+  return { doc: d, frameIdx: Math.floor(performance.now() / 180) % Math.max(1, frames), clip };
 });
 
 // ── Editor state ──────────────────────────────────────────────────────────────
@@ -143,6 +145,7 @@ let doc: SpriteDoc = loadFromStorage() ?? normalizeLayers(JSON.parse(JSON.string
 let charDoc: SpriteDoc = doc;
 let editingCreature: string | null = null; // kind currently loaded into `doc`, else null
 let facing: Facing = "down";
+let currentClip = doc.defaultClip; // which animation timeline is being edited
 let frameIdx = 0;
 let layerIdx = 0;
 let layerVisible: boolean[] = doc.layerNames.map(() => true);
@@ -152,6 +155,9 @@ let zoom = 14;
 let showGrid = true;
 let onion = false;
 let playing = true;
+// Paper-doll reference: a faint composited body shown under the canvas while
+// painting clothing/accessories so garments are drawn to fit the body.
+let onionRefPixels: string[] | null = null;
 
 // Eastward-leaning default palette — warm skins, hairs, cloth, and accents.
 const PALETTE = [
@@ -171,9 +177,17 @@ const npcPreviewCanvas = $<HTMLCanvasElement>("npc-preview");
 const npcPctx = npcPreviewCanvas.getContext("2d")!;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-function curFrame(): SpriteFrame { return doc.facings[facing][frameIdx]; }
+function curClip(): AnimationClip { return getClip(doc, currentClip); }
+function curFrames(): SpriteFrame[] { return curClip().facings[facing]; }
+function curFrame(): SpriteFrame { return curFrames()[frameIdx]; }
 function curLayer(): string[] { return curFrame().layers[layerIdx]; }
 function idx(x: number, y: number) { return y * doc.w + x; }
+// Keep currentClip valid for the active doc.
+function ensureClip() {
+  if (!doc.animations[currentClip]) currentClip = doc.defaultClip;
+  const frames = curClip().facings[facing] ?? [];
+  if (frameIdx >= frames.length) frameIdx = Math.max(0, frames.length - 1);
+}
 
 function loadFromStorage(): SpriteDoc | null {
   try {
@@ -227,9 +241,16 @@ function drawStage() {
     return;
   }
 
-  // Char mode: existing logic.
+  // Char / creature mode: paint the active clip's current frame.
+  ensureClip();
+  // Paper-doll onion reference: when editing equipment, show the body beneath.
+  if (onionRefPixels) {
+    sctx.globalAlpha = 0.3;
+    paintPixels(sctx, onionRefPixels, zoom);
+    sctx.globalAlpha = 1;
+  }
   if (onion) {
-    const frames = doc.facings[facing];
+    const frames = curFrames();
     const prev = frames[(frameIdx - 1 + frames.length) % frames.length];
     if (prev !== curFrame()) {
       const comp = compositeFrame(prev, layerVisible, doc.w, doc.h);
@@ -240,7 +261,7 @@ function drawStage() {
   }
 
   const comp = tintPreview
-    ? renderFrame(doc, facing, frameIdx, tints, layerVisible)
+    ? renderFrame(doc, currentClip, facing, frameIdx, tints, layerVisible)
     : compositeFrame(curFrame(), layerVisible, doc.w, doc.h);
   paintPixels(sctx, comp, zoom);
 
@@ -272,14 +293,17 @@ let previewFrame = 0;
 let lastTick = 0;
 function previewLoop(t: number) {
   requestAnimationFrame(previewLoop);
-  const frames = doc.facings[facing];
-  if (playing && t - lastTick > 1000 / Math.max(1, doc.fps)) {
+  if (editorMode !== "char" && editorMode !== "creatures") return;
+  const clip = curClip();
+  const frames = clip.facings[facing];
+  if (!frames || frames.length === 0) return;
+  if (playing && t - lastTick > 1000 / Math.max(1, clip.fps)) {
     previewFrame = (previewFrame + 1) % frames.length;
     lastTick = t;
   }
-  const pf = playing ? previewFrame % frames.length : frameIdx;
+  const pf = playing ? previewFrame % frames.length : Math.min(frameIdx, frames.length - 1);
   const comp = tintPreview
-    ? renderFrame(doc, facing, pf, tints, layerVisible)
+    ? renderFrame(doc, currentClip, facing, pf, tints, layerVisible)
     : compositeFrame(frames[pf], layerVisible, doc.w, doc.h);
   const scale = Math.min(preview.width / doc.w, preview.height / doc.h) | 0;
   const ox = (preview.width - doc.w * scale) / 2;
@@ -406,13 +430,43 @@ function buildFacings() {
 function buildFrames() {
   const wrap = $<HTMLDivElement>("frames");
   wrap.innerHTML = "";
-  doc.facings[facing].forEach((_f, i) => {
+  curFrames().forEach((_f: SpriteFrame, i: number) => {
     const b = document.createElement("button");
     b.textContent = String(i + 1);
     b.className = i === frameIdx ? "active" : "";
     b.addEventListener("click", () => { frameIdx = i; buildFrames(); drawStage(); });
     wrap.appendChild(b);
   });
+}
+
+// ── Animation clips (timelines) ────────────────────────────────────────────────
+// Lists every animation the current subject carries; lets you switch, add, and
+// delete clips. Each clip keeps its own frames + FPS + loop flag.
+function clipCatalog(): readonly string[] {
+  return editingCreature ? CREATURE_CLIPS : CHAR_CLIPS;
+}
+function buildClips() {
+  const wrap = document.getElementById("clips");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  for (const name of listClips(doc)) {
+    const b = document.createElement("button");
+    b.textContent = name + (name === doc.defaultClip ? " ★" : "");
+    b.className = name === currentClip ? "active" : "";
+    b.title = name === doc.defaultClip ? "Default clip (shown first / used by game)" : "";
+    b.addEventListener("click", () => selectClip(name));
+    wrap.appendChild(b);
+  }
+}
+function selectClip(name: string) {
+  if (!doc.animations[name]) return;
+  currentClip = name;
+  frameIdx = 0; previewFrame = 0;
+  const fpsEl = document.getElementById("fps") as HTMLInputElement | null;
+  if (fpsEl) fpsEl.value = String(curClip().fps);
+  const loopEl = document.getElementById("clip-loop") as HTMLInputElement | null;
+  if (loopEl) loopEl.checked = curClip().loop;
+  buildClips(); buildFrames(); drawStage();
 }
 
 function buildLayers() {
@@ -514,7 +568,7 @@ $<HTMLInputElement>("onion").addEventListener("change", (e) => {
   onion = (e.target as HTMLInputElement).checked; drawStage();
 });
 $<HTMLInputElement>("fps").addEventListener("change", (e) => {
-  doc.fps = Math.max(1, Math.min(24, +(e.target as HTMLInputElement).value));
+  curClip().fps = Math.max(1, Math.min(24, +(e.target as HTMLInputElement).value));
   saveToStorage();
 });
 $<HTMLInputElement>("docname").addEventListener("input", (e) => {
@@ -532,23 +586,47 @@ $("btn-clear").addEventListener("click", () => {
   saveToStorage(); drawStage();
 });
 
-// Frame ops
+// Frame ops — operate on the active clip + facing.
 $("frame-add").addEventListener("click", () => {
-  doc.facings[facing].push(emptyFrame(doc.w, doc.h, doc.layerNames.length));
-  frameIdx = doc.facings[facing].length - 1;
+  curFrames().push(emptyFrame(doc.w, doc.h, doc.layerNames.length));
+  frameIdx = curFrames().length - 1;
   saveToStorage(); buildFrames(); drawStage();
 });
 $("frame-dup").addEventListener("click", () => {
   const clone: SpriteFrame = { layers: curFrame().layers.map((l) => [...l]) };
-  doc.facings[facing].splice(frameIdx + 1, 0, clone);
+  curFrames().splice(frameIdx + 1, 0, clone);
   frameIdx++;
   saveToStorage(); buildFrames(); drawStage();
 });
 $("frame-del").addEventListener("click", () => {
-  if (doc.facings[facing].length <= 1) return;
-  doc.facings[facing].splice(frameIdx, 1);
-  frameIdx = Math.min(frameIdx, doc.facings[facing].length - 1);
+  if (curFrames().length <= 1) return;
+  curFrames().splice(frameIdx, 1);
+  frameIdx = Math.min(frameIdx, curFrames().length - 1);
   saveToStorage(); buildFrames(); drawStage();
+});
+
+// Clip ops — add a new animation timeline (from the catalog) or delete one.
+document.getElementById("clip-add")?.addEventListener("click", () => {
+  const have = new Set(listClips(doc));
+  const choices = clipCatalog().filter((c) => !have.has(c));
+  const name = choices[0] ?? prompt("New animation name?")?.trim();
+  if (!name) { flash("All catalog animations already exist"); return; }
+  addClip(doc, name);
+  saveToStorage(); selectClip(name); flash(`Added animation "${name}"`);
+});
+document.getElementById("clip-del")?.addEventListener("click", () => {
+  if (listClips(doc).length <= 1) { flash("Keep at least one animation"); return; }
+  if (!confirm(`Delete animation "${currentClip}"?`)) return;
+  deleteClip(doc, currentClip);
+  currentClip = doc.defaultClip;
+  saveToStorage(); selectClip(currentClip); flash("Animation deleted");
+});
+document.getElementById("clip-default")?.addEventListener("click", () => {
+  doc.defaultClip = currentClip; saveToStorage(); buildClips();
+  flash(`"${currentClip}" is now the default clip`);
+});
+document.getElementById("clip-loop")?.addEventListener("change", (e) => {
+  curClip().loop = (e.target as HTMLInputElement).checked; saveToStorage();
 });
 
 // Doc ops
@@ -584,15 +662,16 @@ $<HTMLInputElement>("file-import").addEventListener("change", async (e) => {
   } catch { flash("Bad file"); }
 });
 
-// Export a horizontal sprite sheet: rows = facings, columns = frames.
+// Export a horizontal sprite sheet for the ACTIVE clip: rows = facings, cols = frames.
 $("btn-png").addEventListener("click", () => {
-  const maxFrames = Math.max(...FACINGS.map((f) => doc.facings[f].length));
+  const clip = curClip();
+  const maxFrames = Math.max(...FACINGS.map((f) => clip.facings[f].length));
   const sheet = document.createElement("canvas");
   sheet.width = doc.w * maxFrames;
   sheet.height = doc.h * FACINGS.length;
   const c = sheet.getContext("2d")!;
   FACINGS.forEach((f, row) => {
-    doc.facings[f].forEach((frame, col) => {
+    clip.facings[f].forEach((frame, col) => {
       const comp = compositeFrame(frame, doc.layerNames.map(() => true), doc.w, doc.h);
       for (let y = 0; y < doc.h; y++) for (let x = 0; x < doc.w; x++) {
         const px = comp[idx(x, y)];
@@ -602,7 +681,7 @@ $("btn-png").addEventListener("click", () => {
       }
     });
   });
-  sheet.toBlob((b) => b && downloadBlob(b, `${doc.name || "sprite"}-sheet.png`));
+  sheet.toBlob((b) => b && downloadBlob(b, `${doc.name || "sprite"}-${currentClip}-sheet.png`));
 });
 
 function downloadBlob(blob: Blob, name: string) {
@@ -807,9 +886,11 @@ function selectCreature(kind: string) {
   currentCreatureKind = kind;
   editingCreature = kind;
   doc = creatureDocFor(kind);          // same reference stored in the sheet
+  currentClip = doc.defaultClip;
   facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
   layerVisible = doc.layerNames.map(() => true);
-  buildCreatureGrid(); buildFacings(); buildFrames(); buildLayers();
+  $<HTMLInputElement>("fps").value = String(curClip().fps);
+  buildCreatureGrid(); buildFacings(); buildClips(); buildFrames(); buildLayers();
   $("creature-edit-title").textContent = `Editing: ${CREATURE_DISPLAY[kind] ?? kind}`;
   sizeStage(); drawStage();
 }
@@ -1129,9 +1210,12 @@ function setEditorMode(m: EditorMode) {
   if (m === "char" && editingCreature) {
     editingCreature = null;
     doc = charDoc;
+    currentClip = doc.defaultClip;
     facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
     layerVisible = doc.layerNames.map(() => true);
-    buildFacings(); buildFrames(); buildLayers();
+    onionRefPixels = null;
+    $<HTMLInputElement>("fps").value = String(curClip().fps);
+    buildFacings(); buildClips(); buildFrames(); buildLayers();
   }
 
   if (m === "items") {
@@ -1356,9 +1440,10 @@ $("tab-terrain").addEventListener("click", () => setEditorMode("terrain"));
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 function refreshAll() {
+  currentClip = doc.defaultClip;
   $<HTMLInputElement>("docname").value = doc.name;
-  $<HTMLInputElement>("fps").value = String(doc.fps);
-  buildPalette(); buildFacings(); buildFrames(); buildLayers(); buildDyePanel();
+  $<HTMLInputElement>("fps").value = String(curClip().fps);
+  buildPalette(); buildFacings(); buildClips(); buildFrames(); buildLayers(); buildDyePanel();
   setColor(color);
   setEditorMode(editorMode);  // properly initialise all panel states
 }

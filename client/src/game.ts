@@ -62,9 +62,10 @@ const PAINTED_CREATURES = new Map<string, SpriteDoc>();
 setCreatureDocProvider((kind) => {
   const doc = PAINTED_CREATURES.get(kind);
   if (!doc) return null;
-  const frames = doc.facings.down?.length ?? 1;
+  const clip = doc.animations.walk ? "walk" : doc.defaultClip;
+  const frames = doc.animations[clip]?.facings.down?.length ?? 1;
   const frameIdx = Math.floor(performance.now() / 180) % Math.max(1, frames);
-  return { doc, frameIdx };
+  return { doc, frameIdx, clip };
 });
 
 const ANIM_G = animData as Record<string, number>;

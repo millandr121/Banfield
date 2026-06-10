@@ -274,6 +274,18 @@
       <div class="col right">
         <div id="char-right-panels" style="display:contents">
           <div class="group">
+            <h2>Animations</h2>
+            <div class="frames" id="clips"></div>
+            <div class="row" style="margin-top:7px">
+              <button id="clip-add" title="Add an animation timeline">+ Animation</button>
+              <button id="clip-del" title="Delete this animation">Delete</button>
+              <button id="clip-default" title="Make this the default clip">★ Default</button>
+            </div>
+            <label style="display:flex;gap:6px;align-items:center;margin-top:7px;font-size:11px;color:var(--muted)">
+              <input type="checkbox" id="clip-loop" checked /> loop this animation
+            </label>
+          </div>
+          <div class="group">
             <h2>Facing</h2>
             <div class="facings" id="facings"></div>
           </div>
@@ -292,7 +304,7 @@
           </div>
           <div class="group">
             <h2>Playback</h2>
-            <label class="fld">FPS
+            <label class="fld">FPS (this animation)
               <input type="number" id="fps" min="1" max="24" value="6" />
             </label>
           </div>

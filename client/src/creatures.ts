@@ -6,7 +6,7 @@
 // surface by depth. These functions are pure: they only touch the passed ctx.
 
 import { TILE_SIZE, DEPTH_ANKLE, DEPTH_SWIM, DEPTH_DEEP } from "../../shared/protocol";
-import { SpriteDoc, compositeFrame } from "../../shared/sprite";
+import { SpriteDoc, compositeFrame, clipFrames } from "../../shared/sprite";
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -16,9 +16,10 @@ const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 // blits the pixel sprite instead of drawing the procedural vector silhouette,
 // so authored creature art flows through every existing call site unchanged
 // (land animals, marine surface-reveal, minimap thumbnails).
-let creatureDocProvider: ((kind: string) => { doc: SpriteDoc; frameIdx: number } | null) | null = null;
+interface CreatureDocHit { doc: SpriteDoc; frameIdx: number; clip?: string }
+let creatureDocProvider: ((kind: string) => CreatureDocHit | null) | null = null;
 export function setCreatureDocProvider(
-  fn: ((kind: string) => { doc: SpriteDoc; frameIdx: number } | null) | null,
+  fn: ((kind: string) => CreatureDocHit | null) | null,
 ) { creatureDocProvider = fn; }
 
 function rgbToHex(r: number, g: number, b: number): string {
@@ -34,8 +35,9 @@ export function drawCreatureDoc(
   x: number,
   y: number,
   scale = 1,
+  clip?: string,
 ) {
-  const frames = doc.facings.down ?? [];
+  const frames = clipFrames(doc, clip, "down");
   if (frames.length === 0) return;
   const frame = frames[((frameIdx % frames.length) + frames.length) % frames.length];
   const comp = compositeFrame(frame, doc.layerNames.map(() => true), doc.w, doc.h);
@@ -104,7 +106,7 @@ export function drawFullCreature(ctx: CanvasRenderingContext2D, kind: string, x:
   // Authored pixel sprite takes precedence over the procedural vector art.
   if (creatureDocProvider) {
     const r = creatureDocProvider(kind);
-    if (r) { drawCreatureDoc(ctx, r.doc, r.frameIdx, x, y, 1); return; }
+    if (r) { drawCreatureDoc(ctx, r.doc, r.frameIdx, x, y, 1, r.clip); return; }
   }
   drawCreatureVector(ctx, kind, x, y);
 }
