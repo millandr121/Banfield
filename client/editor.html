@@ -119,8 +119,10 @@
         <button id="tab-items"    title="Browse and paint item icons">Items</button>
         <button id="tab-npcs"     title="Edit NPC appearances">NPCs</button>
         <button id="tab-creatures" title="Preview creature sprites">Creatures</button>
-        <button id="tab-actions"  title="Preview & tune animation actions">Actions</button>
-        <button id="tab-terrain"  title="Edit terrain tile colours">Terrain</button>
+        <button id="tab-actions"   title="Preview & tune animation actions">Actions</button>
+        <button id="tab-terrain"   title="Edit terrain tile colours">Terrain</button>
+        <button id="tab-clothing"  title="Paint clothing item sprites">Clothing</button>
+        <button id="tab-objects"   title="Paint environment object sprites">Objects</button>
       </div>
       <input class="docname" id="docname" value="character" />
       <span id="item-name" style="display:none"></span>
@@ -157,6 +159,16 @@
       <div id="terrain-ops" style="display:none">
         <button id="btn-terrain-save">Save terrain</button>
         <button id="btn-terrain-reset">Reset defaults</button>
+      </div>
+      <div id="clothing-ops" style="display:none;align-items:center;gap:8px">
+        <span id="clothing-edit-title" style="color:var(--gold);font-size:12px;font-weight:700">Clothing</span>
+        <button id="btn-clothing-clear" title="Clear this item's sprite">Clear sprite</button>
+        <button id="btn-clothing-save">Save clothing</button>
+      </div>
+      <div id="objects-ops" style="display:none;align-items:center;gap:8px">
+        <span id="objects-edit-title" style="color:var(--gold);font-size:12px;font-weight:700">Objects</span>
+        <button id="btn-object-clear" title="Clear this object's sprite">Clear sprite</button>
+        <button id="btn-objects-save">Save objects</button>
       </div>
       <input type="file" id="file-import" accept="application/json" hidden />
     </header>
@@ -210,6 +222,16 @@
         <div class="group" id="creature-grid-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
           <h2>Creatures</h2>
           <div class="creature-grid" id="creature-grid"></div>
+        </div>
+        <!-- Clothing grid panel -->
+        <div class="group" id="clothing-grid-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
+          <h2>Clothing Items</h2>
+          <div class="creature-grid" id="clothing-grid"></div>
+        </div>
+        <!-- Objects grid panel -->
+        <div class="group" id="objects-grid-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
+          <h2>Environment Objects</h2>
+          <div class="creature-grid" id="objects-grid"></div>
         </div>
         <!-- Actions subject panel -->
         <div class="group" id="actions-subject-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column">
@@ -357,6 +379,29 @@
             <h2>Tuning</h2>
             <div id="actions-sliders"></div>
             <div class="hint" style="margin-top:6px">Sliders tweak the live animation. Save writes anim-settings.json into the game.</div>
+          </div>
+        </div>
+        <div id="clothing-hint-panel" style="display:none" class="group">
+          <h2>Clothing mode</h2>
+          <div class="hint" style="line-height:1.7">
+            20×26 grid, same as the<br>
+            body. Character shows<br>
+            faintly as a guide.<br>
+            Enable tint preview to<br>
+            see chosen dye colours.<br>
+            base = main coloured<br>
+            area, detail = trim.
+          </div>
+        </div>
+        <div id="objects-hint-panel" style="display:none" class="group">
+          <h2>Object mode</h2>
+          <div class="hint" style="line-height:1.7">
+            32×32 canvas.<br>
+            idle = resting state,<br>
+            active = triggered state<br>
+            (campfire lit, chest<br>
+            open, door ajar…).<br>
+            Use fill for large areas.
           </div>
         </div>
         <div id="terrain-right-panels" style="display:none">

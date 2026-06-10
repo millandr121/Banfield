@@ -9,7 +9,7 @@ import {
   Facing, FACINGS, SpriteDoc, SpriteFrame, AnimationClip, DyeRole, DYE_ROLES, Tints,
   newSpriteDoc, newCreatureDoc, emptyFrame, emptyPixels, compositeFrame, normalizeLayers, renderFrame,
   docHasPaint, CREATURE_W, CREATURE_H, getClip, listClips, addClip, deleteClip,
-  CHAR_CLIPS, CREATURE_CLIPS,
+  CHAR_CLIPS, CREATURE_CLIPS, PROP_CLIPS,
 } from "../../../shared/sprite";
 import baseChar from "../assets/base-character.json";
 import rawItemSheet from "../assets/item-sprites.json";
@@ -17,6 +17,8 @@ import npcLooksData from "../assets/npc-looks.json";
 import rawTerrainData from "../assets/terrain-settings.json";
 import rawAnimData from "../assets/anim-settings.json";
 import rawCreatureSheet from "../assets/creature-sprites.json";
+import rawClothingSheet from "../assets/clothing-sprites.json";
+import rawObjectSheet from "../assets/object-sprites.json";
 import { drawCharacterPixel } from "../pixelchar";
 import { drawFullCreature, rasterizeCreatureToPixels, setCreatureDocProvider } from "../creatures";
 import type { Appearance } from "../../../shared/protocol";
@@ -24,7 +26,7 @@ import type { Appearance } from "../../../shared/protocol";
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ── Editor mode ───────────────────────────────────────────────────────────────
-type EditorMode = "char" | "items" | "npcs" | "creatures" | "terrain" | "actions";
+type EditorMode = "char" | "items" | "npcs" | "creatures" | "terrain" | "actions" | "clothing" | "objects";
 let editorMode: EditorMode = "char";
 
 // ── Terrain settings state ────────────────────────────────────────────────────
@@ -98,6 +100,84 @@ const CREATURE_DISPLAY: Record<string, string> = {
   orca: "Orca", humpback: "Humpback Whale", greywhale: "Grey Whale",
 };
 
+// ── Clothing items ────────────────────────────────────────────────────────────
+const CLOTHING_ITEMS = [
+  "clothShirt", "clothPants", "fieldHat",
+  "waxedJacket", "rainCoat", "woolSweater",
+  "wetsuitTop", "wetsuitBottom", "snorkelMask", "divingTank",
+] as const;
+const CLOTHING_DISPLAY: Record<string, string> = {
+  clothShirt: "Cloth Shirt", clothPants: "Cloth Pants", fieldHat: "Field Hat",
+  waxedJacket: "Waxed Jacket", rainCoat: "Rain Coat", woolSweater: "Wool Sweater",
+  wetsuitTop: "Wetsuit Top", wetsuitBottom: "Wetsuit Bottom",
+  snorkelMask: "Snorkel Mask", divingTank: "Diving Tank",
+};
+const CLOTHING_DYE: Record<string, DyeRole[]> = {
+  clothShirt: ["shirt", "none"], waxedJacket: ["shirt", "none"],
+  rainCoat: ["shirt", "none"], woolSweater: ["shirt", "none"],
+  wetsuitTop: ["shirt", "none"], clothPants: ["pants", "none"],
+  wetsuitBottom: ["pants", "none"], fieldHat: ["accent", "none"],
+  snorkelMask: ["none", "none"], divingTank: ["none", "none"],
+};
+
+// ── Environment objects ───────────────────────────────────────────────────────
+const OBJECT_KINDS = [
+  "campfire", "furnace", "tree_oak", "tree_pine", "tree_cedar",
+  "boulder", "barrel", "chest", "door", "fence_post", "dock_post", "boat_small",
+] as const;
+const OBJECT_DISPLAY: Record<string, string> = {
+  campfire: "Campfire", furnace: "Furnace",
+  tree_oak: "Oak Tree", tree_pine: "Pine Tree", tree_cedar: "Cedar Tree",
+  boulder: "Boulder", barrel: "Barrel", chest: "Chest", door: "Door",
+  fence_post: "Fence Post", dock_post: "Dock Post", boat_small: "Small Boat",
+};
+const OBJECT_W = 32, OBJECT_H = 32;
+
+// ── Clothing sprite sheet ─────────────────────────────────────────────────────
+interface ClothingSheet { version: number; docs: Record<string, SpriteDoc>; }
+const CLOTHING_SHEET_KEY = "banfield-clothing-sprites";
+let clothingSheet: ClothingSheet = loadClothingSheet();
+function loadClothingSheet(): ClothingSheet {
+  let base = JSON.parse(JSON.stringify(rawClothingSheet)) as ClothingSheet;
+  try {
+    const raw = localStorage.getItem(CLOTHING_SHEET_KEY);
+    if (raw) base = JSON.parse(raw) as ClothingSheet;
+  } catch { /* ignore */ }
+  if (!base.docs) base.docs = {};
+  for (const k of Object.keys(base.docs)) base.docs[k] = normalizeLayers(base.docs[k]);
+  return base;
+}
+function saveClothingSheet() { localStorage.setItem(CLOTHING_SHEET_KEY, JSON.stringify(clothingSheet)); }
+function clothingDocFor(itemId: string): SpriteDoc {
+  if (!clothingSheet.docs[itemId]) {
+    const dyes = CLOTHING_DYE[itemId] ?? ["shirt", "none"];
+    clothingSheet.docs[itemId] = newSpriteDoc(itemId, 20, 26, ["base", "detail"], dyes, ["idle", "walk"]);
+  }
+  return clothingSheet.docs[itemId];
+}
+
+// ── Object sprite sheet ───────────────────────────────────────────────────────
+interface ObjectSheet { version: number; docs: Record<string, SpriteDoc>; }
+const OBJECT_SHEET_KEY = "banfield-object-sprites";
+let objectSheet: ObjectSheet = loadObjectSheet();
+function loadObjectSheet(): ObjectSheet {
+  let base = JSON.parse(JSON.stringify(rawObjectSheet)) as ObjectSheet;
+  try {
+    const raw = localStorage.getItem(OBJECT_SHEET_KEY);
+    if (raw) base = JSON.parse(raw) as ObjectSheet;
+  } catch { /* ignore */ }
+  if (!base.docs) base.docs = {};
+  for (const k of Object.keys(base.docs)) base.docs[k] = normalizeLayers(base.docs[k]);
+  return base;
+}
+function saveObjectSheet() { localStorage.setItem(OBJECT_SHEET_KEY, JSON.stringify(objectSheet)); }
+function objectDocFor(kind: string): SpriteDoc {
+  if (!objectSheet.docs[kind]) {
+    objectSheet.docs[kind] = newSpriteDoc(kind, OBJECT_W, OBJECT_H, ["base", "shade", "glow"], ["none", "none", "none"], PROP_CLIPS);
+  }
+  return objectSheet.docs[kind];
+}
+
 // ── Creature sprite docs (layered, frame-based — same model as characters) ─────
 interface CreatureSheet { version: number; w: number; h: number; layers: string[]; docs: Record<string, SpriteDoc>; }
 const CREATURE_SHEET_KEY = "banfield-creature-sprites";
@@ -144,6 +224,10 @@ let doc: SpriteDoc = loadFromStorage() ?? normalizeLayers(JSON.parse(JSON.string
 // (and the whole paint/frame/layer pipeline) without losing the character.
 let charDoc: SpriteDoc = doc;
 let editingCreature: string | null = null; // kind currently loaded into `doc`, else null
+let editingClothing: string | null = null; // clothing itemId loaded into `doc`, else null
+let editingObject: string | null = null;   // object kind loaded into `doc`, else null
+let currentClothingId = "";
+let currentObjectId = "";
 let facing: Facing = "down";
 let currentClip = doc.defaultClip; // which animation timeline is being edited
 let frameIdx = 0;
@@ -197,9 +281,9 @@ function loadFromStorage(): SpriteDoc | null {
   } catch { return null; }
 }
 function saveToStorage() {
-  // When editing a creature, `doc` is the creature's sheet entry (same ref),
-  // so persisting the whole sheet captures the edit. Otherwise save the char.
   if (editingCreature) { saveCreatureSheet(); return; }
+  if (editingClothing) { saveClothingSheet(); return; }
+  if (editingObject) { saveObjectSheet(); return; }
   localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
 }
 
@@ -293,7 +377,7 @@ let previewFrame = 0;
 let lastTick = 0;
 function previewLoop(t: number) {
   requestAnimationFrame(previewLoop);
-  if (editorMode !== "char" && editorMode !== "creatures") return;
+  if (editorMode !== "char" && editorMode !== "creatures" && editorMode !== "clothing" && editorMode !== "objects") return;
   const clip = curClip();
   const frames = clip.facings[facing];
   if (!frames || frames.length === 0) return;
@@ -443,7 +527,9 @@ function buildFrames() {
 // Lists every animation the current subject carries; lets you switch, add, and
 // delete clips. Each clip keeps its own frames + FPS + loop flag.
 function clipCatalog(): readonly string[] {
-  return editingCreature ? CREATURE_CLIPS : CHAR_CLIPS;
+  if (editingCreature) return CREATURE_CLIPS;
+  if (editingObject) return PROP_CLIPS;
+  return CHAR_CLIPS;
 }
 function buildClips() {
   const wrap = document.getElementById("clips");
@@ -884,7 +970,8 @@ function buildCreatureGrid() {
 // Load a creature's sprite-doc into the shared paint pipeline for editing.
 function selectCreature(kind: string) {
   currentCreatureKind = kind;
-  editingCreature = kind;
+  editingCreature = kind; editingClothing = null; editingObject = null;
+  onionRefPixels = null;
   doc = creatureDocFor(kind);          // same reference stored in the sheet
   currentClip = doc.defaultClip;
   facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
@@ -904,6 +991,107 @@ function rasterizeCurrentCreature() {
   saveToStorage();
   buildCreatureGrid(); drawStage();
   flash(`Rasterized ${CREATURE_DISPLAY[editingCreature] ?? editingCreature} from vector art ✓`);
+}
+
+// ── Clothing grid + editor ─────────────────────────────────────────────────────
+function buildClothingGrid() {
+  const wrap = $<HTMLDivElement>("clothing-grid");
+  wrap.innerHTML = "";
+  for (const itemId of CLOTHING_ITEMS) {
+    const card = document.createElement("div");
+    card.className = "creature-card" + (itemId === currentClothingId ? " sel" : "");
+    const c = document.createElement("canvas");
+    c.width = 60; c.height = 78;
+    const cx2 = c.getContext("2d")!;
+    cx2.fillStyle = "#0e1e2c";
+    cx2.fillRect(0, 0, 60, 78);
+    const d = clothingSheet.docs[itemId];
+    if (d && docHasPaint(d)) {
+      const frame = d.animations[d.defaultClip]?.facings.down?.[0];
+      if (frame) {
+        const px = compositeFrame(frame, d.layerNames.map(() => true), d.w, d.h);
+        paintPixels(cx2, px, 3, d.w, d.h);
+      }
+      cx2.fillStyle = "#ffd54f"; cx2.font = "8px system-ui"; cx2.textAlign = "right";
+      cx2.fillText("✎", 58, 10);
+    }
+    const lbl = document.createElement("div");
+    lbl.className = "npc-label";
+    lbl.textContent = CLOTHING_DISPLAY[itemId] ?? itemId;
+    card.style.cursor = "pointer";
+    card.appendChild(c); card.appendChild(lbl);
+    card.addEventListener("click", () => selectClothing(itemId));
+    wrap.appendChild(card);
+  }
+}
+
+function getBodyRefPixels(): string[] {
+  return renderFrame(charDoc, charDoc.defaultClip, facing, 0, {});
+}
+
+function selectClothing(itemId: string) {
+  currentClothingId = itemId;
+  editingClothing = itemId; editingCreature = null; editingObject = null;
+  doc = clothingDocFor(itemId);
+  currentClip = doc.defaultClip;
+  facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
+  layerVisible = doc.layerNames.map(() => true);
+  onionRefPixels = getBodyRefPixels();
+  $<HTMLInputElement>("fps").value = String(curClip().fps);
+  buildClothingGrid(); buildFacings(); buildClips(); buildFrames(); buildLayers();
+  const title = document.getElementById("clothing-edit-title");
+  if (title) title.textContent = `Editing: ${CLOTHING_DISPLAY[itemId] ?? itemId}`;
+  sizeStage(); drawStage();
+}
+
+// ── Object grid + editor ──────────────────────────────────────────────────────
+function buildObjectGrid() {
+  const wrap = $<HTMLDivElement>("objects-grid");
+  wrap.innerHTML = "";
+  for (const kind of OBJECT_KINDS) {
+    const card = document.createElement("div");
+    card.className = "creature-card" + (kind === currentObjectId ? " sel" : "");
+    const c = document.createElement("canvas");
+    c.width = 72; c.height = 72;
+    const cx2 = c.getContext("2d")!;
+    cx2.fillStyle = "#0e2030";
+    cx2.fillRect(0, 0, 72, 72);
+    const d = objectSheet.docs[kind];
+    if (d && docHasPaint(d)) {
+      const scale = Math.floor(72 / Math.max(d.w, d.h));
+      const frame = d.animations[d.defaultClip]?.facings.down?.[0];
+      if (frame) {
+        const px = compositeFrame(frame, d.layerNames.map(() => true), d.w, d.h);
+        cx2.save(); cx2.translate((72 - d.w * scale) / 2, (72 - d.h * scale) / 2);
+        paintPixels(cx2, px, scale, d.w, d.h);
+        cx2.restore();
+      }
+      cx2.fillStyle = "#ffd54f"; cx2.font = "8px system-ui"; cx2.textAlign = "right";
+      cx2.fillText("✎", 70, 10);
+    }
+    const lbl = document.createElement("div");
+    lbl.className = "npc-label";
+    lbl.textContent = OBJECT_DISPLAY[kind] ?? kind;
+    card.style.cursor = "pointer";
+    card.appendChild(c); card.appendChild(lbl);
+    card.addEventListener("click", () => selectObject(kind));
+    wrap.appendChild(card);
+  }
+}
+
+function selectObject(kind: string) {
+  currentObjectId = kind;
+  editingObject = kind; editingCreature = null; editingClothing = null;
+  onionRefPixels = null;
+  doc = objectDocFor(kind);
+  currentClip = doc.defaultClip;
+  facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
+  layerVisible = doc.layerNames.map(() => true);
+  $<HTMLInputElement>("fps").value = String(curClip().fps);
+  buildObjectGrid(); buildFacings(); buildClips(); buildFrames(); buildLayers();
+  const title = document.getElementById("objects-edit-title");
+  if (title) title.textContent = `Editing: ${OBJECT_DISPLAY[kind] ?? kind}`;
+  sizeStage(); drawStage();
 }
 
 // ── Animation Actions tab ──────────────────────────────────────────────────────
@@ -1160,55 +1348,71 @@ function show(id: string, val: boolean, display = "block") {
 
 function setEditorMode(m: EditorMode) {
   editorMode = m;
-  const ALL: EditorMode[] = ["char","items","npcs","creatures","terrain","actions"];
+  const ALL: EditorMode[] = ["char","items","npcs","creatures","terrain","actions","clothing","objects"];
   for (const v of ALL) {
     const btn = document.getElementById(`tab-${v}`);
     if (btn) btn.classList.toggle("active", m === v);
   }
 
   // Header
-  show("docname",   m === "char");
-  show("item-name", m === "items");
-  show("char-ops",    m === "char",     "flex");
-  show("item-ops",    m === "items",    "flex");
-  show("npc-ops",     m === "npcs",     "flex");
-  show("creature-ops",m === "creatures","flex");
-  show("terrain-ops", m === "terrain",  "flex");
-  show("actions-ops", m === "actions",  "flex");
+  show("docname",       m === "char");
+  show("item-name",     m === "items");
+  show("char-ops",      m === "char",      "flex");
+  show("item-ops",      m === "items",     "flex");
+  show("npc-ops",       m === "npcs",      "flex");
+  show("creature-ops",  m === "creatures", "flex");
+  show("terrain-ops",   m === "terrain",   "flex");
+  show("actions-ops",   m === "actions",   "flex");
+  show("clothing-ops",  m === "clothing",  "flex");
+  show("objects-ops",   m === "objects",   "flex");
 
-  // Creatures share the full paint pipeline with the character editor.
-  const paints = m === "char" || m === "items" || m === "creatures";
+  // Creatures, clothing, and objects share the full paint pipeline.
+  const paints = m === "char" || m === "items" || m === "creatures" || m === "clothing" || m === "objects";
 
   // Left panels
-  show("tools-panel",  paints);
-  show("colour-panel", paints);
-  show("canvas-panel", paints);
-  show("item-browser-panel",  m === "items",    "flex");
-  show("npc-grid-panel",      m === "npcs",     "flex");
-  show("creature-grid-panel", m === "creatures","flex");
-  show("terrain-panel",       m === "terrain",  "flex");
-  show("actions-subject-panel", m === "actions","flex");
+  show("tools-panel",           paints);
+  show("colour-panel",          paints);
+  show("canvas-panel",          paints);
+  show("item-browser-panel",    m === "items",     "flex");
+  show("npc-grid-panel",        m === "npcs",      "flex");
+  show("creature-grid-panel",   m === "creatures", "flex");
+  show("terrain-panel",         m === "terrain",   "flex");
+  show("actions-subject-panel", m === "actions",   "flex");
+  show("clothing-grid-panel",   m === "clothing",  "flex");
+  show("objects-grid-panel",    m === "objects",   "flex");
 
   // Center
   stage.style.display = paints ? "" : "none";
-  show("center-hint",         paints);
-  show("char-preview-wrap",   m === "char" || m === "creatures");
-  show("item-preview-wrap",   m === "items");
-  show("npc-preview-wrap",    m === "npcs");
+  show("center-hint",           paints);
+  const spritePreview = m === "char" || m === "creatures" || m === "clothing" || m === "objects";
+  show("char-preview-wrap",     spritePreview);
+  show("item-preview-wrap",     m === "items");
+  show("npc-preview-wrap",      m === "npcs");
   show("terrain-preview-wrap",  m === "terrain");
-  show("actions-stage-wrap",    m === "actions", "flex");
+  show("actions-stage-wrap",    m === "actions",   "flex");
 
-  // Right panels — char/creatures both use the facings/frames/layers stack.
-  ($("char-right-panels") as HTMLElement).style.display =
-    (m === "char" || m === "creatures") ? "contents" : "none";
+  // Update preview label to match the active mode.
+  const prevLabel = document.querySelector<HTMLLabelElement>("#char-preview-wrap > label");
+  if (prevLabel) {
+    if (m === "creatures") prevLabel.textContent = "Creature preview";
+    else if (m === "clothing") prevLabel.textContent = "Clothing preview";
+    else if (m === "objects") prevLabel.textContent = "Object preview";
+    else prevLabel.textContent = "Walk preview";
+  }
+
+  // Right panels — char/creatures/clothing/objects all use facings/frames/layers.
+  const showSpriteRightPanels = m === "char" || m === "creatures" || m === "clothing" || m === "objects";
+  ($("char-right-panels") as HTMLElement).style.display = showSpriteRightPanels ? "contents" : "none";
   show("item-right-panels",     m === "items");
   show("npc-right-panels",      m === "npcs");
   show("terrain-right-panels",  m === "terrain");
   show("actions-right-panels",  m === "actions");
+  show("clothing-hint-panel",   m === "clothing");
+  show("objects-hint-panel",    m === "objects");
 
   // Restore the character doc when returning to the char tab.
-  if (m === "char" && editingCreature) {
-    editingCreature = null;
+  if (m === "char" && (editingCreature || editingClothing || editingObject)) {
+    editingCreature = null; editingClothing = null; editingObject = null;
     doc = charDoc;
     currentClip = doc.defaultClip;
     facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
@@ -1233,6 +1437,14 @@ function setEditorMode(m: EditorMode) {
   } else if (m === "actions") {
     buildActionSubjects(); buildActionList(); buildActionFacings(); buildActionSliders(); updateActionLabel();
     startActionsLoop();
+  } else if (m === "clothing") {
+    buildClothingGrid();
+    if (currentClothingId) selectClothing(currentClothingId);
+    else selectClothing(CLOTHING_ITEMS[0]);
+  } else if (m === "objects") {
+    buildObjectGrid();
+    if (currentObjectId) selectObject(currentObjectId);
+    else selectObject(OBJECT_KINDS[0]);
   } else {
     sizeStage(); drawStage();
   }
@@ -1267,6 +1479,52 @@ $("btn-creature-save")?.addEventListener("click", async () => {
     });
     flash("Creature sprites saved to game ✓");
   } catch { flash("Creature sprites saved (localStorage only)"); }
+});
+
+// ── Clothing: clear / save ────────────────────────────────────────────────────
+$("btn-clothing-clear")?.addEventListener("click", () => {
+  if (!editingClothing) return;
+  if (!confirm(`Clear ${CLOTHING_DISPLAY[editingClothing] ?? editingClothing}'s sprite?`)) return;
+  delete clothingSheet.docs[editingClothing];
+  saveClothingSheet();
+  selectClothing(editingClothing);
+  flash("Clothing sprite cleared ✓");
+});
+$("btn-clothing-save")?.addEventListener("click", async () => {
+  const out: ClothingSheet = { version: 1, docs: {} };
+  for (const [k, d] of Object.entries(clothingSheet.docs)) if (docHasPaint(d)) out.docs[k] = d;
+  saveClothingSheet();
+  try {
+    await fetch("/api/save-asset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "clothing-sprites.json", data: out }),
+    });
+    flash("Clothing sprites saved to game ✓");
+  } catch { flash("Clothing sprites saved (localStorage only)"); }
+});
+
+// ── Objects: clear / save ─────────────────────────────────────────────────────
+$("btn-object-clear")?.addEventListener("click", () => {
+  if (!editingObject) return;
+  if (!confirm(`Clear ${OBJECT_DISPLAY[editingObject] ?? editingObject}'s sprite?`)) return;
+  delete objectSheet.docs[editingObject];
+  saveObjectSheet();
+  selectObject(editingObject);
+  flash("Object sprite cleared ✓");
+});
+$("btn-objects-save")?.addEventListener("click", async () => {
+  const out: ObjectSheet = { version: 1, docs: {} };
+  for (const [k, d] of Object.entries(objectSheet.docs)) if (docHasPaint(d)) out.docs[k] = d;
+  saveObjectSheet();
+  try {
+    await fetch("/api/save-asset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "object-sprites.json", data: out }),
+    });
+    flash("Object sprites saved to game ✓");
+  } catch { flash("Object sprites saved (localStorage only)"); }
 });
 
 // ── Actions: save / reset tuning ───────────────────────────────────────────────
@@ -1436,7 +1694,9 @@ $("btn-new-sprite")?.addEventListener("click", () => {
   ($<HTMLInputElement>("new-sprite-name")).value = "";
 });
 
-$("tab-terrain").addEventListener("click", () => setEditorMode("terrain"));
+$("tab-terrain").addEventListener("click",   () => setEditorMode("terrain"));
+$("tab-clothing")?.addEventListener("click", () => setEditorMode("clothing"));
+$("tab-objects")?.addEventListener("click",  () => setEditorMode("objects"));
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 function refreshAll() {
