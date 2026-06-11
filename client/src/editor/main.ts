@@ -28,7 +28,7 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 // ── Category / mode ────────────────────────────────────────────────────────────
 type Category = "characters" | "creatures" | "clothing" | "objects" | "items" | "terrain";
 let category: Category = "characters";
-let charSubject = "player";
+let charSubject = ""; // will be set to playerSheet.active once playerSheet is loaded
 
 function isSpriteMode(): boolean {
   // Everything except flat items and terrain colours is a paintable sprite —
@@ -124,6 +124,35 @@ function seedNpcDoc(kind: string): SpriteDoc {
   }
   return d;
 }
+
+// ── Player characters sheet ────────────────────────────────────────────────────
+// Multiple authored characters; `active` is the one the game currently uses.
+interface PlayerSheet { version: number; active: string; docs: Record<string, SpriteDoc>; }
+const PLAYER_SHEET_KEY = "banfield-player-sheet";
+let playerSheet: PlayerSheet = loadPlayerSheet();
+
+function loadPlayerSheet(): PlayerSheet {
+  try {
+    const raw = localStorage.getItem(PLAYER_SHEET_KEY);
+    if (raw) {
+      const s = JSON.parse(raw) as PlayerSheet;
+      if (!s.docs) s.docs = {};
+      for (const k of Object.keys(s.docs)) s.docs[k] = normalizeLayers(s.docs[k]);
+      if (!s.active || !s.docs[s.active]) s.active = Object.keys(s.docs)[0] ?? "player";
+      if (!s.docs[s.active]) s.docs[s.active] = normalizeLayers(JSON.parse(JSON.stringify(baseChar)) as SpriteDoc);
+      return s;
+    }
+  } catch { /* ignore */ }
+  // Migrate from old single-doc STORAGE_KEY
+  const base: PlayerSheet = { version: 1, active: "player", docs: {} };
+  try {
+    const oldRaw = localStorage.getItem("banfield-sprite-doc");
+    if (oldRaw) { base.docs["player"] = normalizeLayers(JSON.parse(oldRaw)); return base; }
+  } catch { /* ignore */ }
+  base.docs["player"] = normalizeLayers(JSON.parse(JSON.stringify(baseChar)) as SpriteDoc);
+  return base;
+}
+function savePlayerSheet() { localStorage.setItem(PLAYER_SHEET_KEY, JSON.stringify(playerSheet)); }
 
 // ── Creature kinds ────────────────────────────────────────────────────────────
 const CREATURE_KINDS = [
@@ -248,13 +277,13 @@ setCreatureDocProvider((kind) => {
 
 // ── Editor state ──────────────────────────────────────────────────────────────
 type Tool = "pencil" | "eraser" | "fill" | "pick";
-const STORAGE_KEY = "banfield-sprite-doc";
 
 let tints: Tints = { skin: "#d8a870", hair: "#5a4632", shirt: "#3f8a44", pants: "#36507e", accent: "#ffd54f" };
 let tintPreview = false;
 
-let doc: SpriteDoc = loadFromStorage() ?? normalizeLayers(JSON.parse(JSON.stringify(baseChar)) as SpriteDoc);
-let charDoc: SpriteDoc = doc;
+let charDoc: SpriteDoc = playerSheet.docs[playerSheet.active];
+let doc: SpriteDoc = charDoc;
+charSubject = playerSheet.active; // sync after playerSheet is ready
 let editingCreature: string | null = null;
 let editingClothing: string | null = null;
 let editingObject: string | null = null;
@@ -301,19 +330,13 @@ function ensureClip() {
   if (frameIdx >= frames.length) frameIdx = Math.max(0, frames.length - 1);
 }
 
-function loadFromStorage(): SpriteDoc | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    return normalizeLayers(JSON.parse(raw));
-  } catch { return null; }
-}
 function saveToStorage() {
   if (editingCreature) { saveCreatureSheet(); return; }
   if (editingClothing) { saveClothingSheet(); return; }
   if (editingObject) { saveObjectSheet(); return; }
   if (editingNpc) { saveNpcSheet(); return; }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
+  playerSheet.docs[playerSheet.active] = charDoc;
+  savePlayerSheet();
 }
 
 // ── Stage rendering ──────────────────────────────────────────────────────────
@@ -814,28 +837,25 @@ function selectClip(name: string) {
 
 // Doc ops
 $("btn-new").addEventListener("click", () => {
-  if (!confirm("Start a new sprite? Unsaved work in this slot is replaced.")) return;
-  doc = newSpriteDoc($<HTMLInputElement>("docname").value || "character");
-  facing = "down"; frameIdx = 0; layerIdx = 0;
-  layerVisible = doc.layerNames.map(() => true);
-  saveToStorage(); refreshAll();
+  addNewPlayerChar();
 });
 $("btn-save").addEventListener("click", async () => {
   saveToStorage();
-  // When editing the player body, also publish it to the game so it renders
-  // at the spawn point. Other paint subjects have their own save buttons.
-  if (!editingCreature && !editingClothing && !editingObject && charSubject === "player") {
+  if (!editingCreature && !editingClothing && !editingObject && !editingNpc) {
     try {
+      const paintedDocs: Record<string, SpriteDoc> = {};
+      for (const [k, d] of Object.entries(playerSheet.docs)) if (docHasPaint(d)) paintedDocs[k] = d;
       await fetch("/api/save-asset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: "player-sprite.json", data: { version: 2, docs: { player: charDoc } } }),
+        body: JSON.stringify({ filename: "player-sprite.json", data: { version: 2, active: playerSheet.active, docs: paintedDocs } }),
       });
-      flash("Player saved to game ✓ (reload the game to see him)");
+      const activeName = playerSheet.docs[playerSheet.active]?.name ?? playerSheet.active;
+      flash(`Characters saved to game ✓ — active: "${activeName}" (reload game)`);
       return;
-    } catch { /* fall through to local-only message */ }
+    } catch { /* fall through */ }
   }
-  flash("Character saved ✓");
+  flash("Saved ✓");
 });
 $("btn-export").addEventListener("click", () => {
   const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
@@ -846,12 +866,22 @@ $<HTMLInputElement>("file-import").addEventListener("change", async (e) => {
   const file = (e.target as HTMLInputElement).files?.[0];
   if (!file) return;
   try {
-    doc = normalizeLayers(JSON.parse(await file.text()));
+    const imported = normalizeLayers(JSON.parse(await file.text()));
+    const id = (imported.name || "imported").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `import-${Date.now()}`;
+    playerSheet.docs[id] = imported;
+    playerSheet.active = id;
+    charDoc = imported;
+    doc = charDoc;
     facing = "down"; frameIdx = 0; layerIdx = 0;
     layerVisible = doc.layerNames.map(() => true);
     saveToStorage(); refreshAll();
-    flash("Imported ✓");
+    flash(`Imported "${imported.name || id}" ✓`);
   } catch { flash("Bad file"); }
+});
+
+$("btn-char-delete")?.addEventListener("click", () => {
+  if (editingNpc || editingCreature || editingClothing || editingObject) return;
+  deletePlayerChar(playerSheet.active);
 });
 
 $("btn-png").addEventListener("click", () => {
@@ -924,38 +954,52 @@ function buildSubjectGrid() {
 }
 
 function buildCharSubjectGrid(wrap: HTMLElement) {
-  // Player card
-  const playerCard = document.createElement("div");
-  playerCard.className = "subj-card" + (charSubject === "player" ? " sel" : "");
-  const pc = document.createElement("canvas");
-  pc.width = 60; pc.height = 78;
-  const pcx = pc.getContext("2d")!;
-  pcx.fillStyle = "#0e2030";
-  pcx.fillRect(0, 0, 60, 78);
-  if (docHasPaint(charDoc)) {
-    const frame = charDoc.animations[charDoc.defaultClip]?.facings.down?.[0];
-    if (frame) {
-      const px = compositeFrame(frame, charDoc.layerNames.map(() => true), charDoc.w, charDoc.h);
-      const sc = Math.min(Math.floor(60 / charDoc.w), Math.floor(78 / charDoc.h));
-      const ox = (60 - charDoc.w * sc) / 2;
-      const oy = (78 - charDoc.h * sc) / 2;
-      pcx.save(); pcx.translate(ox, oy);
-      paintPixels(pcx, px, sc, charDoc.w, charDoc.h);
-      pcx.restore();
+  // ── "New Character" card ──────────────────────────────────────────────────
+  const newCard = document.createElement("div");
+  newCard.className = "subj-card";
+  newCard.style.cursor = "pointer";
+  newCard.innerHTML = `<div style="font-size:22px;color:var(--accent);line-height:1.1">+</div><div class="subj-label">New Character</div>`;
+  newCard.addEventListener("click", () => addNewPlayerChar());
+  wrap.appendChild(newCard);
+
+  // ── Player character cards (one per doc in playerSheet) ──────────────────
+  for (const [id, cd] of Object.entries(playerSheet.docs)) {
+    const isActive = id === playerSheet.active;
+    const isSel = charSubject === id;
+    const card = document.createElement("div");
+    card.className = "subj-card" + (isSel ? " sel" : "");
+    if (isActive && !isSel) card.style.outline = "2px solid var(--gold)";
+    const c = document.createElement("canvas");
+    c.width = 60; c.height = 78;
+    const cx2 = c.getContext("2d")!;
+    cx2.fillStyle = "#0e2030";
+    cx2.fillRect(0, 0, 60, 78);
+    if (docHasPaint(cd)) {
+      const frame = cd.animations[cd.defaultClip]?.facings.down?.[0];
+      if (frame) {
+        const px = compositeFrame(frame, cd.layerNames.map(() => true), cd.w, cd.h);
+        const sc = Math.min(Math.floor(60 / cd.w), Math.floor(78 / cd.h));
+        const ox = (60 - cd.w * sc) / 2, oy = (78 - cd.h * sc) / 2;
+        cx2.save(); cx2.translate(ox, oy);
+        paintPixels(cx2, px, sc, cd.w, cd.h);
+        cx2.restore();
+      }
+    } else {
+      cx2.fillStyle = "#2a4060";
+      cx2.fillRect(22, 12, 16, 16); cx2.fillRect(18, 28, 24, 22);
+      cx2.fillRect(18, 50, 9, 18); cx2.fillRect(33, 50, 9, 18);
     }
-  } else {
-    pcx.fillStyle = "#2a4060";
-    pcx.fillRect(22, 12, 16, 16);
-    pcx.fillRect(18, 28, 24, 22);
-    pcx.fillRect(18, 50, 9, 18);
-    pcx.fillRect(33, 50, 9, 18);
+    if (isActive) {
+      cx2.fillStyle = "var(--gold)"; cx2.font = "bold 9px system-ui"; cx2.textAlign = "right";
+      cx2.fillText("★", 58, 10);
+    }
+    const lbl = document.createElement("div");
+    lbl.className = "subj-label";
+    lbl.textContent = (isActive ? "★ " : "") + (cd.name && cd.name !== "untitled" ? cd.name : id);
+    card.appendChild(c); card.appendChild(lbl);
+    card.addEventListener("click", () => setCharSubject(id));
+    wrap.appendChild(card);
   }
-  const plbl = document.createElement("div");
-  plbl.className = "subj-label";
-  plbl.textContent = charDoc.name && charDoc.name !== "untitled" ? charDoc.name : "Player";
-  playerCard.appendChild(pc); playerCard.appendChild(plbl);
-  playerCard.addEventListener("click", () => setCharSubject("player"));
-  wrap.appendChild(playerCard);
 
   // NPC cards
   for (const kind of NPC_KINDS) {
@@ -977,14 +1021,42 @@ function buildCharSubjectGrid(wrap: HTMLElement) {
   }
 }
 
+function addNewPlayerChar() {
+  const name = prompt("New character name:", "character")?.trim();
+  if (!name) return;
+  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `char-${Date.now()}`;
+  if (playerSheet.docs[id]) { flash(`"${id}" already exists`); return; }
+  playerSheet.docs[id] = newSpriteDoc(name);
+  playerSheet.active = id;
+  charDoc = playerSheet.docs[id];
+  savePlayerSheet();
+  setCharSubject(id);
+  flash(`Created "${name}" — paint away!`);
+}
+
+function deletePlayerChar(id: string) {
+  if (!playerSheet.docs[id]) return;
+  if (Object.keys(playerSheet.docs).length <= 1) { flash("Keep at least one character"); return; }
+  if (!confirm(`Delete character "${playerSheet.docs[id].name || id}"? This cannot be undone.`)) return;
+  delete playerSheet.docs[id];
+  if (playerSheet.active === id) playerSheet.active = Object.keys(playerSheet.docs)[0];
+  charDoc = playerSheet.docs[playerSheet.active];
+  savePlayerSheet();
+  setCharSubject(playerSheet.active);
+  flash("Character deleted");
+}
+
 function setCharSubject(id: string) {
   charSubject = id;
   editingCreature = null; editingClothing = null; editingObject = null;
-  if (id === "player") {
+  if (playerSheet.docs[id]) {
+    // It's a player character
     editingNpc = null;
+    playerSheet.active = id;
+    charDoc = playerSheet.docs[id];
     doc = charDoc;
   } else {
-    // NPCs are now full paintable sprites, seeded from their procedural look.
+    // It's an NPC kind
     editingNpc = id;
     doc = npcDocFor(id);
   }
@@ -1189,7 +1261,8 @@ function updateUI() {
   const isPaint = isSpriteMode();
   const isItem = category === "items";
   const isTerrain = category === "terrain";
-  const isNPC = category === "characters" && charSubject !== "player";
+  const isNPC = category === "characters" && !!editingNpc;
+  if (isNPC) populateNpcCopySelect();
 
   // Header ops
   show("paint-ops",           isPaint && !isNPC,                                "flex");
@@ -1242,6 +1315,15 @@ function updateUI() {
     else titleEl.textContent = "";
   }
 
+  // Delete char button: only relevant when editing a player character (not creature/clothing/etc.)
+  const isPlayerChar = !editingCreature && !editingClothing && !editingObject && !editingNpc && category === "characters";
+  const delBtn = document.getElementById("btn-char-delete") as HTMLButtonElement | null;
+  if (delBtn) delBtn.style.display = (isPlayerChar && Object.keys(playerSheet.docs).length > 1) ? "" : "none";
+
+  // Sync docname input with current doc name
+  const docnameEl = document.getElementById("docname") as HTMLInputElement | null;
+  if (docnameEl && isPaint) docnameEl.value = doc.name ?? "";
+
   if (isPaint) { sizeStage(); buildTimeline(); buildLayers(); buildDyeRows(); drawStage(); }
   else if (isItem) { sizeStage(); drawStage(); buildDyeRows(); }
   else if (isTerrain) { renderTerrainPreview(); }
@@ -1265,7 +1347,8 @@ function setCategory(c: Category) {
   buildSubjectGrid();
 
   if (c === "characters") {
-    setCharSubject(charSubject === "player" ? "player" : charSubject);
+    const validSubject = playerSheet.docs[charSubject] || NPC_KINDS.includes(charSubject as NpcKind) ? charSubject : playerSheet.active;
+    setCharSubject(validSubject);
   } else if (c === "creatures") {
     selectCreature(currentCreatureKind || CREATURE_KINDS[0]);
   } else if (c === "clothing") {
@@ -1418,6 +1501,31 @@ $("btn-npc-reset").addEventListener("click", () => {
   setCharSubject(editingNpc);
   flash("Reseeded from procedural art ✓");
 });
+
+// Copy a saved player character into the current NPC slot
+$("btn-npc-copy-char")?.addEventListener("click", () => {
+  if (!editingNpc) return;
+  const sel = document.getElementById("npc-copy-char-sel") as HTMLSelectElement | null;
+  const srcId = sel?.value;
+  if (!srcId || !playerSheet.docs[srcId]) { flash("Select a character first"); return; }
+  const src = playerSheet.docs[srcId];
+  npcSheet.docs[editingNpc] = JSON.parse(JSON.stringify(src)) as SpriteDoc;
+  npcSheet.docs[editingNpc].name = NPC_DISPLAY[editingNpc] ?? editingNpc;
+  saveNpcSheet();
+  setCharSubject(editingNpc);
+  flash(`Copied "${src.name || srcId}" into ${NPC_DISPLAY[editingNpc] ?? editingNpc} ✓`);
+});
+
+function populateNpcCopySelect() {
+  const sel = document.getElementById("npc-copy-char-sel") as HTMLSelectElement | null;
+  if (!sel) return;
+  sel.innerHTML = "";
+  for (const [id, cd] of Object.entries(playerSheet.docs)) {
+    const opt = document.createElement("option");
+    opt.value = id; opt.textContent = cd.name || id;
+    sel.appendChild(opt);
+  }
+}
 
 // ── Terrain ──────────────────────────────────────────────────────────────────
 const terrainCanvas = $<HTMLCanvasElement>("terrain-preview");
@@ -1721,15 +1829,19 @@ function pliFinishImport(
     }
   }
 
+  const docId = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `imported-${Date.now()}`;
+  playerSheet.docs[docId] = newDoc;
+  playerSheet.active = docId;
   charDoc = newDoc;
   doc = charDoc;
+  savePlayerSheet();
   currentClip = clipName;
   facing = "down"; frameIdx = 0; layerIdx = 0;
   layerVisible = doc.layerNames.map(() => true);
   ($<HTMLInputElement>("docname")).value = name;
-  saveToStorage();
   category = "characters";
-  charSubject = "player";
+  charSubject = docId;
+  editingNpc = null;
   ($("category-select") as unknown as HTMLSelectElement).value = "characters";
 
   pliGetEl("pli-modal").style.display = "none";

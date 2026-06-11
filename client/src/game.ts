@@ -70,18 +70,23 @@ setCreatureDocProvider((kind) => {
   return { doc, frameIdx, clip };
 });
 
-// Painted player sprite (authored in the editor, e.g. imported from PixelLab).
-// When present and painted it overrides the procedural character for all players.
-// Stored under docs.player so the same sheet file can hold variants later.
-let PLAYER_SPRITE: SpriteDoc | null = null;
+// Painted player sprites — all authored characters, keyed by id.
+// `activePlayerCharId` tracks which one is currently shown for the local player.
+// Cycle through them with [ / ] keys.
+const ALL_PLAYER_SPRITES = new Map<string, SpriteDoc>();
+let activePlayerCharId = (playerSpriteData as { active?: string }).active ?? "player";
 {
   const docs = (playerSpriteData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
-  const raw = docs.player;
-  if (raw) {
-    const doc = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
-    if (docHasPaint(doc)) PLAYER_SPRITE = doc;
+  for (const [id, raw] of Object.entries(docs)) {
+    const d = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
+    if (docHasPaint(d)) ALL_PLAYER_SPRITES.set(id, d);
+  }
+  // Fall back to first available if active key has no painted doc
+  if (!ALL_PLAYER_SPRITES.has(activePlayerCharId)) {
+    activePlayerCharId = ALL_PLAYER_SPRITES.keys().next().value ?? "player";
   }
 }
+let PLAYER_SPRITE: SpriteDoc | null = ALL_PLAYER_SPRITES.get(activePlayerCharId) ?? null;
 
 // Painted NPC sprites, keyed by NPC kind (authored in the editor).
 const PAINTED_NPCS = new Map<string, SpriteDoc>();
@@ -759,6 +764,14 @@ export class Game {
           this.net.send({ t: "sleep" });
         } else if (k === "t") {
           this.net.send({ t: "travel" });
+        } else if (k === "[" || k === "]") {
+          const ids = [...ALL_PLAYER_SPRITES.keys()];
+          if (ids.length > 1) {
+            const cur = ids.indexOf(activePlayerCharId);
+            activePlayerCharId = ids[(cur + (k === "]" ? 1 : -1) + ids.length) % ids.length];
+            PLAYER_SPRITE = ALL_PLAYER_SPRITES.get(activePlayerCharId) ?? null;
+          }
+          e.preventDefault();
         } else if (k === "m") {
           this.mapOpen = !this.mapOpen;
           e.preventDefault();
@@ -3239,8 +3252,12 @@ export class Game {
     const event = snap.event === "tsunami" ? " ⚠ TSUNAMI" : snap.event === "king" ? " ⚠ King tide" : "";
     const sleepStr = me?.sleeping ? ` 💤` : "";
     const teamStr = me?.team ? ` · <b>Team:</b> ${me.team}` : "";
+    const charCount = ALL_PLAYER_SPRITES.size;
+    const charStr = (PLAYER_SPRITE && charCount > 1)
+      ? ` · <b>Character:</b> ${PLAYER_SPRITE.name ?? activePlayerCharId} <span style="color:#8fb4c9;font-size:11px">[ / ]</span>`
+      : "";
     hud.innerHTML =
-      `<b>${this.regionName}</b> · <b>Tide:</b> ${snap.phase} (${tidePct}%)${event}${sleepStr}${teamStr}<br />` +
+      `<b>${this.regionName}</b> · <b>Tide:</b> ${snap.phase} (${tidePct}%)${event}${sleepStr}${teamStr}${charStr}<br />` +
       `<b>Here:</b> ${snap.players.length} players`;
   }
 

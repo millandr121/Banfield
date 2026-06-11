@@ -133,10 +133,11 @@
       <a class="back" href="/">← game</a>
 
       <!-- paint ops (char / creatures / clothing / objects) -->
-      <div id="paint-ops" style="display:none;gap:6px;align-items:center">
+      <div id="paint-ops" style="display:none;gap:6px;align-items:center;flex-wrap:wrap">
         <input class="docname" id="docname" value="character" />
-        <button id="btn-new">New</button>
-        <button id="btn-save">Save</button>
+        <button id="btn-new" title="Create a new character">+ New Char</button>
+        <button id="btn-char-delete" title="Delete this character" style="padding:4px 7px;font-size:11px" id="btn-char-delete">✕ Del</button>
+        <button id="btn-save">Save to game</button>
         <button id="btn-export">Export JSON</button>
         <button id="btn-import">Import</button>
         <button id="btn-png">PNG sheet</button>
@@ -159,9 +160,13 @@
       </div>
 
       <!-- npc ops (shown when charSubject is an NPC) -->
-      <div id="npc-ops" style="display:none;gap:6px;align-items:center">
-        <button id="btn-npc-reset" title="Re-seed pixels from the built-in procedural art">↻ Reseed from art</button>
+      <div id="npc-ops" style="display:none;gap:6px;align-items:center;flex-wrap:wrap">
+        <button id="btn-npc-reset" title="Re-seed pixels from the built-in procedural art">↻ Reseed</button>
         <button id="btn-npc-save">Save NPCs to game</button>
+        <span style="font-size:11px;color:var(--muted)">|</span>
+        <span style="font-size:11px;color:var(--muted)">Use character:</span>
+        <select id="npc-copy-char-sel" style="font-size:11px;padding:3px 5px;max-width:120px"></select>
+        <button id="btn-npc-copy-char" title="Copy a saved character's sprite into this NPC slot">← Copy to NPC</button>
       </div>
 
       <!-- creature extra ops (when editingCreature) -->
