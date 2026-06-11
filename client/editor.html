@@ -28,10 +28,13 @@
       #subject-title { color: var(--gold); font-size: 12px; font-weight: 700; min-width: 80px; }
       a.back { color: var(--accent-hi); text-decoration: none; font-size: 12px; }
       main { flex: 1; display: flex; min-height: 0; }
-      .left { width: 182px; background: var(--panel); border-right: 1px solid var(--border);
-        display: flex; flex-direction: column; overflow: hidden; }
-      .right { width: 188px; background: var(--panel); border-left: 1px solid var(--border);
-        display: flex; flex-direction: column; overflow-y: auto; gap: 8px; padding: 8px; }
+      .left { width: 200px; min-width: 150px; max-width: 420px; background: var(--panel);
+        border-right: 1px solid var(--border); display: flex; flex-direction: column;
+        overflow: hidden; resize: horizontal; }
+      .right { width: 210px; min-width: 160px; max-width: 420px; background: var(--panel);
+        border-left: 1px solid var(--border); display: flex; flex-direction: column;
+        overflow-y: auto; gap: 8px; padding: 8px; resize: horizontal; direction: rtl; }
+      .right > * { direction: ltr; }
       .center { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #0c1820; }
       .canvas-area { flex: 1; display: flex; align-items: center; justify-content: center;
         position: relative; overflow: hidden; }
@@ -63,8 +66,11 @@
       .subj-card { background: var(--panel2); border: 2px solid var(--border); border-radius: 6px;
         padding: 5px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 3px; }
       .subj-card.sel { border-color: var(--gold); }
-      .subj-card canvas { image-rendering: pixelated; }
-      .subj-label { font-size: 9px; color: var(--muted); text-align: center; word-break: break-word; }
+      .subj-card canvas { image-rendering: pixelated; max-width: 100%; height: auto; }
+      .subj-label { font-size: 9px; color: var(--muted); text-align: center; word-break: break-word;
+        line-height: 1.1; }
+      /* Terrain rows take the full sidebar width (no 2-col squeeze). */
+      #subject-scroll.single-col { grid-template-columns: 1fr; }
       .terrain-row { display: flex; align-items: center; gap: 6px; padding: 4px;
         border-radius: 5px; margin-bottom: 3px; background: var(--panel2); border: 1px solid var(--border); }
       .terrain-row .tswatch { width: 32px; height: 24px; border-radius: 4px; border: 1px solid rgba(0,0,0,.4); flex-shrink: 0; }
@@ -154,8 +160,8 @@
 
       <!-- npc ops (shown when charSubject is an NPC) -->
       <div id="npc-ops" style="display:none;gap:6px;align-items:center">
-        <button id="btn-npc-save">Save NPCs</button>
-        <button id="btn-npc-reset">Reset defaults</button>
+        <button id="btn-npc-reset" title="Re-seed pixels from the built-in procedural art">↻ Reseed from art</button>
+        <button id="btn-npc-save">Save NPCs to game</button>
       </div>
 
       <!-- creature extra ops (when editingCreature) -->
@@ -276,6 +282,9 @@
             <button id="frame-add" style="font-size:10px;padding:2px 6px">+Frame</button>
             <button id="frame-dup" style="font-size:10px;padding:2px 6px">Dup</button>
             <button id="frame-del" style="font-size:10px;padding:2px 6px">Del</button>
+            <div class="tl-sep"></div>
+            <button id="frame-copy" style="font-size:10px;padding:2px 6px" title="Copy this frame">⧉ Copy</button>
+            <button id="frame-paste" style="font-size:10px;padding:2px 6px" title="Paste copied frame here">⧉ Paste</button>
           </div>
         </div>
       </div>
@@ -301,6 +310,11 @@
         <div id="layers-group" class="group" style="display:none">
           <h2>Layers</h2>
           <div id="layers"></div>
+          <div class="row" style="margin-top:6px;gap:4px">
+            <button id="layer-add" style="font-size:10px;padding:3px 6px" title="Add a new layer on top">+ Layer</button>
+            <button id="layer-rename" style="font-size:10px;padding:3px 6px" title="Rename selected layer">Rename</button>
+            <button id="layer-del" style="font-size:10px;padding:3px 6px" title="Delete selected layer">Del</button>
+          </div>
         </div>
 
         <!-- Dye preview -->

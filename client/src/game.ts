@@ -48,6 +48,7 @@ import { drawItemIcon } from "./itemicon";
 import { drawFullCreature, drawCreatureSprite, MARINE_KINDS, setCreatureDocProvider } from "./creatures";
 import creatureSpriteData from "./assets/creature-sprites.json";
 import playerSpriteData from "./assets/player-sprite.json";
+import npcSpriteData from "./assets/npc-sprites.json";
 import { SpriteDoc, normalizeLayers, docHasPaint, renderFrame } from "../../shared/sprite";
 
 // Painted creature sprite-docs (authored in the editor). Empty docs fall back
@@ -82,22 +83,27 @@ let PLAYER_SPRITE: SpriteDoc | null = null;
   }
 }
 
-/**
- * Draw the painted player sprite centred at (cx, cy) — the character's feet.
- * Returns true if a sprite was drawn, false to fall back to procedural art.
- */
-function drawPlayerSprite(
-  ctx: CanvasRenderingContext2D, cx: number, cy: number, facing: Facing, moving: boolean,
-): boolean {
-  const doc = PLAYER_SPRITE;
-  if (!doc) return false;
+// Painted NPC sprites, keyed by NPC kind (authored in the editor).
+const PAINTED_NPCS = new Map<string, SpriteDoc>();
+{
+  const docs = (npcSpriteData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
+  for (const [kind, raw] of Object.entries(docs)) {
+    const doc = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
+    if (docHasPaint(doc)) PAINTED_NPCS.set(kind, doc);
+  }
+}
+
+/** Shared sprite blitter: draws a SpriteDoc frame centred on (cx,cy) feet. */
+function drawSpriteDoc(
+  ctx: CanvasRenderingContext2D, cx: number, cy: number,
+  doc: SpriteDoc, facing: Facing, moving: boolean,
+): void {
   const clip = doc.animations.walk && moving ? "walk"
     : doc.animations.idle ? "idle" : doc.defaultClip;
   const frameCount = doc.animations[clip]?.facings[facing]?.length ?? 1;
   const frameIdx = moving ? Math.floor(performance.now() / 150) % Math.max(1, frameCount) : 0;
   const px = renderFrame(doc, clip, facing, frameIdx, {});
-  // Scale so the sprite stands ~2 tiles tall, anchored at the feet.
-  const scale = (TILE_SIZE * 2) / doc.h;
+  const scale = (TILE_SIZE * 2) / doc.h;          // ~2 tiles tall
   const ox = cx - (doc.w * scale) / 2;
   const oy = cy - doc.h * scale + TILE_SIZE * 0.45; // feet near cy
   for (let y = 0; y < doc.h; y++) {
@@ -109,6 +115,24 @@ function drawPlayerSprite(
         Math.ceil(scale), Math.ceil(scale));
     }
   }
+}
+
+/** Draw the painted player sprite. Returns true if drawn, false to fall back. */
+function drawPlayerSprite(
+  ctx: CanvasRenderingContext2D, cx: number, cy: number, facing: Facing, moving: boolean,
+): boolean {
+  if (!PLAYER_SPRITE) return false;
+  drawSpriteDoc(ctx, cx, cy, PLAYER_SPRITE, facing, moving);
+  return true;
+}
+
+/** Draw a painted NPC sprite for the given kind. Returns true if drawn. */
+function drawNpcSprite(
+  ctx: CanvasRenderingContext2D, cx: number, cy: number, kind: string, facing: Facing, moving: boolean,
+): boolean {
+  const doc = PAINTED_NPCS.get(kind);
+  if (!doc) return false;
+  drawSpriteDoc(ctx, cx, cy, doc, facing, moving);
   return true;
 }
 
@@ -2435,12 +2459,14 @@ export class Game {
     const npcAppearance: Appearance =
       NPC_LOOKS[n.kind] ?? { skin: "#e0ac69", hair: "#3a2a18", shirt: NPC_COLORS[n.kind] ?? "#607d8b" };
 
-    drawCharacterPixel(ctx, sx, sy, npcAppearance, {
-      facing: facing as PixelCharOpts["facing"],
-      phase: gait.phase,
-      moving: gait.moving,
-      weapon: null,
-    });
+    if (!drawNpcSprite(ctx, sx, sy, n.kind, facing, gait.moving)) {
+      drawCharacterPixel(ctx, sx, sy, npcAppearance, {
+        facing: facing as PixelCharOpts["facing"],
+        phase: gait.phase,
+        moving: gait.moving,
+        weapon: null,
+      });
+    }
 
     // Role label
     ctx.fillStyle = "#eaf2f8";

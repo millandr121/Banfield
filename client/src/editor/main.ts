@@ -18,7 +18,8 @@ import rawTerrainData from "../assets/terrain-settings.json";
 import rawCreatureSheet from "../assets/creature-sprites.json";
 import rawClothingSheet from "../assets/clothing-sprites.json";
 import rawObjectSheet from "../assets/object-sprites.json";
-import { drawCharacterPixel } from "../pixelchar";
+import rawNpcSheet from "../assets/npc-sprites.json";
+import { drawCharacterPixel, rasterizeCharacterToPixels } from "../pixelchar";
 import { drawFullCreature, rasterizeCreatureToPixels, setCreatureDocProvider } from "../creatures";
 import type { Appearance } from "../../../shared/protocol";
 
@@ -30,8 +31,9 @@ let category: Category = "characters";
 let charSubject = "player";
 
 function isSpriteMode(): boolean {
-  return category !== "items" && category !== "terrain" &&
-    !(category === "characters" && charSubject !== "player");
+  // Everything except flat items and terrain colours is a paintable sprite —
+  // player, NPCs, creatures, clothing and objects all share the paint pipeline.
+  return category !== "items" && category !== "terrain";
 }
 
 // ── Terrain settings state ────────────────────────────────────────────────────
@@ -80,7 +82,6 @@ const NPC_DISPLAY: Record<string, string> = {
   marineBiologist: "Marine Biologist", snorkeler: "Snorkeler",
 };
 let npcLooks: Record<string, Appearance> = loadNpcLooks();
-let currentNpcKind = "";
 
 function loadNpcLooks(): Record<string, Appearance> {
   try {
@@ -89,8 +90,39 @@ function loadNpcLooks(): Record<string, Appearance> {
   } catch { /* ignore */ }
   return JSON.parse(JSON.stringify(npcLooksData));
 }
-function saveNpcLooks() {
-  localStorage.setItem(NPC_LOOKS_KEY, JSON.stringify(npcLooks));
+
+// ── NPC paintable sprite sheet ────────────────────────────────────────────────
+// NPCs are editable as full sprites just like the player: we seed a SpriteDoc
+// from their procedural appearance (all 8 facings) and let you repaint pixels.
+interface NpcSheet { version: number; docs: Record<string, SpriteDoc>; }
+const NPC_SPRITES_KEY = "banfield-npc-sprites";
+let npcSheet: NpcSheet = loadNpcSheet();
+function loadNpcSheet(): NpcSheet {
+  let base = JSON.parse(JSON.stringify(rawNpcSheet)) as NpcSheet;
+  try { const raw = localStorage.getItem(NPC_SPRITES_KEY); if (raw) base = JSON.parse(raw) as NpcSheet; } catch { /* ignore */ }
+  if (!base.docs) base.docs = {};
+  for (const k of Object.keys(base.docs)) base.docs[k] = normalizeLayers(base.docs[k]);
+  return base;
+}
+function saveNpcSheet() { localStorage.setItem(NPC_SPRITES_KEY, JSON.stringify(npcSheet)); }
+
+/** Get (or seed) an NPC's paintable doc, rasterizing the procedural look. */
+function npcDocFor(kind: string): SpriteDoc {
+  if (!npcSheet.docs[kind]) npcSheet.docs[kind] = seedNpcDoc(kind);
+  return npcSheet.docs[kind];
+}
+function seedNpcDoc(kind: string): SpriteDoc {
+  const d = newSpriteDoc(NPC_DISPLAY[kind] ?? kind, 20, 26,
+    ["skin", "hair", "shirt", "pants", "accessory"], DEFAULT_DYES, ["idle"]);
+  const app = npcLooks[kind] ?? (npcLooksData as Record<string, Appearance>)[kind];
+  const clip = d.animations.idle;
+  for (const f of FACINGS) {
+    const px = rasterizeCharacterToPixels(app, f);
+    // Whole rasterized look goes on the skin (base) layer; user splits it onto
+    // hair/shirt/pants by repainting as desired.
+    clip.facings[f] = [{ layers: [px, emptyPixels(20, 26), emptyPixels(20, 26), emptyPixels(20, 26), emptyPixels(20, 26)] }];
+  }
+  return d;
 }
 
 // ── Creature kinds ────────────────────────────────────────────────────────────
@@ -226,6 +258,7 @@ let charDoc: SpriteDoc = doc;
 let editingCreature: string | null = null;
 let editingClothing: string | null = null;
 let editingObject: string | null = null;
+let editingNpc: string | null = null;
 let currentClothingId = "";
 let currentObjectId = "";
 let currentCreatureKind = "";
@@ -255,8 +288,6 @@ const preview = $<HTMLCanvasElement>("preview");
 const pctx = preview.getContext("2d")!;
 const itemPreview = $<HTMLCanvasElement>("item-preview");
 const ipctx = itemPreview.getContext("2d")!;
-const npcPreviewCanvas = $<HTMLCanvasElement>("npc-preview");
-const npcPctx = npcPreviewCanvas.getContext("2d")!;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function curClip(): AnimationClip { return getClip(doc, currentClip); }
@@ -281,6 +312,7 @@ function saveToStorage() {
   if (editingCreature) { saveCreatureSheet(); return; }
   if (editingClothing) { saveClothingSheet(); return; }
   if (editingObject) { saveObjectSheet(); return; }
+  if (editingNpc) { saveNpcSheet(); return; }
   localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
 }
 
@@ -678,6 +710,65 @@ $("frame-del").addEventListener("click", () => {
   saveToStorage(); buildTimeline(); drawStage();
 });
 
+// Frame clipboard — copy a frame's layers and paste into any frame/facing/clip,
+// so you can build the next pose by tweaking the previous instead of redrawing.
+let frameClipboard: { w: number; h: number; layers: string[][] } | null = null;
+$("frame-copy")?.addEventListener("click", () => {
+  frameClipboard = { w: doc.w, h: doc.h, layers: curFrame().layers.map((l) => [...l]) };
+  flash("Frame copied ⧉ — Paste into any frame");
+});
+$("frame-paste")?.addEventListener("click", () => {
+  if (!frameClipboard) { flash("Nothing copied yet"); return; }
+  if (frameClipboard.w !== doc.w || frameClipboard.h !== doc.h) {
+    flash("Can't paste — different sprite size"); return;
+  }
+  const f = curFrame();
+  for (let li = 0; li < f.layers.length; li++) {
+    f.layers[li] = frameClipboard.layers[li] ? [...frameClipboard.layers[li]] : emptyPixels(doc.w, doc.h);
+  }
+  saveToStorage(); buildTimeline(); drawStage();
+  flash("Pasted ⧉");
+});
+
+// ── Layer add / rename / delete ───────────────────────────────────────────────
+$("layer-add")?.addEventListener("click", () => {
+  const name = prompt("New layer name (e.g. shoes, hat, glasses):", "extra")?.trim();
+  if (!name) return;
+  if (doc.layerNames.includes(name)) { flash(`Layer "${name}" already exists`); return; }
+  doc.layerNames.push(name);
+  doc.layerDye.push("none");
+  doc.layerRefLum = undefined;
+  // Add an empty pixel buffer for this layer to every frame of every clip/facing.
+  for (const clip of Object.values(doc.animations)) {
+    for (const f of FACINGS) for (const fr of clip.facings[f] ?? []) fr.layers.push(emptyPixels(doc.w, doc.h));
+  }
+  layerVisible.push(true);
+  layerIdx = doc.layerNames.length - 1;
+  saveToStorage(); buildLayers(); drawStage();
+  flash(`Added layer "${name}"`);
+});
+$("layer-rename")?.addEventListener("click", () => {
+  const cur = doc.layerNames[layerIdx];
+  const name = prompt("Rename layer:", cur)?.trim();
+  if (!name || name === cur) return;
+  doc.layerNames[layerIdx] = name;
+  saveToStorage(); buildLayers();
+});
+$("layer-del")?.addEventListener("click", () => {
+  if (doc.layerNames.length <= 1) { flash("Need at least one layer"); return; }
+  if (!confirm(`Delete layer "${doc.layerNames[layerIdx]}"? Its pixels are lost.`)) return;
+  const li = layerIdx;
+  doc.layerNames.splice(li, 1);
+  doc.layerDye.splice(li, 1);
+  doc.layerRefLum = undefined;
+  for (const clip of Object.values(doc.animations)) {
+    for (const f of FACINGS) for (const fr of clip.facings[f] ?? []) fr.layers.splice(li, 1);
+  }
+  layerVisible.splice(li, 1);
+  layerIdx = Math.min(layerIdx, doc.layerNames.length - 1);
+  saveToStorage(); buildLayers(); drawStage();
+});
+
 // Animation clip catalog
 function clipCatalog(): readonly string[] {
   if (editingCreature) return CREATURE_CLIPS;
@@ -688,9 +779,10 @@ function clipCatalog(): readonly string[] {
 // Clip ops
 document.getElementById("clip-add")?.addEventListener("click", () => {
   const have = new Set(listClips(doc));
-  const choices = clipCatalog().filter((c) => !have.has(c));
-  const name = choices[0] ?? prompt("New animation name?")?.trim();
-  if (!name) { flash("All catalog animations already exist"); return; }
+  const suggest = clipCatalog().filter((c) => !have.has(c))[0] ?? "custom";
+  const name = prompt("New animation name (e.g. walk, punch, dance):", suggest)?.trim();
+  if (!name) return;
+  if (have.has(name)) { flash(`"${name}" already exists`); return; }
   addClip(doc, name);
   saveToStorage(); selectClip(name); flash(`Added animation "${name}"`);
 });
@@ -822,6 +914,7 @@ window.addEventListener("keydown", (e) => {
 function buildSubjectGrid() {
   const wrap = $("subject-scroll");
   wrap.innerHTML = "";
+  wrap.classList.toggle("single-col", category === "terrain");
   if (category === "characters") buildCharSubjectGrid(wrap);
   else if (category === "creatures") buildCreatureGrid(wrap);
   else if (category === "clothing") buildClothingGrid(wrap);
@@ -859,7 +952,7 @@ function buildCharSubjectGrid(wrap: HTMLElement) {
   }
   const plbl = document.createElement("div");
   plbl.className = "subj-label";
-  plbl.textContent = "Player";
+  plbl.textContent = charDoc.name && charDoc.name !== "untitled" ? charDoc.name : "Player";
   playerCard.appendChild(pc); playerCard.appendChild(plbl);
   playerCard.addEventListener("click", () => setCharSubject("player"));
   wrap.appendChild(playerCard);
@@ -886,24 +979,21 @@ function buildCharSubjectGrid(wrap: HTMLElement) {
 
 function setCharSubject(id: string) {
   charSubject = id;
+  editingCreature = null; editingClothing = null; editingObject = null;
   if (id === "player") {
-    editingCreature = null; editingClothing = null; editingObject = null;
+    editingNpc = null;
     doc = charDoc;
-    currentClip = doc.defaultClip;
-    facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
-    layerVisible = doc.layerNames.map(() => true);
-    onionRefPixels = null;
-    ($("fps") as HTMLInputElement).value = String(curClip().fps);
   } else {
-    currentNpcKind = id;
+    // NPCs are now full paintable sprites, seeded from their procedural look.
+    editingNpc = id;
+    doc = npcDocFor(id);
   }
-  // Update card selection
-  for (const card of document.querySelectorAll<HTMLElement>(".subj-card")) {
-    const lbl = card.querySelector(".subj-label");
-    const isPlayer = lbl?.textContent === "Player" && id === "player";
-    const isNpc = NPC_DISPLAY[id] ? lbl?.textContent === (NPC_DISPLAY[id] ?? id) : lbl?.textContent === id;
-    card.classList.toggle("sel", isPlayer || (id !== "player" && isNpc));
-  }
+  currentClip = doc.defaultClip;
+  facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
+  layerVisible = doc.layerNames.map(() => true);
+  onionRefPixels = null;
+  ($("fps") as HTMLInputElement).value = String(curClip().fps);
+  buildSubjectGrid();
   updateUI();
 }
 
@@ -1029,87 +1119,24 @@ function selectItem(id: string) {
 }
 
 // ── NPC editor ────────────────────────────────────────────────────────────────
-function renderNpcPreview(kind: string) {
-  npcPctx.clearRect(0, 0, npcPreviewCanvas.width, npcPreviewCanvas.height);
-  npcPctx.fillStyle = "#0c1820";
-  npcPctx.fillRect(0, 0, npcPreviewCanvas.width, npcPreviewCanvas.height);
-  const app = npcLooks[kind] ?? (npcLooksData as Record<string, Appearance>)[kind];
-  drawCharacterPixel(npcPctx, npcPreviewCanvas.width / 2, npcPreviewCanvas.height * 0.8, app, { facing: "down", phase: 0, moving: false });
-}
-
-function buildNpcAppEditor(kind: string) {
-  const wrap = $("npc-app-editor");
-  const app = { ...(npcLooks[kind] ?? (npcLooksData as Record<string, Appearance>)[kind]) };
-  $("npc-editor-title").textContent = NPC_DISPLAY[kind] ?? kind;
-  wrap.innerHTML = "";
-
-  const fields: Array<{ key: keyof Appearance; label: string; type: "color" | "select"; options?: string[] }> = [
-    { key: "skin",      label: "Skin",   type: "color" },
-    { key: "hair",      label: "Hair",   type: "color" },
-    { key: "shirt",     label: "Shirt",  type: "color" },
-    { key: "pants",     label: "Pants",  type: "color" },
-    { key: "hat",       label: "Hat",    type: "color" },
-    { key: "hairStyle", label: "Style",  type: "select", options: ["short", "medium", "long"] },
-    { key: "bodyBuild", label: "Build",  type: "select", options: ["slight", "medium", "sturdy"] },
-  ];
-
-  for (const f of fields) {
-    const row = document.createElement("div");
-    row.className = "app-row";
-    const lbl = document.createElement("label");
-    lbl.textContent = f.label;
-    row.appendChild(lbl);
-    if (f.type === "color") {
-      const inp = document.createElement("input");
-      inp.type = "color";
-      inp.value = ((app as unknown as Record<string, string>)[f.key] ?? "#888888");
-      inp.style.cssText = "width:34px;height:26px;padding:0;border:1px solid var(--border);border-radius:4px;cursor:pointer";
-      inp.addEventListener("input", () => {
-        (npcLooks[kind] as unknown as Record<string, string>)[f.key] = inp.value;
-        buildSubjectGrid();
-        renderNpcPreview(kind);
-      });
-      row.appendChild(inp);
-    } else {
-      const sel = document.createElement("select");
-      sel.style.cssText = "font-size:11px;padding:2px;flex:1";
-      for (const opt of f.options ?? []) {
-        const o = document.createElement("option");
-        o.value = opt; o.textContent = opt;
-        if ((app as unknown as Record<string, string>)[f.key] === opt) o.selected = true;
-        sel.appendChild(o);
-      }
-      sel.addEventListener("change", () => {
-        (npcLooks[kind] as unknown as Record<string, string>)[f.key] = sel.value;
-        buildSubjectGrid();
-        renderNpcPreview(kind);
-      });
-      row.appendChild(sel);
-    }
-    wrap.appendChild(row);
-  }
-}
-
-// NPC preview loop
-let npcPreviewLoopRunning = false;
-function startNpcPreviewLoop() {
-  if (npcPreviewLoopRunning) return;
-  npcPreviewLoopRunning = true;
-  function loop() {
-    if (category !== "characters" || charSubject === "player") { npcPreviewLoopRunning = false; return; }
-    renderNpcPreview(charSubject);
-    requestAnimationFrame(loop);
-  }
-  requestAnimationFrame(loop);
-}
-
 // ── Creature editor ────────────────────────────────────────────────────────────
 function selectCreature(kind: string) {
   currentCreatureKind = kind;
   charSubject = "player"; // reset char subject since we're in creatures category
-  editingCreature = kind; editingClothing = null; editingObject = null;
+  editingCreature = kind; editingClothing = null; editingObject = null; editingNpc = null;
   onionRefPixels = null;
   doc = creatureDocFor(kind);
+  // Seed the canvas from the built-in vector art so the creature is visible and
+  // immediately paintable, instead of opening to a blank grid.
+  if (!docHasPaint(doc)) {
+    const bodyIdx = Math.max(0, doc.layerNames.indexOf("body"));
+    for (const f of FACINGS) {
+      const px = rasterizeCreatureToPixels(kind, doc.w, doc.h);
+      const frame = doc.animations[doc.defaultClip].facings[f]?.[0];
+      if (frame) frame.layers[bodyIdx] = px;
+    }
+    saveToStorage();
+  }
   currentClip = doc.defaultClip;
   facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
   layerVisible = doc.layerNames.map(() => true);
@@ -1165,7 +1192,7 @@ function updateUI() {
   const isNPC = category === "characters" && charSubject !== "player";
 
   // Header ops
-  show("paint-ops",           isPaint,                                          "flex");
+  show("paint-ops",           isPaint && !isNPC,                                "flex");
   show("item-ops",            isItem,                                           "flex");
   show("terrain-ops",         isTerrain,                                        "flex");
   show("npc-ops",             isNPC,                                            "flex");
@@ -1181,8 +1208,8 @@ function updateUI() {
   // Center canvas
   ($("stage") as HTMLElement).style.display = (isPaint || isItem) ? "" : "none";
   show("item-preview-wrap",   isItem);
-  show("canvas-placeholder",  !isPaint && !isItem && !isTerrain && !isNPC);
-  show("npc-stage-wrap",      isNPC,     "flex");
+  show("canvas-placeholder",  !isPaint && !isItem && !isTerrain);
+  show("npc-stage-wrap",      false,     "flex");
   show("terrain-stage-wrap",  isTerrain, "flex");
 
   // Timeline
@@ -1190,7 +1217,7 @@ function updateUI() {
 
   // Right sidebar
   show("preview-group",        isPaint);
-  show("npc-app-group",        isNPC);
+  show("npc-app-group",        false);
   show("layers-group",         isPaint);
   show("dye-group",            isPaint);
   show("canvas-options-group", isPaint || isItem);
@@ -1218,7 +1245,6 @@ function updateUI() {
   if (isPaint) { sizeStage(); buildTimeline(); buildLayers(); buildDyeRows(); drawStage(); }
   else if (isItem) { sizeStage(); drawStage(); buildDyeRows(); }
   else if (isTerrain) { renderTerrainPreview(); }
-  else if (isNPC) { buildNpcAppEditor(charSubject); startNpcPreviewLoop(); }
 }
 
 // ── Category switching ────────────────────────────────────────────────────────
@@ -1234,6 +1260,7 @@ function setCategory(c: Category) {
       layerVisible = doc.layerNames.map(() => true);
     }
   }
+  if (c !== "characters") editingNpc = null;
 
   buildSubjectGrid();
 
@@ -1368,26 +1395,28 @@ $<HTMLInputElement>("file-item-import").addEventListener("change", async (e) => 
 
 // ── NPC save / reset ──────────────────────────────────────────────────────────
 $("btn-npc-save").addEventListener("click", async () => {
-  saveNpcLooks();
+  const out: NpcSheet = { version: 1, docs: {} };
+  for (const [k, d] of Object.entries(npcSheet.docs)) if (docHasPaint(d)) out.docs[k] = d;
+  saveNpcSheet();
   try {
     await fetch("/api/save-asset", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "npc-looks.json", data: npcLooks }),
+      body: JSON.stringify({ filename: "npc-sprites.json", data: out }),
     });
-    flash("NPC appearances saved to game ✓");
+    flash("NPC sprites saved to game ✓");
   } catch {
-    flash("NPC appearances saved (localStorage only)");
+    flash("NPC sprites saved (localStorage only)");
   }
 });
 
 $("btn-npc-reset").addEventListener("click", () => {
-  if (!confirm("Reset all NPC appearances to defaults?")) return;
-  npcLooks = JSON.parse(JSON.stringify(npcLooksData));
-  saveNpcLooks();
-  buildSubjectGrid();
-  if (currentNpcKind) { buildNpcAppEditor(currentNpcKind); renderNpcPreview(currentNpcKind); }
-  flash("Reset to defaults ✓");
+  if (!editingNpc) return;
+  if (!confirm(`Reseed ${NPC_DISPLAY[editingNpc] ?? editingNpc} from the procedural art? Repainting is lost.`)) return;
+  npcSheet.docs[editingNpc] = seedNpcDoc(editingNpc);
+  saveNpcSheet();
+  setCharSubject(editingNpc);
+  flash("Reseeded from procedural art ✓");
 });
 
 // ── Terrain ──────────────────────────────────────────────────────────────────

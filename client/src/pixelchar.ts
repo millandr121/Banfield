@@ -520,3 +520,27 @@ export function drawCharacterPixel(
   ctx.drawImage(buf, dx, dy, dw, dh);
   ctx.imageSmoothingEnabled = prev;
 }
+
+/**
+ * Rasterize a character's procedural look into a flat 20×26 hex-pixel array
+ * (row-major, "" = transparent) for one facing. Lets the editor seed a
+ * paintable SpriteDoc from the built-in art so NPCs can be hand-edited.
+ */
+export function rasterizeCharacterToPixels(look: Appearance, facing: Facing): string[] {
+  paint(look, { facing, phase: 0, moving: false });
+  const [, bctx] = getBuf();
+  const d = (bctx as unknown as CanvasRenderingContext2D).getImageData(0, 0, SW, SH).data;
+  const out: string[] = new Array(SW * SH).fill("");
+  for (let i = 0; i < SW * SH; i++) {
+    if (d[i * 4 + 3] < 10) continue;
+    const r = d[i * 4].toString(16).padStart(2, "0");
+    const g = d[i * 4 + 1].toString(16).padStart(2, "0");
+    const b = d[i * 4 + 2].toString(16).padStart(2, "0");
+    out[i] = `#${r}${g}${b}`;
+  }
+  return out;
+}
+
+/** Sprite-space dimensions of the procedural character buffer. */
+export const CHAR_SPRITE_W = SW;
+export const CHAR_SPRITE_H = SH;
