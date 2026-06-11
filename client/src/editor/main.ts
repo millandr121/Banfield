@@ -15,7 +15,6 @@ import baseChar from "../assets/base-character.json";
 import rawItemSheet from "../assets/item-sprites.json";
 import npcLooksData from "../assets/npc-looks.json";
 import rawTerrainData from "../assets/terrain-settings.json";
-import rawAnimData from "../assets/anim-settings.json";
 import rawCreatureSheet from "../assets/creature-sprites.json";
 import rawClothingSheet from "../assets/clothing-sprites.json";
 import rawObjectSheet from "../assets/object-sprites.json";
@@ -25,9 +24,15 @@ import type { Appearance } from "../../../shared/protocol";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-// ── Editor mode ───────────────────────────────────────────────────────────────
-type EditorMode = "char" | "items" | "npcs" | "creatures" | "terrain" | "actions" | "clothing" | "objects";
-let editorMode: EditorMode = "char";
+// ── Category / mode ────────────────────────────────────────────────────────────
+type Category = "characters" | "creatures" | "clothing" | "objects" | "items" | "terrain";
+let category: Category = "characters";
+let charSubject = "player";
+
+function isSpriteMode(): boolean {
+  return category !== "items" && category !== "terrain" &&
+    !(category === "characters" && charSubject !== "player");
+}
 
 // ── Terrain settings state ────────────────────────────────────────────────────
 const TERRAIN_KEY = "banfield-terrain";
@@ -178,7 +183,7 @@ function objectDocFor(kind: string): SpriteDoc {
   return objectSheet.docs[kind];
 }
 
-// ── Creature sprite docs (layered, frame-based — same model as characters) ─────
+// ── Creature sprite docs ──────────────────────────────────────────────────────
 interface CreatureSheet { version: number; w: number; h: number; layers: string[]; docs: Record<string, SpriteDoc>; }
 const CREATURE_SHEET_KEY = "banfield-creature-sprites";
 let creatureSheet: CreatureSheet = loadCreatureSheet();
@@ -193,7 +198,6 @@ function loadCreatureSheet(): CreatureSheet {
   return base;
 }
 function saveCreatureSheet() { localStorage.setItem(CREATURE_SHEET_KEY, JSON.stringify(creatureSheet)); }
-// Return the editable doc for a kind, creating a blank one on first edit.
 function creatureDocFor(kind: string): SpriteDoc {
   if (!creatureSheet.docs[kind]) {
     creatureSheet.docs[kind] = newCreatureDoc(kind, creatureSheet.w ?? CREATURE_W, creatureSheet.h ?? CREATURE_H);
@@ -201,8 +205,7 @@ function creatureDocFor(kind: string): SpriteDoc {
   return creatureSheet.docs[kind];
 }
 
-// Editor-side sprite provider: painted creature docs render in the grid,
-// preview, and Actions tab; unpainted kinds fall back to the vector art.
+// Editor-side sprite provider
 setCreatureDocProvider((kind) => {
   const d = creatureSheet.docs[kind];
   if (!d || !docHasPaint(d)) return null;
@@ -215,21 +218,19 @@ setCreatureDocProvider((kind) => {
 type Tool = "pencil" | "eraser" | "fill" | "pick";
 const STORAGE_KEY = "banfield-sprite-doc";
 
-// Sample dye colours for the live tint preview (don't change the painted art).
 let tints: Tints = { skin: "#d8a870", hair: "#5a4632", shirt: "#3f8a44", pants: "#36507e", accent: "#ffd54f" };
 let tintPreview = false;
 
 let doc: SpriteDoc = loadFromStorage() ?? normalizeLayers(JSON.parse(JSON.stringify(baseChar)) as SpriteDoc);
-// The character doc is held separately so creature editing can borrow `doc`
-// (and the whole paint/frame/layer pipeline) without losing the character.
 let charDoc: SpriteDoc = doc;
-let editingCreature: string | null = null; // kind currently loaded into `doc`, else null
-let editingClothing: string | null = null; // clothing itemId loaded into `doc`, else null
-let editingObject: string | null = null;   // object kind loaded into `doc`, else null
+let editingCreature: string | null = null;
+let editingClothing: string | null = null;
+let editingObject: string | null = null;
 let currentClothingId = "";
 let currentObjectId = "";
+let currentCreatureKind = "";
 let facing: Facing = "down";
-let currentClip = doc.defaultClip; // which animation timeline is being edited
+let currentClip = doc.defaultClip;
 let frameIdx = 0;
 let layerIdx = 0;
 let layerVisible: boolean[] = doc.layerNames.map(() => true);
@@ -239,11 +240,8 @@ let zoom = 14;
 let showGrid = true;
 let onion = false;
 let playing = true;
-// Paper-doll reference: a faint composited body shown under the canvas while
-// painting clothing/accessories so garments are drawn to fit the body.
 let onionRefPixels: string[] | null = null;
 
-// Eastward-leaning default palette — warm skins, hairs, cloth, and accents.
 const PALETTE = [
   "#1a0e09", "#3a2418", "#5a4632", "#8a6038", "#caa472", "#e7c9a4", "#f4ddc0", "#ffffff",
   "#9a1f1f", "#c4582e", "#e0901f", "#ffd54f", "#88b040", "#3f6b34", "#1f5742", "#0d47a1",
@@ -266,7 +264,6 @@ function curFrames(): SpriteFrame[] { return curClip().facings[facing]; }
 function curFrame(): SpriteFrame { return curFrames()[frameIdx]; }
 function curLayer(): string[] { return curFrame().layers[layerIdx]; }
 function idx(x: number, y: number) { return y * doc.w + x; }
-// Keep currentClip valid for the active doc.
 function ensureClip() {
   if (!doc.animations[currentClip]) currentClip = doc.defaultClip;
   const frames = curClip().facings[facing] ?? [];
@@ -289,8 +286,8 @@ function saveToStorage() {
 
 // ── Stage rendering ──────────────────────────────────────────────────────────
 function sizeStage() {
-  const w = editorMode === "items" ? ITEM_SIZE : doc.w;
-  const h = editorMode === "items" ? ITEM_SIZE : doc.h;
+  const w = category === "items" ? ITEM_SIZE : doc.w;
+  const h = category === "items" ? ITEM_SIZE : doc.h;
   stage.width  = w * zoom;
   stage.height = h * zoom;
   stage.style.width  = stage.width  + "px";
@@ -300,8 +297,7 @@ function sizeStage() {
 function drawStage() {
   sctx.clearRect(0, 0, stage.width, stage.height);
 
-  if (editorMode === "items") {
-    // Items mode: paint the flat 16×16 pixel array directly.
+  if (category === "items") {
     const W = ITEM_SIZE, H = ITEM_SIZE;
     paintPixels(sctx, itemPixels, zoom, ITEM_SIZE, ITEM_SIZE);
     if (showGrid && zoom >= 6) {
@@ -314,7 +310,6 @@ function drawStage() {
         sctx.beginPath(); sctx.moveTo(0, y * zoom + .5); sctx.lineTo(stage.width, y * zoom + .5); sctx.stroke();
       }
     }
-    // Update item preview (scaled up)
     ipctx.clearRect(0, 0, itemPreview.width, itemPreview.height);
     const sc = Math.floor(itemPreview.width / ITEM_SIZE);
     const ox2 = (itemPreview.width  - ITEM_SIZE * sc) / 2;
@@ -325,9 +320,7 @@ function drawStage() {
     return;
   }
 
-  // Char / creature mode: paint the active clip's current frame.
   ensureClip();
-  // Paper-doll onion reference: when editing equipment, show the body beneath.
   if (onionRefPixels) {
     sctx.globalAlpha = 0.3;
     paintPixels(sctx, onionRefPixels, zoom);
@@ -377,7 +370,7 @@ let previewFrame = 0;
 let lastTick = 0;
 function previewLoop(t: number) {
   requestAnimationFrame(previewLoop);
-  if (editorMode !== "char" && editorMode !== "creatures" && editorMode !== "clothing" && editorMode !== "objects") return;
+  if (!isSpriteMode()) return;
   const clip = curClip();
   const frames = clip.facings[facing];
   if (!frames || frames.length === 0) return;
@@ -405,8 +398,8 @@ function pointerToCell(e: PointerEvent): [number, number] | null {
   const r = stage.getBoundingClientRect();
   const x = Math.floor((e.clientX - r.left) / zoom);
   const y = Math.floor((e.clientY - r.top) / zoom);
-  const W = editorMode === "items" ? ITEM_SIZE : doc.w;
-  const H = editorMode === "items" ? ITEM_SIZE : doc.h;
+  const W = category === "items" ? ITEM_SIZE : doc.w;
+  const H = category === "items" ? ITEM_SIZE : doc.h;
   if (x < 0 || y < 0 || x >= W || y >= H) return null;
   return [x, y];
 }
@@ -414,7 +407,7 @@ function pointerToCell(e: PointerEvent): [number, number] | null {
 function itemIdx(x: number, y: number) { return y * ITEM_SIZE + x; }
 
 function applyTool(x: number, y: number) {
-  if (editorMode === "items") {
+  if (category === "items") {
     const i = itemIdx(x, y);
     if (tool === "pencil") itemPixels[i] = color;
     else if (tool === "eraser") itemPixels[i] = "";
@@ -432,7 +425,7 @@ function applyTool(x: number, y: number) {
     if (c) setColor(c);
     return;
   } else if (tool === "fill") {
-    floodFill(layer, x, y, layer[idx(x, y)], color, doc.w, doc.h);  // char
+    floodFill(layer, x, y, layer[idx(x, y)], color, doc.w, doc.h);
   }
   drawStage();
 }
@@ -469,6 +462,12 @@ stage.addEventListener("pointerup", (e) => {
   saveToStorage();
 });
 
+// ── UI helper ─────────────────────────────────────────────────────────────────
+function show(id: string, val: boolean, display = "block") {
+  const el = document.getElementById(id);
+  if (el) el.style.display = val ? display : "none";
+}
+
 // ── UI builders ──────────────────────────────────────────────────────────────
 function setColor(c: string) {
   color = c;
@@ -492,73 +491,74 @@ function buildPalette() {
   }
 }
 
-function buildFacings() {
-  const wrap = $<HTMLDivElement>("facings");
-  wrap.innerHTML = "";
-  const labels: Record<Facing, string> = {
+function buildTimeline() {
+  if (!isSpriteMode()) {
+    show("timeline", false);
+    return;
+  }
+  show("timeline", true);
+
+  // Clips row
+  const clipsWrap = $<HTMLDivElement>("tl-clips");
+  clipsWrap.innerHTML = "";
+  for (const name of listClips(doc)) {
+    const b = document.createElement("button");
+    b.textContent = name + (name === doc.defaultClip ? " ★" : "");
+    b.className = name === currentClip ? "active" : "";
+    b.style.cssText = "font-size:10px;padding:2px 6px";
+    b.addEventListener("click", () => {
+      currentClip = name; frameIdx = 0; previewFrame = 0;
+      ($("fps") as HTMLInputElement).value = String(curClip().fps);
+      ($("clip-loop") as HTMLInputElement).checked = curClip().loop;
+      buildTimeline(); drawStage();
+    });
+    clipsWrap.appendChild(b);
+  }
+  ($("fps") as HTMLInputElement).value = String(curClip().fps);
+  ($("clip-loop") as HTMLInputElement).checked = curClip().loop;
+
+  // Facings row
+  const facingsWrap = $<HTMLDivElement>("tl-facings");
+  facingsWrap.innerHTML = "";
+  const flabels: Record<Facing, string> = {
     down: "↓", downright: "↘", right: "→", upright: "↗",
     up: "↑", upleft: "↖", left: "←", downleft: "↙",
   };
   for (const f of FACINGS) {
     const b = document.createElement("button");
-    b.textContent = labels[f];
+    b.textContent = flabels[f];
     b.className = f === facing ? "active" : "";
-    b.addEventListener("click", () => {
-      facing = f; frameIdx = 0; previewFrame = 0;
-      buildFacings(); buildFrames(); drawStage();
-    });
-    wrap.appendChild(b);
+    b.style.cssText = "min-width:22px;padding:2px 3px;font-size:12px";
+    b.addEventListener("click", () => { facing = f; frameIdx = 0; previewFrame = 0; buildTimeline(); drawStage(); });
+    facingsWrap.appendChild(b);
   }
-}
 
-function buildFrames() {
-  const wrap = $<HTMLDivElement>("frames");
-  wrap.innerHTML = "";
-  curFrames().forEach((_f: SpriteFrame, i: number) => {
-    const b = document.createElement("button");
-    b.textContent = String(i + 1);
-    b.className = i === frameIdx ? "active" : "";
-    b.addEventListener("click", () => { frameIdx = i; buildFrames(); drawStage(); });
-    wrap.appendChild(b);
+  // Frame thumbnails
+  const framesWrap = $<HTMLDivElement>("tl-frames");
+  framesWrap.innerHTML = "";
+  ensureClip();
+  const frames = curFrames();
+  const maxDim = Math.max(doc.w, doc.h);
+  const thumbScale = maxDim <= 20 ? 2 : 1;
+  const thumbW = doc.w * thumbScale;
+  const thumbH = doc.h * thumbScale;
+  frames.forEach((frame, i) => {
+    const c = document.createElement("canvas");
+    c.className = "frame-thumb" + (i === frameIdx ? " sel" : "");
+    c.width = thumbW; c.height = thumbH;
+    c.style.width = thumbW + "px"; c.style.height = thumbH + "px";
+    c.title = `Frame ${i + 1}`;
+    const cx2 = c.getContext("2d")!;
+    const px = compositeFrame(frame, layerVisible, doc.w, doc.h);
+    paintPixels(cx2, px, thumbScale, doc.w, doc.h);
+    c.addEventListener("click", () => { frameIdx = i; buildTimeline(); drawStage(); });
+    framesWrap.appendChild(c);
   });
-}
-
-// ── Animation clips (timelines) ────────────────────────────────────────────────
-// Lists every animation the current subject carries; lets you switch, add, and
-// delete clips. Each clip keeps its own frames + FPS + loop flag.
-function clipCatalog(): readonly string[] {
-  if (editingCreature) return CREATURE_CLIPS;
-  if (editingObject) return PROP_CLIPS;
-  return CHAR_CLIPS;
-}
-function buildClips() {
-  const wrap = document.getElementById("clips");
-  if (!wrap) return;
-  wrap.innerHTML = "";
-  for (const name of listClips(doc)) {
-    const b = document.createElement("button");
-    b.textContent = name + (name === doc.defaultClip ? " ★" : "");
-    b.className = name === currentClip ? "active" : "";
-    b.title = name === doc.defaultClip ? "Default clip (shown first / used by game)" : "";
-    b.addEventListener("click", () => selectClip(name));
-    wrap.appendChild(b);
-  }
-}
-function selectClip(name: string) {
-  if (!doc.animations[name]) return;
-  currentClip = name;
-  frameIdx = 0; previewFrame = 0;
-  const fpsEl = document.getElementById("fps") as HTMLInputElement | null;
-  if (fpsEl) fpsEl.value = String(curClip().fps);
-  const loopEl = document.getElementById("clip-loop") as HTMLInputElement | null;
-  if (loopEl) loopEl.checked = curClip().loop;
-  buildClips(); buildFrames(); drawStage();
 }
 
 function buildLayers() {
   const wrap = $<HTMLDivElement>("layers");
   wrap.innerHTML = "";
-  // Draw top layer first in the list (reverse of paint order) for intuitive stacking.
   for (let li = doc.layerNames.length - 1; li >= 0; li--) {
     const row = document.createElement("div");
     row.className = "layer" + (li === layerIdx ? " sel" : "");
@@ -573,7 +573,6 @@ function buildLayers() {
     const nm = document.createElement("span");
     nm.className = "nm";
     nm.textContent = doc.layerNames[li];
-    // Dye role selector — decides how this layer re-tints at runtime.
     const sel = document.createElement("select");
     sel.style.cssText = "font-size:10px;padding:2px;max-width:74px";
     for (const role of DYE_ROLES) {
@@ -585,7 +584,7 @@ function buildLayers() {
     sel.addEventListener("click", (e) => e.stopPropagation());
     sel.addEventListener("change", () => {
       doc.layerDye[li] = sel.value as DyeRole;
-      doc.layerRefLum = undefined; // recompute on next tint
+      doc.layerRefLum = undefined;
       saveToStorage(); drawStage();
     });
     row.appendChild(vis); row.appendChild(nm); row.appendChild(sel);
@@ -594,18 +593,11 @@ function buildLayers() {
   }
 }
 
-// Live dye-preview panel: toggle tinting and sample each role's colour.
-function buildDyePanel() {
-  let g = document.getElementById("dyepanel");
-  if (g) g.remove();
-  g = document.createElement("div");
-  g.className = "group";
-  g.id = "dyepanel";
+function buildDyeRows() {
+  const wrap = document.getElementById("dye-rows");
+  if (!wrap) return;
+  wrap.innerHTML = "";
   const roles: (keyof Tints)[] = ["skin", "hair", "shirt", "pants", "accent"];
-  g.innerHTML = `<h2>Dye preview</h2>
-    <label style="display:flex;gap:6px;align-items:center;margin-bottom:7px">
-      <input type="checkbox" id="tintToggle" ${tintPreview ? "checked" : ""}/> show dyed colours
-    </label>`;
   for (const role of roles) {
     const row = document.createElement("div");
     row.className = "row";
@@ -621,13 +613,8 @@ function buildDyePanel() {
     lbl.textContent = role;
     lbl.style.cssText = "font-size:11px;color:var(--muted)";
     row.appendChild(input); row.appendChild(lbl);
-    g.appendChild(row);
+    wrap.appendChild(row);
   }
-  document.querySelector(".right")!.appendChild(g);
-  $<HTMLInputElement>("tintToggle").addEventListener("change", (e) => {
-    tintPreview = (e.target as HTMLInputElement).checked;
-    drawStage();
-  });
 }
 
 // ── Tool buttons ─────────────────────────────────────────────────────────────
@@ -672,26 +659,33 @@ $("btn-clear").addEventListener("click", () => {
   saveToStorage(); drawStage();
 });
 
-// Frame ops — operate on the active clip + facing.
+// Frame ops
 $("frame-add").addEventListener("click", () => {
   curFrames().push(emptyFrame(doc.w, doc.h, doc.layerNames.length));
   frameIdx = curFrames().length - 1;
-  saveToStorage(); buildFrames(); drawStage();
+  saveToStorage(); buildTimeline(); drawStage();
 });
 $("frame-dup").addEventListener("click", () => {
   const clone: SpriteFrame = { layers: curFrame().layers.map((l) => [...l]) };
   curFrames().splice(frameIdx + 1, 0, clone);
   frameIdx++;
-  saveToStorage(); buildFrames(); drawStage();
+  saveToStorage(); buildTimeline(); drawStage();
 });
 $("frame-del").addEventListener("click", () => {
   if (curFrames().length <= 1) return;
   curFrames().splice(frameIdx, 1);
   frameIdx = Math.min(frameIdx, curFrames().length - 1);
-  saveToStorage(); buildFrames(); drawStage();
+  saveToStorage(); buildTimeline(); drawStage();
 });
 
-// Clip ops — add a new animation timeline (from the catalog) or delete one.
+// Animation clip catalog
+function clipCatalog(): readonly string[] {
+  if (editingCreature) return CREATURE_CLIPS;
+  if (editingObject) return PROP_CLIPS;
+  return CHAR_CLIPS;
+}
+
+// Clip ops
 document.getElementById("clip-add")?.addEventListener("click", () => {
   const have = new Set(listClips(doc));
   const choices = clipCatalog().filter((c) => !have.has(c));
@@ -708,12 +702,23 @@ document.getElementById("clip-del")?.addEventListener("click", () => {
   saveToStorage(); selectClip(currentClip); flash("Animation deleted");
 });
 document.getElementById("clip-default")?.addEventListener("click", () => {
-  doc.defaultClip = currentClip; saveToStorage(); buildClips();
+  doc.defaultClip = currentClip; saveToStorage(); buildTimeline();
   flash(`"${currentClip}" is now the default clip`);
 });
 document.getElementById("clip-loop")?.addEventListener("change", (e) => {
   curClip().loop = (e.target as HTMLInputElement).checked; saveToStorage();
 });
+
+function selectClip(name: string) {
+  if (!doc.animations[name]) return;
+  currentClip = name;
+  frameIdx = 0; previewFrame = 0;
+  const fpsEl = document.getElementById("fps") as HTMLInputElement | null;
+  if (fpsEl) fpsEl.value = String(curClip().fps);
+  const loopEl = document.getElementById("clip-loop") as HTMLInputElement | null;
+  if (loopEl) loopEl.checked = curClip().loop;
+  buildTimeline(); drawStage();
+}
 
 // Doc ops
 $("btn-new").addEventListener("click", () => {
@@ -724,13 +729,6 @@ $("btn-new").addEventListener("click", () => {
   saveToStorage(); refreshAll();
 });
 $("btn-save").addEventListener("click", () => { saveToStorage(); flash("Character saved ✓"); });
-$("btn-load").addEventListener("click", () => {
-  const d = loadFromStorage();
-  if (!d) return flash("Nothing saved yet");
-  doc = d; facing = "down"; frameIdx = 0; layerIdx = 0;
-  layerVisible = doc.layerNames.map(() => true);
-  refreshAll();
-});
 $("btn-export").addEventListener("click", () => {
   const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
   downloadBlob(blob, `${doc.name || "sprite"}.json`);
@@ -748,7 +746,6 @@ $<HTMLInputElement>("file-import").addEventListener("change", async (e) => {
   } catch { flash("Bad file"); }
 });
 
-// Export a horizontal sprite sheet for the ACTIVE clip: rows = facings, cols = frames.
 $("btn-png").addEventListener("click", () => {
   const clip = curClip();
   const maxFrames = Math.max(...FACINGS.map((f) => clip.facings[f].length));
@@ -805,16 +802,191 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-// ── Item browser ─────────────────────────────────────────────────────────────
-function buildItemBrowser() {
-  const wrap = $<HTMLDivElement>("item-browser");
+// ── Subject grid ──────────────────────────────────────────────────────────────
+function buildSubjectGrid() {
+  const wrap = $("subject-scroll");
   wrap.innerHTML = "";
+  if (category === "characters") buildCharSubjectGrid(wrap);
+  else if (category === "creatures") buildCreatureGrid(wrap);
+  else if (category === "clothing") buildClothingGrid(wrap);
+  else if (category === "objects") buildObjectGrid(wrap);
+  else if (category === "items") buildItemGrid(wrap);
+  else if (category === "terrain") buildTerrainRows();
+}
+
+function buildCharSubjectGrid(wrap: HTMLElement) {
+  // Player card
+  const playerCard = document.createElement("div");
+  playerCard.className = "subj-card" + (charSubject === "player" ? " sel" : "");
+  const pc = document.createElement("canvas");
+  pc.width = 60; pc.height = 78;
+  const pcx = pc.getContext("2d")!;
+  pcx.fillStyle = "#0e2030";
+  pcx.fillRect(0, 0, 60, 78);
+  if (docHasPaint(charDoc)) {
+    const frame = charDoc.animations[charDoc.defaultClip]?.facings.down?.[0];
+    if (frame) {
+      const px = compositeFrame(frame, charDoc.layerNames.map(() => true), charDoc.w, charDoc.h);
+      const sc = Math.min(Math.floor(60 / charDoc.w), Math.floor(78 / charDoc.h));
+      const ox = (60 - charDoc.w * sc) / 2;
+      const oy = (78 - charDoc.h * sc) / 2;
+      pcx.save(); pcx.translate(ox, oy);
+      paintPixels(pcx, px, sc, charDoc.w, charDoc.h);
+      pcx.restore();
+    }
+  } else {
+    pcx.fillStyle = "#2a4060";
+    pcx.fillRect(22, 12, 16, 16);
+    pcx.fillRect(18, 28, 24, 22);
+    pcx.fillRect(18, 50, 9, 18);
+    pcx.fillRect(33, 50, 9, 18);
+  }
+  const plbl = document.createElement("div");
+  plbl.className = "subj-label";
+  plbl.textContent = "Player";
+  playerCard.appendChild(pc); playerCard.appendChild(plbl);
+  playerCard.addEventListener("click", () => setCharSubject("player"));
+  wrap.appendChild(playerCard);
+
+  // NPC cards
+  for (const kind of NPC_KINDS) {
+    const card = document.createElement("div");
+    card.className = "subj-card" + (charSubject === kind ? " sel" : "");
+    const c = document.createElement("canvas");
+    c.width = 60; c.height = 78;
+    const cx2 = c.getContext("2d")!;
+    cx2.fillStyle = "#0e2030";
+    cx2.fillRect(0, 0, 60, 78);
+    const app = npcLooks[kind] ?? (npcLooksData as Record<string, Appearance>)[kind];
+    try { drawCharacterPixel(cx2, 30, 62, app, { facing: "down", phase: 0, moving: false }); } catch { /* ignore */ }
+    const lbl = document.createElement("div");
+    lbl.className = "subj-label";
+    lbl.textContent = NPC_DISPLAY[kind] ?? kind;
+    card.appendChild(c); card.appendChild(lbl);
+    card.addEventListener("click", () => setCharSubject(kind));
+    wrap.appendChild(card);
+  }
+}
+
+function setCharSubject(id: string) {
+  charSubject = id;
+  if (id === "player") {
+    editingCreature = null; editingClothing = null; editingObject = null;
+    doc = charDoc;
+    currentClip = doc.defaultClip;
+    facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
+    layerVisible = doc.layerNames.map(() => true);
+    onionRefPixels = null;
+    ($("fps") as HTMLInputElement).value = String(curClip().fps);
+  } else {
+    currentNpcKind = id;
+  }
+  // Update card selection
+  for (const card of document.querySelectorAll<HTMLElement>(".subj-card")) {
+    const lbl = card.querySelector(".subj-label");
+    const isPlayer = lbl?.textContent === "Player" && id === "player";
+    const isNpc = NPC_DISPLAY[id] ? lbl?.textContent === (NPC_DISPLAY[id] ?? id) : lbl?.textContent === id;
+    card.classList.toggle("sel", isPlayer || (id !== "player" && isNpc));
+  }
+  updateUI();
+}
+
+function buildCreatureGrid(wrap: HTMLElement) {
+  for (const kind of CREATURE_KINDS) {
+    const card = document.createElement("div");
+    card.className = "subj-card" + (kind === currentCreatureKind ? " sel" : "");
+    const c = document.createElement("canvas");
+    c.width = 80; c.height = 80;
+    const cx2 = c.getContext("2d")!;
+    cx2.fillStyle = "#0e2030";
+    cx2.fillRect(0, 0, 80, 80);
+    cx2.save();
+    cx2.translate(40, 52);
+    cx2.scale(1.6, 1.6);
+    try { drawFullCreature(cx2 as unknown as CanvasRenderingContext2D, kind, 0, 0); } catch { /* ignore */ }
+    cx2.restore();
+    const painted = creatureSheet.docs[kind] && docHasPaint(creatureSheet.docs[kind]);
+    if (painted) {
+      cx2.fillStyle = "#ffd54f"; cx2.font = "8px system-ui"; cx2.textAlign = "right";
+      cx2.fillText("✎", 78, 10);
+    }
+    const lbl = document.createElement("div");
+    lbl.className = "subj-label";
+    lbl.textContent = CREATURE_DISPLAY[kind] ?? kind;
+    card.style.cursor = "pointer";
+    card.appendChild(c); card.appendChild(lbl);
+    card.addEventListener("click", () => selectCreature(kind));
+    wrap.appendChild(card);
+  }
+}
+
+function buildClothingGrid(wrap: HTMLElement) {
+  for (const itemId of CLOTHING_ITEMS) {
+    const card = document.createElement("div");
+    card.className = "subj-card" + (itemId === currentClothingId ? " sel" : "");
+    const c = document.createElement("canvas");
+    c.width = 60; c.height = 78;
+    const cx2 = c.getContext("2d")!;
+    cx2.fillStyle = "#0e1e2c";
+    cx2.fillRect(0, 0, 60, 78);
+    const d = clothingSheet.docs[itemId];
+    if (d && docHasPaint(d)) {
+      const frame = d.animations[d.defaultClip]?.facings.down?.[0];
+      if (frame) {
+        const px = compositeFrame(frame, d.layerNames.map(() => true), d.w, d.h);
+        paintPixels(cx2, px, 3, d.w, d.h);
+      }
+      cx2.fillStyle = "#ffd54f"; cx2.font = "8px system-ui"; cx2.textAlign = "right";
+      cx2.fillText("✎", 58, 10);
+    }
+    const lbl = document.createElement("div");
+    lbl.className = "subj-label";
+    lbl.textContent = CLOTHING_DISPLAY[itemId] ?? itemId;
+    card.style.cursor = "pointer";
+    card.appendChild(c); card.appendChild(lbl);
+    card.addEventListener("click", () => selectClothing(itemId));
+    wrap.appendChild(card);
+  }
+}
+
+function buildObjectGrid(wrap: HTMLElement) {
+  for (const kind of OBJECT_KINDS) {
+    const card = document.createElement("div");
+    card.className = "subj-card" + (kind === currentObjectId ? " sel" : "");
+    const c = document.createElement("canvas");
+    c.width = 72; c.height = 72;
+    const cx2 = c.getContext("2d")!;
+    cx2.fillStyle = "#0e2030";
+    cx2.fillRect(0, 0, 72, 72);
+    const d = objectSheet.docs[kind];
+    if (d && docHasPaint(d)) {
+      const scale = Math.floor(72 / Math.max(d.w, d.h));
+      const frame = d.animations[d.defaultClip]?.facings.down?.[0];
+      if (frame) {
+        const px = compositeFrame(frame, d.layerNames.map(() => true), d.w, d.h);
+        cx2.save(); cx2.translate((72 - d.w * scale) / 2, (72 - d.h * scale) / 2);
+        paintPixels(cx2, px, scale, d.w, d.h);
+        cx2.restore();
+      }
+      cx2.fillStyle = "#ffd54f"; cx2.font = "8px system-ui"; cx2.textAlign = "right";
+      cx2.fillText("✎", 70, 10);
+    }
+    const lbl = document.createElement("div");
+    lbl.className = "subj-label";
+    lbl.textContent = OBJECT_DISPLAY[kind] ?? kind;
+    card.style.cursor = "pointer";
+    card.appendChild(c); card.appendChild(lbl);
+    card.addEventListener("click", () => selectObject(kind));
+    wrap.appendChild(card);
+  }
+}
+
+function buildItemGrid(wrap: HTMLElement) {
   for (const [id, pixels] of Object.entries(itemSheet.icons)) {
     const c = document.createElement("canvas");
     c.className = "iicon" + (id === currentItemId ? " sel" : "");
-    c.width  = ITEM_SIZE;
-    c.height = ITEM_SIZE;
-    c.title  = id;
+    c.width = ITEM_SIZE; c.height = ITEM_SIZE;
+    c.title = id;
     const cx2 = c.getContext("2d")!;
     for (let i = 0; i < pixels.length; i++) {
       const col = pixels[i];
@@ -830,46 +1002,17 @@ function buildItemBrowser() {
 function selectItem(id: string) {
   currentItemId = id;
   itemPixels = [...(itemSheet.icons[id] ?? Array(ITEM_SIZE * ITEM_SIZE).fill(""))];
-  $("item-name").textContent = id;
-  $("item-info").textContent = `Editing: ${id}  (${ITEM_SIZE}×${ITEM_SIZE})`;
+  const nameEl = document.getElementById("item-name");
+  if (nameEl) nameEl.textContent = id;
+  const infoEl = document.getElementById("item-info");
+  if (infoEl) infoEl.textContent = `Editing: ${id}  (${ITEM_SIZE}×${ITEM_SIZE})`;
   for (const c of document.querySelectorAll<HTMLElement>(".iicon"))
     c.classList.toggle("sel", c.title === id);
   sizeStage();
   drawStage();
 }
 
-// ── NPC grid and editor ───────────────────────────────────────────────────────
-function buildNpcGrid() {
-  const wrap = $<HTMLDivElement>("npc-grid");
-  wrap.innerHTML = "";
-  for (const kind of NPC_KINDS) {
-    const card = document.createElement("div");
-    card.className = "npc-card" + (kind === currentNpcKind ? " sel" : "");
-    const c = document.createElement("canvas");
-    c.width = 60; c.height = 78;
-    const cx2 = c.getContext("2d")!;
-    cx2.fillStyle = "#0c1820";
-    cx2.fillRect(0, 0, 60, 78);
-    const app = npcLooks[kind] ?? (npcLooksData as Record<string, Appearance>)[kind];
-    drawCharacterPixel(cx2, 30, 58, app, { facing: "down", phase: 0, moving: false });
-    const lbl = document.createElement("div");
-    lbl.className = "npc-label";
-    lbl.textContent = NPC_DISPLAY[kind] ?? kind;
-    card.appendChild(c);
-    card.appendChild(lbl);
-    card.addEventListener("click", () => selectNpc(kind));
-    wrap.appendChild(card);
-  }
-}
-
-function selectNpc(kind: string) {
-  currentNpcKind = kind;
-  for (const c of document.querySelectorAll<HTMLElement>(".npc-card"))
-    c.classList.toggle("sel", c.querySelector(".npc-label")?.textContent === (NPC_DISPLAY[kind] ?? kind));
-  buildNpcAppEditor(kind);
-  renderNpcPreview(kind);
-}
-
+// ── NPC editor ────────────────────────────────────────────────────────────────
 function renderNpcPreview(kind: string) {
   npcPctx.clearRect(0, 0, npcPreviewCanvas.width, npcPreviewCanvas.height);
   npcPctx.fillStyle = "#0c1820";
@@ -907,7 +1050,7 @@ function buildNpcAppEditor(kind: string) {
       inp.style.cssText = "width:34px;height:26px;padding:0;border:1px solid var(--border);border-radius:4px;cursor:pointer";
       inp.addEventListener("input", () => {
         (npcLooks[kind] as unknown as Record<string, string>)[f.key] = inp.value;
-        buildNpcGrid();
+        buildSubjectGrid();
         renderNpcPreview(kind);
       });
       row.appendChild(inp);
@@ -922,7 +1065,7 @@ function buildNpcAppEditor(kind: string) {
       }
       sel.addEventListener("change", () => {
         (npcLooks[kind] as unknown as Record<string, string>)[f.key] = sel.value;
-        buildNpcGrid();
+        buildSubjectGrid();
         renderNpcPreview(kind);
       });
       row.appendChild(sel);
@@ -931,100 +1074,44 @@ function buildNpcAppEditor(kind: string) {
   }
 }
 
-// ── Creature grid + editor ─────────────────────────────────────────────────────
-let currentCreatureKind = "";
-function buildCreatureGrid() {
-  const wrap = $<HTMLDivElement>("creature-grid");
-  wrap.innerHTML = "";
-  for (const kind of CREATURE_KINDS) {
-    const card = document.createElement("div");
-    card.className = "creature-card" + (kind === currentCreatureKind ? " sel" : "");
-    const c = document.createElement("canvas");
-    c.width = 72; c.height = 72;
-    const cx2 = c.getContext("2d")!;
-    cx2.fillStyle = "#0e2030";
-    cx2.fillRect(0, 0, 72, 72);
-    // Painted sprite (via provider) or vector silhouette — drawFullCreature
-    // dispatches to whichever exists for this kind.
-    cx2.save();
-    cx2.translate(36, 40);
-    cx2.scale(1.4, 1.4);
-    try { drawFullCreature(cx2 as unknown as CanvasRenderingContext2D, kind, 0, 0); } catch { /* ignore */ }
-    cx2.restore();
-    const painted = creatureSheet.docs[kind] && docHasPaint(creatureSheet.docs[kind]);
-    if (painted) {
-      cx2.fillStyle = "#ffd54f"; cx2.font = "8px system-ui"; cx2.textAlign = "right";
-      cx2.fillText("✎", 70, 10);
-    }
-    const lbl = document.createElement("div");
-    lbl.className = "npc-label";
-    lbl.textContent = CREATURE_DISPLAY[kind] ?? kind;
-    card.style.cursor = "pointer";
-    card.appendChild(c);
-    card.appendChild(lbl);
-    card.addEventListener("click", () => selectCreature(kind));
-    wrap.appendChild(card);
+// NPC preview loop
+let npcPreviewLoopRunning = false;
+function startNpcPreviewLoop() {
+  if (npcPreviewLoopRunning) return;
+  npcPreviewLoopRunning = true;
+  function loop() {
+    if (category !== "characters" || charSubject === "player") { npcPreviewLoopRunning = false; return; }
+    renderNpcPreview(charSubject);
+    requestAnimationFrame(loop);
   }
+  requestAnimationFrame(loop);
 }
 
-// Load a creature's sprite-doc into the shared paint pipeline for editing.
+// ── Creature editor ────────────────────────────────────────────────────────────
 function selectCreature(kind: string) {
   currentCreatureKind = kind;
+  charSubject = "player"; // reset char subject since we're in creatures category
   editingCreature = kind; editingClothing = null; editingObject = null;
   onionRefPixels = null;
-  doc = creatureDocFor(kind);          // same reference stored in the sheet
+  doc = creatureDocFor(kind);
   currentClip = doc.defaultClip;
   facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
   layerVisible = doc.layerNames.map(() => true);
-  $<HTMLInputElement>("fps").value = String(curClip().fps);
-  buildCreatureGrid(); buildFacings(); buildClips(); buildFrames(); buildLayers();
-  $("creature-edit-title").textContent = `Editing: ${CREATURE_DISPLAY[kind] ?? kind}`;
-  sizeStage(); drawStage();
+  buildSubjectGrid();
+  updateUI();
 }
 
-// Seed the current creature frame's body layer from the procedural vector art.
 function rasterizeCurrentCreature() {
   if (!editingCreature) return;
   const px = rasterizeCreatureToPixels(editingCreature, doc.w, doc.h);
   const bodyIdx = Math.max(0, doc.layerNames.indexOf("body"));
   curFrame().layers[bodyIdx] = px;
   saveToStorage();
-  buildCreatureGrid(); drawStage();
+  buildSubjectGrid(); drawStage();
   flash(`Rasterized ${CREATURE_DISPLAY[editingCreature] ?? editingCreature} from vector art ✓`);
 }
 
-// ── Clothing grid + editor ─────────────────────────────────────────────────────
-function buildClothingGrid() {
-  const wrap = $<HTMLDivElement>("clothing-grid");
-  wrap.innerHTML = "";
-  for (const itemId of CLOTHING_ITEMS) {
-    const card = document.createElement("div");
-    card.className = "creature-card" + (itemId === currentClothingId ? " sel" : "");
-    const c = document.createElement("canvas");
-    c.width = 60; c.height = 78;
-    const cx2 = c.getContext("2d")!;
-    cx2.fillStyle = "#0e1e2c";
-    cx2.fillRect(0, 0, 60, 78);
-    const d = clothingSheet.docs[itemId];
-    if (d && docHasPaint(d)) {
-      const frame = d.animations[d.defaultClip]?.facings.down?.[0];
-      if (frame) {
-        const px = compositeFrame(frame, d.layerNames.map(() => true), d.w, d.h);
-        paintPixels(cx2, px, 3, d.w, d.h);
-      }
-      cx2.fillStyle = "#ffd54f"; cx2.font = "8px system-ui"; cx2.textAlign = "right";
-      cx2.fillText("✎", 58, 10);
-    }
-    const lbl = document.createElement("div");
-    lbl.className = "npc-label";
-    lbl.textContent = CLOTHING_DISPLAY[itemId] ?? itemId;
-    card.style.cursor = "pointer";
-    card.appendChild(c); card.appendChild(lbl);
-    card.addEventListener("click", () => selectClothing(itemId));
-    wrap.appendChild(card);
-  }
-}
-
+// ── Clothing editor ────────────────────────────────────────────────────────────
 function getBodyRefPixels(): string[] {
   return renderFrame(charDoc, charDoc.defaultClip, facing, 0, {});
 }
@@ -1037,48 +1124,11 @@ function selectClothing(itemId: string) {
   facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
   layerVisible = doc.layerNames.map(() => true);
   onionRefPixels = getBodyRefPixels();
-  $<HTMLInputElement>("fps").value = String(curClip().fps);
-  buildClothingGrid(); buildFacings(); buildClips(); buildFrames(); buildLayers();
-  const title = document.getElementById("clothing-edit-title");
-  if (title) title.textContent = `Editing: ${CLOTHING_DISPLAY[itemId] ?? itemId}`;
-  sizeStage(); drawStage();
+  buildSubjectGrid();
+  updateUI();
 }
 
-// ── Object grid + editor ──────────────────────────────────────────────────────
-function buildObjectGrid() {
-  const wrap = $<HTMLDivElement>("objects-grid");
-  wrap.innerHTML = "";
-  for (const kind of OBJECT_KINDS) {
-    const card = document.createElement("div");
-    card.className = "creature-card" + (kind === currentObjectId ? " sel" : "");
-    const c = document.createElement("canvas");
-    c.width = 72; c.height = 72;
-    const cx2 = c.getContext("2d")!;
-    cx2.fillStyle = "#0e2030";
-    cx2.fillRect(0, 0, 72, 72);
-    const d = objectSheet.docs[kind];
-    if (d && docHasPaint(d)) {
-      const scale = Math.floor(72 / Math.max(d.w, d.h));
-      const frame = d.animations[d.defaultClip]?.facings.down?.[0];
-      if (frame) {
-        const px = compositeFrame(frame, d.layerNames.map(() => true), d.w, d.h);
-        cx2.save(); cx2.translate((72 - d.w * scale) / 2, (72 - d.h * scale) / 2);
-        paintPixels(cx2, px, scale, d.w, d.h);
-        cx2.restore();
-      }
-      cx2.fillStyle = "#ffd54f"; cx2.font = "8px system-ui"; cx2.textAlign = "right";
-      cx2.fillText("✎", 70, 10);
-    }
-    const lbl = document.createElement("div");
-    lbl.className = "npc-label";
-    lbl.textContent = OBJECT_DISPLAY[kind] ?? kind;
-    card.style.cursor = "pointer";
-    card.appendChild(c); card.appendChild(lbl);
-    card.addEventListener("click", () => selectObject(kind));
-    wrap.appendChild(card);
-  }
-}
-
+// ── Object editor ─────────────────────────────────────────────────────────────
 function selectObject(kind: string) {
   currentObjectId = kind;
   editingObject = kind; editingCreature = null; editingClothing = null;
@@ -1087,374 +1137,110 @@ function selectObject(kind: string) {
   currentClip = doc.defaultClip;
   facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
   layerVisible = doc.layerNames.map(() => true);
-  $<HTMLInputElement>("fps").value = String(curClip().fps);
-  buildObjectGrid(); buildFacings(); buildClips(); buildFrames(); buildLayers();
-  const title = document.getElementById("objects-edit-title");
-  if (title) title.textContent = `Editing: ${OBJECT_DISPLAY[kind] ?? kind}`;
-  sizeStage(); drawStage();
+  buildSubjectGrid();
+  updateUI();
 }
 
-// ── Animation Actions tab ──────────────────────────────────────────────────────
-// Live-previews every procedural animation a character or creature can perform,
-// and exposes tunable parameters (punch reach, jump height, etc.) that are saved
-// to anim-settings.json — the same file the game's renderer reads.
-const ANIM_KEY = "banfield-anim-settings";
-type AnimSettings = Record<string, number>;
-const ANIM_DEFAULTS = rawAnimData as AnimSettings;
-let animSettings: AnimSettings = loadAnimSettings();
-function loadAnimSettings(): AnimSettings {
-  try { const r = localStorage.getItem(ANIM_KEY); if (r) return { ...ANIM_DEFAULTS, ...JSON.parse(r) }; }
-  catch { /* ignore */ }
-  return { ...ANIM_DEFAULTS };
-}
-function saveAnimSettingsLocal() { localStorage.setItem(ANIM_KEY, JSON.stringify(animSettings)); }
+// ── updateUI ─────────────────────────────────────────────────────────────────
+function updateUI() {
+  const isPaint = isSpriteMode();
+  const isItem = category === "items";
+  const isTerrain = category === "terrain";
+  const isNPC = category === "characters" && charSubject !== "player";
 
-// Which character actions exist, and the opts they drive in drawCharacterPixel.
-type ActionId = "idle" | "walk" | "run" | "punch" | "kick" | "jump" | "transform" | "swim";
-const CHAR_ACTIONS: { id: ActionId; label: string }[] = [
-  { id: "idle", label: "Idle" }, { id: "walk", label: "Walk" }, { id: "run", label: "Run" },
-  { id: "punch", label: "Punch" }, { id: "kick", label: "Kick" }, { id: "jump", label: "Jump" },
-  { id: "transform", label: "Mode-switch" }, { id: "swim", label: "Swim" },
-];
-const CREATURE_ACTIONS: { id: ActionId; label: string }[] = [
-  { id: "idle", label: "Idle" }, { id: "walk", label: "Walk" }, { id: "run", label: "Run" },
-];
+  // Header ops
+  show("paint-ops",           isPaint,                                          "flex");
+  show("item-ops",            isItem,                                           "flex");
+  show("terrain-ops",         isTerrain,                                        "flex");
+  show("npc-ops",             isNPC,                                            "flex");
+  show("creature-extra-ops",  category === "creatures" && !!editingCreature,    "flex");
+  show("clothing-ops",        category === "clothing",                          "flex");
+  show("objects-ops",         category === "objects",                           "flex");
 
-// Tuning sliders: key in anim-settings, label, min/max/step.
-const ANIM_SLIDERS: { key: string; label: string; min: number; max: number; step: number }[] = [
-  { key: "punchReachProfile", label: "Punch reach (side)",  min: 0, max: 12, step: 1 },
-  { key: "punchReachFront",   label: "Punch reach (front)", min: 0, max: 12, step: 1 },
-  { key: "kickReachProfile",  label: "Kick reach (side)",   min: 0, max: 12, step: 1 },
-  { key: "kickReachFront",    label: "Kick reach (front)",  min: 0, max: 12, step: 1 },
-  { key: "walkStride",        label: "Walk stride",         min: 0, max: 6,  step: 1 },
-  { key: "runStrideMult",     label: "Run stride mult",     min: 1, max: 3,  step: 0.1 },
-  { key: "armSwing",          label: "Arm swing",           min: 0, max: 4,  step: 1 },
-  { key: "jumpHeight",        label: "Jump height",         min: 0, max: 2,  step: 0.1 },
-  { key: "transformSpeed",    label: "Mode-switch speed",   min: 30, max: 200, step: 10 },
-  { key: "creatureWalkBob",   label: "Creature bob",        min: 0, max: 6,  step: 0.5 },
-  { key: "creatureWalkSway",  label: "Creature sway",       min: 0, max: 4,  step: 0.5 },
-];
+  // Left sidebar
+  show("tools-group",         isPaint || isItem);
+  show("palette-group",       isPaint || isItem);
+  show("canvas-options",      isPaint || isItem);
 
-type SubjectKind = "person" | "npc" | "creature";
-interface Subject { kind: SubjectKind; id: string; label: string; }
-let actionSubjects: Subject[] = [];
-let currentSubject: Subject = { kind: "person", id: "default", label: "Default Person" };
-let currentAction: ActionId = "idle";
-let actionFacing: Facing = "down";
+  // Center canvas
+  ($("stage") as HTMLElement).style.display = (isPaint || isItem) ? "" : "none";
+  show("item-preview-wrap",   isItem);
+  show("canvas-placeholder",  !isPaint && !isItem && !isTerrain && !isNPC);
+  show("npc-stage-wrap",      isNPC,     "flex");
+  show("terrain-stage-wrap",  isTerrain, "flex");
 
-const actionsStage = $<HTMLCanvasElement>("actions-stage");
-const actionsCtx = actionsStage.getContext("2d")!;
+  // Timeline
+  show("timeline", isPaint);
 
-function buildActionSubjects() {
-  actionSubjects = [
-    { kind: "person", id: "default", label: "Default Person" },
-    ...NPC_KINDS.map((k) => ({ kind: "npc" as SubjectKind, id: k, label: NPC_DISPLAY[k] ?? k })),
-    ...CREATURE_KINDS.map((k) => ({ kind: "creature" as SubjectKind, id: k, label: CREATURE_DISPLAY[k] ?? k })),
-  ];
-  const wrap = $("actions-subjects");
-  wrap.innerHTML = "";
-  for (const s of actionSubjects) {
-    const b = document.createElement("button");
-    b.textContent = s.label;
-    b.style.cssText = "display:block;width:100%;text-align:left;margin-bottom:3px;font-size:11px";
-    b.className = (s.kind === currentSubject.kind && s.id === currentSubject.id) ? "active" : "";
-    b.addEventListener("click", () => {
-      currentSubject = s;
-      // Creatures only support locomotion actions.
-      if (s.kind === "creature" && !CREATURE_ACTIONS.some((a) => a.id === currentAction)) currentAction = "walk";
-      buildActionSubjects(); buildActionList(); updateActionLabel();
-    });
-    wrap.appendChild(b);
+  // Right sidebar
+  show("preview-group",        isPaint);
+  show("npc-app-group",        isNPC);
+  show("layers-group",         isPaint);
+  show("dye-group",            isPaint);
+  show("canvas-options-group", isPaint || isItem);
+
+  // Update preview label
+  const lbl = document.getElementById("preview-label");
+  if (lbl) {
+    if (category === "creatures") lbl.textContent = "Creature";
+    else if (category === "clothing") lbl.textContent = "Clothing";
+    else if (category === "objects") lbl.textContent = "Object";
+    else lbl.textContent = "Preview";
   }
+
+  // Update subject title
+  const titleEl = document.getElementById("subject-title");
+  if (titleEl) {
+    if (editingCreature) titleEl.textContent = CREATURE_DISPLAY[editingCreature] ?? editingCreature;
+    else if (editingClothing) titleEl.textContent = CLOTHING_DISPLAY[editingClothing] ?? editingClothing;
+    else if (editingObject) titleEl.textContent = OBJECT_DISPLAY[editingObject] ?? editingObject;
+    else if (isNPC) titleEl.textContent = NPC_DISPLAY[charSubject] ?? charSubject;
+    else if (isPaint) titleEl.textContent = doc.name;
+    else titleEl.textContent = "";
+  }
+
+  if (isPaint) { sizeStage(); buildTimeline(); buildLayers(); buildDyeRows(); drawStage(); }
+  else if (isItem) { sizeStage(); drawStage(); buildDyeRows(); }
+  else if (isTerrain) { renderTerrainPreview(); }
+  else if (isNPC) { buildNpcAppEditor(charSubject); startNpcPreviewLoop(); }
 }
 
-function buildActionList() {
-  const wrap = $("actions-list");
-  wrap.innerHTML = "";
-  const acts = currentSubject.kind === "creature" ? CREATURE_ACTIONS : CHAR_ACTIONS;
-  for (const a of acts) {
-    const b = document.createElement("button");
-    b.textContent = a.label;
-    b.style.cssText = "flex:1;min-width:54px;font-size:11px";
-    b.className = a.id === currentAction ? "active" : "";
-    b.addEventListener("click", () => { currentAction = a.id; buildActionList(); updateActionLabel(); });
-    wrap.appendChild(b);
-  }
-}
+// ── Category switching ────────────────────────────────────────────────────────
+function setCategory(c: Category) {
+  category = c;
+  ($("category-select") as unknown as HTMLSelectElement).value = c;
 
-function buildActionFacings() {
-  const wrap = $("actions-facings");
-  wrap.innerHTML = "";
-  const labels: Record<Facing, string> = {
-    down: "↓", downright: "↘", right: "→", upright: "↗",
-    up: "↑", upleft: "↖", left: "←", downleft: "↙",
-  };
-  for (const f of FACINGS) {
-    const b = document.createElement("button");
-    b.textContent = labels[f];
-    b.className = f === actionFacing ? "active" : "";
-    b.addEventListener("click", () => { actionFacing = f; buildActionFacings(); });
-    wrap.appendChild(b);
-  }
-}
-
-function buildActionSliders() {
-  const wrap = $("actions-sliders");
-  wrap.innerHTML = "";
-  for (const s of ANIM_SLIDERS) {
-    const row = document.createElement("div");
-    row.style.cssText = "margin-bottom:8px";
-    const lbl = document.createElement("div");
-    lbl.style.cssText = "font-size:10px;color:var(--muted);display:flex;justify-content:space-between";
-    const valSpan = document.createElement("span");
-    const cur = animSettings[s.key] ?? ANIM_DEFAULTS[s.key] ?? 0;
-    valSpan.textContent = String(cur);
-    lbl.innerHTML = `<span>${s.label}</span>`;
-    lbl.appendChild(valSpan);
-    const inp = document.createElement("input");
-    inp.type = "range";
-    inp.min = String(s.min); inp.max = String(s.max); inp.step = String(s.step);
-    inp.value = String(cur);
-    inp.style.width = "100%";
-    inp.addEventListener("input", () => {
-      animSettings[s.key] = parseFloat(inp.value);
-      valSpan.textContent = inp.value;
-      saveAnimSettingsLocal();
-    });
-    row.appendChild(lbl); row.appendChild(inp);
-    wrap.appendChild(row);
-  }
-}
-
-function updateActionLabel() {
-  const acts = currentSubject.kind === "creature" ? CREATURE_ACTIONS : CHAR_ACTIONS;
-  const a = acts.find((x) => x.id === currentAction);
-  $("actions-label").textContent = `${currentSubject.label} — ${a?.label ?? currentAction}`;
-}
-
-// Default-person appearance for the Actions preview.
-const DEFAULT_LOOK: Appearance = { skin: "#d8a870", hair: "#5a4632", shirt: "#3f8a44", pants: "#36507e", hairStyle: "short", bodyBuild: "medium" };
-
-let actionsLoopRunning = false;
-function renderActionsFrame(t: number) {
-  if (editorMode !== "actions") { actionsLoopRunning = false; return; }
-  const W = actionsStage.width, H = actionsStage.height;
-  actionsCtx.clearRect(0, 0, W, H);
-  // Ground line
-  actionsCtx.strokeStyle = "rgba(255,255,255,0.08)";
-  actionsCtx.beginPath(); actionsCtx.moveTo(0, H * 0.72); actionsCtx.lineTo(W, H * 0.72); actionsCtx.stroke();
-
-  const cx = W / 2, groundY = H * 0.72;
-
-  if (currentSubject.kind === "creature") {
-    // Idle: gentle bob. Walk/Run: bob + horizontal sway to fake a gait.
-    const speed = currentAction === "run" ? 7 : currentAction === "walk" ? 4 : 1.5;
-    const bob = currentAction === "idle"
-      ? Math.sin(t / 400) * (animSettings.creatureWalkBob ?? 1.5) * 0.5
-      : Math.abs(Math.sin(t / (260 / speed))) * (animSettings.creatureWalkBob ?? 1.5);
-    const sway = currentAction === "idle" ? 0
-      : Math.sin(t / (260 / speed)) * (animSettings.creatureWalkSway ?? 1);
-    actionsCtx.save();
-    actionsCtx.translate(cx + sway, groundY - 30 - bob);
-    actionsCtx.scale(2, 2); // creatures are drawn small; scale up for the preview
-    drawFullCreature(actionsCtx, currentSubject.id, 0, 0);
-    actionsCtx.restore();
-    requestAnimationFrame(renderActionsFrame);
-    return;
-  }
-
-  // Character / NPC: drive drawCharacterPixel with action-specific opts.
-  const look = currentSubject.kind === "npc"
-    ? (npcLooks[currentSubject.id] ?? (npcLooksData as Record<string, Appearance>)[currentSubject.id])
-    : DEFAULT_LOOK;
-
-  const phase = (t / 130) % (Math.PI * 2);
-  let opts: Parameters<typeof drawCharacterPixel>[4] = {
-    facing: actionFacing, phase, moving: false,
-  };
-  let yOff = 0;
-  let squash = 1;
-
-  switch (currentAction) {
-    case "idle":
-      opts = { facing: actionFacing, phase: 0, moving: false };
-      break;
-    case "walk":
-      opts = { facing: actionFacing, phase, moving: true };
-      break;
-    case "run":
-      opts = { facing: actionFacing, phase, moving: true, running: true };
-      break;
-    case "punch": {
-      const pt = (t / 260) % 1; // 0..1 swing loop
-      opts = { facing: actionFacing, phase: 0, moving: false, attack: { phase: pt, stance: "high" } };
-      break;
-    }
-    case "kick": {
-      const kt = (t / 260) % 1;
-      opts = { facing: actionFacing, phase: 0, moving: false, attack: { phase: kt, stance: "low" } };
-      break;
-    }
-    case "jump": {
-      const jt = (t / 700) % 1;
-      yOff = -Math.sin(jt * Math.PI) * 90 * (animSettings.jumpHeight ?? 0.8);
-      opts = { facing: actionFacing, phase: 0, moving: false };
-      break;
-    }
-    case "transform": {
-      const tt = t / (animSettings.transformSpeed ?? 90);
-      squash = Math.abs(Math.cos(tt)) * 0.85 + 0.15;
-      opts = { facing: "down", phase: tt, moving: true };
-      break;
-    }
-    case "swim":
-      opts = { facing: actionFacing, phase, moving: true, submerge: 0.46 };
-      break;
-  }
-
-  actionsCtx.save();
-  if (squash !== 1) {
-    actionsCtx.translate(cx, 0); actionsCtx.scale(squash, 1); actionsCtx.translate(-cx, 0);
-  }
-  drawCharacterPixel(actionsCtx, cx, groundY + yOff, look, opts);
-  actionsCtx.restore();
-
-  // Transform sparkle
-  if (currentAction === "transform") {
-    const tt = t / (animSettings.transformSpeed ?? 90);
-    for (let i = 0; i < 5; i++) {
-      const a = tt * 0.6 + i * 1.3;
-      actionsCtx.fillStyle = `hsla(${(tt * 4 + i * 60) % 360},90%,80%,0.9)`;
-      actionsCtx.beginPath();
-      actionsCtx.arc(cx + Math.cos(a) * 30, groundY - 30 + Math.sin(a) * 26, 3, 0, Math.PI * 2);
-      actionsCtx.fill();
+  if (c !== "creatures" && c !== "clothing" && c !== "objects") {
+    if (editingCreature || editingClothing || editingObject) {
+      editingCreature = null; editingClothing = null; editingObject = null;
+      doc = charDoc;
+      currentClip = doc.defaultClip;
+      layerVisible = doc.layerNames.map(() => true);
     }
   }
 
-  requestAnimationFrame(renderActionsFrame);
-}
+  buildSubjectGrid();
 
-function startActionsLoop() {
-  if (actionsLoopRunning) return;
-  actionsLoopRunning = true;
-  requestAnimationFrame(renderActionsFrame);
-}
-
-// ── Editor mode switching ─────────────────────────────────────────────────────
-function show(id: string, val: boolean, display = "block") {
-  const el = document.getElementById(id);
-  if (el) el.style.display = val ? display : "none";
-}
-
-function setEditorMode(m: EditorMode) {
-  editorMode = m;
-  const ALL: EditorMode[] = ["char","items","npcs","creatures","terrain","actions","clothing","objects"];
-  for (const v of ALL) {
-    const btn = document.getElementById(`tab-${v}`);
-    if (btn) btn.classList.toggle("active", m === v);
-  }
-
-  // Header
-  show("docname",       m === "char");
-  show("item-name",     m === "items");
-  show("char-ops",      m === "char",      "flex");
-  show("item-ops",      m === "items",     "flex");
-  show("npc-ops",       m === "npcs",      "flex");
-  show("creature-ops",  m === "creatures", "flex");
-  show("terrain-ops",   m === "terrain",   "flex");
-  show("actions-ops",   m === "actions",   "flex");
-  show("clothing-ops",  m === "clothing",  "flex");
-  show("objects-ops",   m === "objects",   "flex");
-
-  // Creatures, clothing, and objects share the full paint pipeline.
-  const paints = m === "char" || m === "items" || m === "creatures" || m === "clothing" || m === "objects";
-
-  // Left panels
-  show("tools-panel",           paints);
-  show("colour-panel",          paints);
-  show("canvas-panel",          paints);
-  show("item-browser-panel",    m === "items",     "flex");
-  show("npc-grid-panel",        m === "npcs",      "flex");
-  show("creature-grid-panel",   m === "creatures", "flex");
-  show("terrain-panel",         m === "terrain",   "flex");
-  show("actions-subject-panel", m === "actions",   "flex");
-  show("clothing-grid-panel",   m === "clothing",  "flex");
-  show("objects-grid-panel",    m === "objects",   "flex");
-
-  // Center
-  stage.style.display = paints ? "" : "none";
-  show("center-hint",           paints);
-  const spritePreview = m === "char" || m === "creatures" || m === "clothing" || m === "objects";
-  show("char-preview-wrap",     spritePreview);
-  show("item-preview-wrap",     m === "items");
-  show("npc-preview-wrap",      m === "npcs");
-  show("terrain-preview-wrap",  m === "terrain");
-  show("actions-stage-wrap",    m === "actions",   "flex");
-
-  // Update preview label to match the active mode.
-  const prevLabel = document.querySelector<HTMLLabelElement>("#char-preview-wrap > label");
-  if (prevLabel) {
-    if (m === "creatures") prevLabel.textContent = "Creature preview";
-    else if (m === "clothing") prevLabel.textContent = "Clothing preview";
-    else if (m === "objects") prevLabel.textContent = "Object preview";
-    else prevLabel.textContent = "Walk preview";
-  }
-
-  // Right panels — char/creatures/clothing/objects all use facings/frames/layers.
-  const showSpriteRightPanels = m === "char" || m === "creatures" || m === "clothing" || m === "objects";
-  ($("char-right-panels") as HTMLElement).style.display = showSpriteRightPanels ? "contents" : "none";
-  show("item-right-panels",     m === "items");
-  show("npc-right-panels",      m === "npcs");
-  show("terrain-right-panels",  m === "terrain");
-  show("actions-right-panels",  m === "actions");
-  show("clothing-hint-panel",   m === "clothing");
-  show("objects-hint-panel",    m === "objects");
-
-  // Restore the character doc when returning to the char tab.
-  if (m === "char" && (editingCreature || editingClothing || editingObject)) {
-    editingCreature = null; editingClothing = null; editingObject = null;
-    doc = charDoc;
-    currentClip = doc.defaultClip;
-    facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
-    layerVisible = doc.layerNames.map(() => true);
-    onionRefPixels = null;
-    $<HTMLInputElement>("fps").value = String(curClip().fps);
-    buildFacings(); buildClips(); buildFrames(); buildLayers();
-  }
-
-  if (m === "items") {
-    buildItemBrowser();
+  if (c === "characters") {
+    setCharSubject(charSubject === "player" ? "player" : charSubject);
+  } else if (c === "creatures") {
+    selectCreature(currentCreatureKind || CREATURE_KINDS[0]);
+  } else if (c === "clothing") {
+    selectClothing(currentClothingId || CLOTHING_ITEMS[0]);
+  } else if (c === "objects") {
+    selectObject(currentObjectId || OBJECT_KINDS[0]);
+  } else if (c === "items") {
+    updateUI();
     if (!currentItemId && Object.keys(itemSheet.icons).length > 0) selectItem(Object.keys(itemSheet.icons)[0]);
     else if (currentItemId) { sizeStage(); drawStage(); }
-  } else if (m === "npcs") {
-    buildNpcGrid();
-    if (!currentNpcKind && NPC_KINDS.length > 0) selectNpc(NPC_KINDS[0]);
-  } else if (m === "creatures") {
-    buildCreatureGrid();
-    selectCreature(currentCreatureKind || CREATURE_KINDS[0]);
-  } else if (m === "terrain") {
-    buildTerrainRows();
-  } else if (m === "actions") {
-    buildActionSubjects(); buildActionList(); buildActionFacings(); buildActionSliders(); updateActionLabel();
-    startActionsLoop();
-  } else if (m === "clothing") {
-    buildClothingGrid();
-    if (currentClothingId) selectClothing(currentClothingId);
-    else selectClothing(CLOTHING_ITEMS[0]);
-  } else if (m === "objects") {
-    buildObjectGrid();
-    if (currentObjectId) selectObject(currentObjectId);
-    else selectObject(OBJECT_KINDS[0]);
-  } else {
-    sizeStage(); drawStage();
+  } else if (c === "terrain") {
+    updateUI();
   }
 }
 
-$("tab-char").addEventListener("click",  () => setEditorMode("char"));
-$("tab-items").addEventListener("click", () => setEditorMode("items"));
-$("tab-npcs").addEventListener("click", () => setEditorMode("npcs" as EditorMode));
-$("tab-creatures").addEventListener("click", () => setEditorMode("creatures" as EditorMode));
-$("tab-actions").addEventListener("click", () => setEditorMode("actions" as EditorMode));
+($("category-select") as unknown as HTMLSelectElement).addEventListener("change", (e) => {
+  setCategory((e.target as HTMLSelectElement).value as Category);
+});
 
 // ── Creature sprite: rasterize / clear / save ──────────────────────────────────
 $("btn-creature-raster")?.addEventListener("click", () => rasterizeCurrentCreature());
@@ -1463,11 +1249,10 @@ $("btn-creature-clear")?.addEventListener("click", () => {
   if (!confirm(`Clear ${CREATURE_DISPLAY[editingCreature] ?? editingCreature}'s sprite? It reverts to the built-in art.`)) return;
   delete creatureSheet.docs[editingCreature];
   saveCreatureSheet();
-  selectCreature(editingCreature); // recreates a blank doc to keep editing
+  selectCreature(editingCreature);
   flash("Creature sprite cleared ✓");
 });
 $("btn-creature-save")?.addEventListener("click", async () => {
-  // Drop empty docs so unpainted creatures keep using the vector fallback.
   const out: CreatureSheet = { version: creatureSheet.version, w: creatureSheet.w, h: creatureSheet.h, layers: creatureSheet.layers, docs: {} };
   for (const [k, d] of Object.entries(creatureSheet.docs)) if (docHasPaint(d)) out.docs[k] = d;
   saveCreatureSheet();
@@ -1527,32 +1312,12 @@ $("btn-objects-save")?.addEventListener("click", async () => {
   } catch { flash("Object sprites saved (localStorage only)"); }
 });
 
-// ── Actions: save / reset tuning ───────────────────────────────────────────────
-$("btn-actions-save")?.addEventListener("click", async () => {
-  saveAnimSettingsLocal();
-  try {
-    await fetch("/api/save-asset", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "anim-settings.json", data: animSettings }),
-    });
-    flash("Animation tuning saved to game ✓");
-  } catch { flash("Animation tuning saved (localStorage only)"); }
-});
-$("btn-actions-reset")?.addEventListener("click", () => {
-  animSettings = { ...ANIM_DEFAULTS };
-  saveAnimSettingsLocal();
-  buildActionSliders();
-  flash("Animation tuning reset ✓");
-});
-
 // ── Item save / export / import ───────────────────────────────────────────────
 $("btn-item-save").addEventListener("click", async () => {
   if (!currentItemId) return flash("Select an item first");
   itemSheet.icons[currentItemId] = [...itemPixels];
   saveItemSheet();
-  buildItemBrowser();
-  // Also write to actual asset file in dev mode
+  buildSubjectGrid();
   try {
     await fetch("/api/save-asset", {
       method: "POST",
@@ -1579,7 +1344,7 @@ $<HTMLInputElement>("file-item-import").addEventListener("change", async (e) => 
     itemSheet = JSON.parse(await file.text()) as ItemSheet;
     saveItemSheet();
     currentItemId = "";
-    buildItemBrowser();
+    buildSubjectGrid();
     if (Object.keys(itemSheet.icons).length > 0) selectItem(Object.keys(itemSheet.icons)[0]);
     flash("Item sprites imported ✓");
   } catch { flash("Bad item-sprites.json file"); }
@@ -1604,18 +1369,24 @@ $("btn-npc-reset").addEventListener("click", () => {
   if (!confirm("Reset all NPC appearances to defaults?")) return;
   npcLooks = JSON.parse(JSON.stringify(npcLooksData));
   saveNpcLooks();
-  buildNpcGrid();
+  buildSubjectGrid();
   if (currentNpcKind) { buildNpcAppEditor(currentNpcKind); renderNpcPreview(currentNpcKind); }
   flash("Reset to defaults ✓");
 });
 
-// ── Terrain tab ──────────────────────────────────────────────────────────────
+// ── Terrain ──────────────────────────────────────────────────────────────────
 const terrainCanvas = $<HTMLCanvasElement>("terrain-preview");
 const terrainPctx = terrainCanvas?.getContext("2d");
 
 function buildTerrainRows() {
-  const wrap = $("terrain-rows");
-  wrap.innerHTML = "";
+  // For terrain category, terrain rows go in subject-scroll
+  let wrap: HTMLElement;
+  if (category === "terrain") {
+    wrap = $("subject-scroll");
+    wrap.innerHTML = "";
+  } else {
+    wrap = $("subject-scroll");
+  }
   for (const [key, label] of Object.entries(TERRAIN_LABELS)) {
     const row = document.createElement("div");
     row.className = "terrain-row";
@@ -1639,19 +1410,151 @@ function buildTerrainRows() {
   renderTerrainPreview();
 }
 
+// Terrain texture helpers
+function editorTileHash(x: number, y: number): number {
+  let h = (x * 374761393 + y * 1234567891) | 0;
+  h ^= h >>> 13; h = Math.imul(h, 1540483477); h ^= h >>> 15;
+  return (h >>> 0) / 0xffffffff;
+}
+
+function drawTerrainGrass(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, T: number) {
+  const h1 = editorTileHash(tx, ty);
+  const h2 = editorTileHash(tx + 97, ty + 13);
+  const h3 = editorTileHash(tx * 3 + 1, ty * 5 + 7);
+  const patchCount = 2 + (h1 * 3 | 0);
+  for (let i = 0; i < patchCount; i++) {
+    const ph  = editorTileHash(tx + i * 17, ty + i * 11);
+    const ph2 = editorTileHash(tx + i * 13 + 5, ty * 3 + i);
+    ctx.fillStyle = i % 3 === 0 ? "#7aab34" : i % 3 === 1 ? "#96c83c" : "#6a9828";
+    ctx.fillRect(sx + (ph * (T - 3) | 0), sy + (ph2 * (T - 3) | 0), 2, 2);
+  }
+  const bladeCount = 2 + (h1 > 0.45 ? 1 : 0);
+  for (let i = 0; i < bladeCount; i++) {
+    const bh  = editorTileHash(tx * 7 + i * 3, ty + i * 11);
+    const bh2 = editorTileHash(tx + i * 13,    ty * 5 + i * 7);
+    const bh3 = editorTileHash(tx + i * 23,    ty * 11 + i * 5);
+    const gx  = sx + 2 + (bh  * (T - 6) | 0);
+    const gy  = sy + 5 + (bh2 * (T - 9) | 0);
+    const lean = (bh3 > 0.5 ? 1 : -1);
+    const bladeH = 3 + (bh3 * 2 | 0);
+    ctx.fillStyle = "#3a5c1e";
+    ctx.fillRect(gx,     gy,     1, bladeH);
+    ctx.fillStyle = "#5a8c28";
+    ctx.fillRect(gx + 1, gy,     1, bladeH);
+    ctx.fillStyle = "#8ac838";
+    ctx.fillRect(gx + 1 + lean, gy - 1, 1, 1);
+  }
+  if (h3 < 0.12) {
+    const stx = sx + 2 + (h1 * (T - 7) | 0);
+    const sty = sy + 4 + (h2 * (T - 7) | 0);
+    ctx.fillStyle = "#b0a880"; ctx.fillRect(stx, sty, 4, 2);
+  }
+}
+
+function drawTerrainForest(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, T: number) {
+  const h1 = editorTileHash(tx, ty);
+  const h2 = editorTileHash(tx + 31, ty + 71);
+  const h3 = editorTileHash(tx * 5, ty * 3 + 17);
+  const h4 = editorTileHash(tx * 9 + 17, ty * 3 + 41);
+  const patchCount = 2 + (h4 * 3 | 0);
+  for (let i = 0; i < patchCount; i++) {
+    const ph  = editorTileHash(tx + i * 19, ty + i * 13);
+    const ph2 = editorTileHash(tx * 3 + i * 7, ty + i);
+    ctx.fillStyle = i % 3 === 0 ? "#1e3016" : i % 3 === 1 ? "#2a3e1c" : "#223418";
+    ctx.fillRect(sx + (ph * (T - 3) | 0), sy + (ph2 * (T - 3) | 0), 3, 3);
+  }
+  if (h1 > 0.42) {
+    ctx.fillStyle = "#5a8e32";
+    const lx = sx + 2 + (h2 * (T - 8) | 0);
+    const ly = sy + 2 + (h3 * (T - 8) | 0);
+    ctx.fillRect(lx, ly, 5, 4);
+    ctx.fillStyle = "#70a840"; ctx.fillRect(lx + 1, ly, 3, 2);
+  }
+  if (h2 < 0.35) {
+    ctx.fillStyle = "#3a2a14";
+    const rx = sx + (h1 * (T * 0.4) | 0);
+    const ry = sy + T - 5;
+    ctx.fillRect(rx, ry, 1, 4);
+    ctx.fillRect(rx + 1, ry + 1, 3, 1);
+  }
+}
+
+function drawTerrainSand(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, T: number) {
+  const h1 = editorTileHash(tx, ty);
+  const h2 = editorTileHash(tx + 17, ty + 43);
+  ctx.strokeStyle = "#b0984a"; ctx.lineWidth = 1;
+  for (let i = 0; i < 2; i++) {
+    const wy = sy + 4 + (editorTileHash(tx + i, ty + i * 7) * (T - 8) | 0);
+    ctx.beginPath(); ctx.moveTo(sx + 1, wy);
+    ctx.quadraticCurveTo(sx + T * 0.35, wy - 1, sx + T * 0.65, wy + 1);
+    ctx.quadraticCurveTo(sx + T * 0.82, wy + 1, sx + T - 1, wy);
+    ctx.stroke();
+  }
+  if (h2 > 0.8) { ctx.fillStyle = "#ece8d0"; ctx.fillRect(sx + (h1 * (T - 4) | 0), sy + (h2 * (T - 4) | 0), 2, 1); }
+}
+
+function drawTerrainRock(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, T: number) {
+  const h1 = editorTileHash(tx, ty);
+  const h2 = editorTileHash(tx + 19, ty + 83);
+  ctx.fillStyle = "#585048";
+  ctx.fillRect(sx + (h1 * (T - 10) | 0), sy + T - 6, 8, 5);
+  ctx.fillStyle = "#b0a898";
+  ctx.fillRect(sx + 2, sy + 2, T - 4, 2);
+  ctx.strokeStyle = "#484038"; ctx.lineWidth = 1;
+  ctx.beginPath();
+  const cx2 = sx + 3 + (h1 * (T - 8) | 0);
+  const cy2 = sy + 5 + (h2 * (T - 12) | 0);
+  ctx.moveTo(cx2, cy2); ctx.lineTo(cx2 + 3, cy2 + 4); ctx.lineTo(cx2 + 2, cy2 + 7); ctx.stroke();
+}
+
+function drawTerrainWater(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, T: number, col: string) {
+  const r1 = parseInt(col.slice(1, 3), 16);
+  const g1 = parseInt(col.slice(3, 5), 16);
+  const b1 = parseInt(col.slice(5, 7), 16);
+  const now = performance.now() / 1000;
+  const p1 = (now * 0.9 + tx * 0.6 + ty * 0.8) % 1;
+  const row1 = sy + (p1 * T | 0);
+  const w1 = 5 + (editorTileHash(tx * 7, ty * 3) * 8 | 0);
+  const x1 = sx + 1 + (editorTileHash(tx + 1, ty) * (T - w1 - 2) | 0);
+  ctx.fillStyle = `rgba(${Math.min(255, r1 + 80)},${Math.min(255, g1 + 80)},${Math.min(255, b1 + 80)},0.65)`;
+  ctx.fillRect(x1, row1, w1, 1);
+}
+
+function drawTerrainRoad(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, T: number) {
+  ctx.fillStyle = "#3e3028";
+  ctx.fillRect(sx + 2, sy + (T * 0.3 | 0), T - 4, 1);
+  ctx.fillRect(sx + 2, sy + (T * 0.7 | 0), T - 4, 1);
+  ctx.fillStyle = "#706558";
+  for (let i = 0; i < 4; i++) {
+    ctx.fillRect(sx + (editorTileHash(tx + i, ty + i * 3) * (T - 2) | 0), sy + (editorTileHash(tx + i * 5, ty + i) * (T - 2) | 0), 1, 1);
+  }
+}
+
 function renderTerrainPreview() {
   if (!terrainPctx) return;
   const c = terrainCanvas;
   terrainPctx.clearRect(0, 0, c.width, c.height);
   const keys = Object.keys(TERRAIN_LABELS);
-  const cellW = c.width / 3, cellH = c.height / 3;
+  const T = 64;
   for (let i = 0; i < Math.min(9, keys.length); i++) {
-    const col = terrainSettings.colors[keys[i]] ?? "#888";
+    const key = keys[i];
+    const col = terrainSettings.colors[key] ?? "#888";
+    const sx = (i % 3) * T;
+    const sy = Math.floor(i / 3) * T;
+    const tx = i % 3;
+    const ty = Math.floor(i / 3);
     terrainPctx.fillStyle = col;
-    terrainPctx.fillRect((i % 3) * cellW, Math.floor(i / 3) * cellH, cellW, cellH);
-    terrainPctx.font = "bold 10px system-ui";
-    terrainPctx.fillStyle = "rgba(0,0,0,0.5)";
-    terrainPctx.fillText(TERRAIN_LABELS[keys[i]], (i % 3) * cellW + 4, Math.floor(i / 3) * cellH + 13);
+    terrainPctx.fillRect(sx, sy, T, T);
+    if (key === "grass") drawTerrainGrass(terrainPctx, sx, sy, tx, ty, T);
+    else if (key === "forest") drawTerrainForest(terrainPctx, sx, sy, tx, ty, T);
+    else if (key === "sand") drawTerrainSand(terrainPctx, sx, sy, tx, ty, T);
+    else if (key === "rock") drawTerrainRock(terrainPctx, sx, sy, tx, ty, T);
+    else if (key === "hill") drawTerrainRock(terrainPctx, sx, sy, tx, ty, T);
+    else if (key === "water" || key === "freshwater") drawTerrainWater(terrainPctx, sx, sy, tx, ty, T, col);
+    else if (key === "road") drawTerrainRoad(terrainPctx, sx, sy, tx, ty, T);
+    terrainPctx.font = "bold 9px system-ui";
+    terrainPctx.fillStyle = "rgba(0,0,0,0.6)";
+    terrainPctx.fillText(TERRAIN_LABELS[key], sx + 3, sy + 11);
   }
 }
 
@@ -1670,11 +1573,11 @@ $("btn-terrain-save")?.addEventListener("click", async () => {
 $("btn-terrain-reset")?.addEventListener("click", () => {
   terrainSettings = { colors: { ...TERRAIN_DEFAULTS } };
   saveTerrainSettings();
-  buildTerrainRows();
+  buildSubjectGrid();
   flash("Terrain reset to defaults ✓");
 });
 
-// ── New sprite file ────────────────────────────────────────────────────────────
+// ── New sprite creation ────────────────────────────────────────────────────────
 $("btn-new-sprite")?.addEventListener("click", () => {
   const name = ($<HTMLInputElement>("new-sprite-name")).value.trim();
   if (!name) return flash("Enter a sprite file name first");
@@ -1683,28 +1586,34 @@ $("btn-new-sprite")?.addEventListener("click", () => {
     if (itemSheet.icons[name]) return flash(`Item "${name}" already exists — select it in the Items tab`);
     itemSheet.icons[name] = Array(ITEM_SIZE * ITEM_SIZE).fill("");
     saveItemSheet();
-    flash(`Created item icon "${name}" ✓ — switch to Items tab to paint it`);
+    flash(`Created item icon "${name}" ✓ — switch to Items to paint it`);
   } else {
     doc = newSpriteDoc(name);
     layerVisible = doc.layerNames.map(() => true);
     saveToStorage();
     flash(`Created character sprite "${name}" ✓`);
-    setEditorMode("char");
+    setCategory("characters");
   }
   ($<HTMLInputElement>("new-sprite-name")).value = "";
 });
 
-$("tab-terrain").addEventListener("click",   () => setEditorMode("terrain"));
-$("tab-clothing")?.addEventListener("click", () => setEditorMode("clothing"));
-$("tab-objects")?.addEventListener("click",  () => setEditorMode("objects"));
-
 // ── Init ─────────────────────────────────────────────────────────────────────
 function refreshAll() {
   currentClip = doc.defaultClip;
-  $<HTMLInputElement>("docname").value = doc.name;
-  $<HTMLInputElement>("fps").value = String(curClip().fps);
-  buildPalette(); buildFacings(); buildClips(); buildFrames(); buildLayers(); buildDyePanel();
+  ($("fps") as HTMLInputElement).value = String(curClip().fps);
+  buildPalette();
   setColor(color);
-  setEditorMode(editorMode);  // properly initialise all panel states
+  buildSubjectGrid();
+  setCategory(category);
 }
+
+// Hook up tintToggle
+const tintToggleEl = document.getElementById("tintToggle") as HTMLInputElement | null;
+if (tintToggleEl) {
+  tintToggleEl.addEventListener("change", (e) => {
+    tintPreview = (e.target as HTMLInputElement).checked;
+    drawStage();
+  });
+}
+
 refreshAll();
