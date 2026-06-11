@@ -728,7 +728,23 @@ $("btn-new").addEventListener("click", () => {
   layerVisible = doc.layerNames.map(() => true);
   saveToStorage(); refreshAll();
 });
-$("btn-save").addEventListener("click", () => { saveToStorage(); flash("Character saved ✓"); });
+$("btn-save").addEventListener("click", async () => {
+  saveToStorage();
+  // When editing the player body, also publish it to the game so it renders
+  // at the spawn point. Other paint subjects have their own save buttons.
+  if (!editingCreature && !editingClothing && !editingObject && charSubject === "player") {
+    try {
+      await fetch("/api/save-asset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "player-sprite.json", data: { version: 2, docs: { player: charDoc } } }),
+      });
+      flash("Player saved to game ✓ (reload the game to see him)");
+      return;
+    } catch { /* fall through to local-only message */ }
+  }
+  flash("Character saved ✓");
+});
 $("btn-export").addEventListener("click", () => {
   const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
   downloadBlob(blob, `${doc.name || "sprite"}.json`);

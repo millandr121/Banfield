@@ -47,7 +47,8 @@ import animData from "./assets/anim-settings.json";
 import { drawItemIcon } from "./itemicon";
 import { drawFullCreature, drawCreatureSprite, MARINE_KINDS, setCreatureDocProvider } from "./creatures";
 import creatureSpriteData from "./assets/creature-sprites.json";
-import { SpriteDoc, normalizeLayers, docHasPaint } from "../../shared/sprite";
+import playerSpriteData from "./assets/player-sprite.json";
+import { SpriteDoc, normalizeLayers, docHasPaint, renderFrame } from "../../shared/sprite";
 
 // Painted creature sprite-docs (authored in the editor). Empty docs fall back
 // to the procedural vector art. Each kind animates through its "down" frames.
@@ -67,6 +68,49 @@ setCreatureDocProvider((kind) => {
   const frameIdx = Math.floor(performance.now() / 180) % Math.max(1, frames);
   return { doc, frameIdx, clip };
 });
+
+// Painted player sprite (authored in the editor, e.g. imported from PixelLab).
+// When present and painted it overrides the procedural character for all players.
+// Stored under docs.player so the same sheet file can hold variants later.
+let PLAYER_SPRITE: SpriteDoc | null = null;
+{
+  const docs = (playerSpriteData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
+  const raw = docs.player;
+  if (raw) {
+    const doc = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
+    if (docHasPaint(doc)) PLAYER_SPRITE = doc;
+  }
+}
+
+/**
+ * Draw the painted player sprite centred at (cx, cy) — the character's feet.
+ * Returns true if a sprite was drawn, false to fall back to procedural art.
+ */
+function drawPlayerSprite(
+  ctx: CanvasRenderingContext2D, cx: number, cy: number, facing: Facing, moving: boolean,
+): boolean {
+  const doc = PLAYER_SPRITE;
+  if (!doc) return false;
+  const clip = doc.animations.walk && moving ? "walk"
+    : doc.animations.idle ? "idle" : doc.defaultClip;
+  const frameCount = doc.animations[clip]?.facings[facing]?.length ?? 1;
+  const frameIdx = moving ? Math.floor(performance.now() / 150) % Math.max(1, frameCount) : 0;
+  const px = renderFrame(doc, clip, facing, frameIdx, {});
+  // Scale so the sprite stands ~2 tiles tall, anchored at the feet.
+  const scale = (TILE_SIZE * 2) / doc.h;
+  const ox = cx - (doc.w * scale) / 2;
+  const oy = cy - doc.h * scale + TILE_SIZE * 0.45; // feet near cy
+  for (let y = 0; y < doc.h; y++) {
+    for (let x = 0; x < doc.w; x++) {
+      const c = px[y * doc.w + x];
+      if (!c) continue;
+      ctx.fillStyle = c;
+      ctx.fillRect(Math.floor(ox + x * scale), Math.floor(oy + y * scale),
+        Math.ceil(scale), Math.ceil(scale));
+    }
+  }
+  return true;
+}
 
 const ANIM_G = animData as Record<string, number>;
 const JUMP_HEIGHT = ANIM_G.jumpHeight ?? 0.8;
@@ -2853,7 +2897,10 @@ export class Game {
       weapon: p.equipped,
       attack,
     };
-    drawCharacterPixel(ctx, sx + swayX, sy + jumpOffset - researchBob, p.appearance, pixelOpts);
+    if (!drawPlayerSprite(ctx, sx + swayX, sy + jumpOffset - researchBob,
+        pixelOpts.facing as Facing, gait.moving)) {
+      drawCharacterPixel(ctx, sx + swayX, sy + jumpOffset - researchBob, p.appearance, pixelOpts);
+    }
 
     // Leaf shimmer overlay when hiding (environment-blend effect).
     if (p.hiding) {
