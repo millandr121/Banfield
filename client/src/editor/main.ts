@@ -9,7 +9,7 @@ import {
   Facing, FACINGS, SpriteDoc, SpriteFrame, AnimationClip, DyeRole, DYE_ROLES, Tints,
   newSpriteDoc, newCreatureDoc, emptyFrame, emptyPixels, compositeFrame, normalizeLayers, renderFrame,
   docHasPaint, CREATURE_W, CREATURE_H, getClip, listClips, addClip, deleteClip,
-  CHAR_CLIPS, CREATURE_CLIPS, PROP_CLIPS,
+  CHAR_CLIPS, CREATURE_CLIPS, PROP_CLIPS, DEFAULT_DYES,
 } from "../../../shared/sprite";
 import baseChar from "../assets/base-character.json";
 import rawItemSheet from "../assets/item-sprites.json";
@@ -1596,6 +1596,218 @@ $("btn-new-sprite")?.addEventListener("click", () => {
   }
   ($<HTMLInputElement>("new-sprite-name")).value = "";
 });
+
+// ── PixelLab PNG importer ─────────────────────────────────────────────────────
+// PixelLab v3 facing order (south-first, clockwise):
+// row/col 0=S=down  1=SE=downright  2=E=right   3=NE=upright
+//         4=N=up    5=NW=upleft     6=W=left    7=SW=downleft
+const PL_FACING_MAP: Facing[] = [
+  "down", "downright", "right", "upright", "up", "upleft", "left", "downleft",
+];
+
+let pliImageBitmap: ImageBitmap | null = null;
+let pliImgW = 0;
+let pliImgH = 0;
+
+function pliGetEl<T extends HTMLElement>(id: string) { return document.getElementById(id) as T; }
+function pliNum(id: string) { return parseInt((pliGetEl<HTMLInputElement>(id)).value) || 0; }
+function pliStr(id: string) { return (pliGetEl<HTMLInputElement>(id)).value.trim(); }
+
+function pliFrameWH() { return { fw: pliNum("pli-fw"), fh: pliNum("pli-fh"), nf: pliNum("pli-nf") }; }
+function pliFacingsInRows() { return (pliGetEl<HTMLInputElement>("pli-axis-rows")).checked; }
+
+/** Draw the source sheet onto the preview canvas with a coloured grid overlay. */
+function pliRedrawPreview() {
+  const canvas = pliGetEl<HTMLCanvasElement>("pli-preview");
+  if (!pliImageBitmap) return;
+  const { fw, fh, nf } = pliFrameWH();
+  const facingsInRows = pliFacingsInRows();
+  const SCALE = Math.max(1, Math.min(4, Math.floor(300 / Math.max(pliImgW, pliImgH))));
+  canvas.width = pliImgW * SCALE;
+  canvas.height = pliImgH * SCALE;
+  const ctx = canvas.getContext("2d")!;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(pliImageBitmap, 0, 0, pliImgW * SCALE, pliImgH * SCALE);
+
+  if (fw > 0 && fh > 0) {
+    ctx.lineWidth = 1;
+    // Draw facing rows/cols in teal, frame cols/rows in gold
+    const facingCount = 8;
+    for (let fi = 0; fi < facingCount; fi++) {
+      for (let fr = 0; fr < nf; fr++) {
+        const col = facingsInRows ? fr : fi;
+        const row = facingsInRows ? fi : fr;
+        const x = col * fw * SCALE;
+        const y = row * fh * SCALE;
+        ctx.strokeStyle = fr === 0 ? "rgba(127,255,212,.8)" : "rgba(255,213,79,.5)";
+        ctx.strokeRect(x + 0.5, y + 0.5, fw * SCALE - 1, fh * SCALE - 1);
+        // Label first frame of each facing
+        if (fr === 0 && fw * SCALE >= 16) {
+          const label = ["S","SE","E","NE","N","NW","W","SW"][fi] ?? "";
+          ctx.fillStyle = "rgba(127,255,212,.9)";
+          ctx.font = `${Math.max(8, Math.min(14, fw * SCALE / 4))}px monospace`;
+          ctx.fillText(label, x + 2, y + 12);
+        }
+      }
+    }
+  }
+
+  const status = fw > 0 && fh > 0
+    ? `Sheet ${pliImgW}×${pliImgH} → ${facingsInRows ? "8 rows" : "8 cols"} × ${nf} frame(s) @ ${fw}×${fh}px`
+    : "Set frame size above";
+  pliGetEl("pli-status").textContent = status;
+}
+
+/** Convert one tile from the source bitmap to a flat hex pixel array. */
+function pliExtractPixels(src: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): string[] {
+  const d = src.getImageData(x, y, w, h).data;
+  const out: string[] = new Array(w * h).fill("");
+  for (let i = 0; i < w * h; i++) {
+    const a = d[i * 4 + 3];
+    if (a < 10) continue;
+    const r = d[i * 4].toString(16).padStart(2, "0");
+    const g = d[i * 4 + 1].toString(16).padStart(2, "0");
+    const b = d[i * 4 + 2].toString(16).padStart(2, "0");
+    out[i] = `#${r}${g}${b}`;
+  }
+  return out;
+}
+
+/** Actually run the import and update charDoc. */
+function pliDoImport() {
+  if (!pliImageBitmap) return;
+  const { fw, fh, nf } = pliFrameWH();
+  if (!fw || !fh || !nf) { alert("Set frame size first."); return; }
+
+  const name = pliStr("pli-name") || "imported";
+  const clipName = pliStr("pli-clip") || "idle";
+  const facingsInRows = pliFacingsInRows();
+
+  // Rasterize source onto offscreen canvas
+  const offscreen = document.createElement("canvas");
+  offscreen.width = pliImgW; offscreen.height = pliImgH;
+  const src = offscreen.getContext("2d")!;
+  src.imageSmoothingEnabled = false;
+  src.drawImage(pliImageBitmap, 0, 0);
+
+  // Build a fresh SpriteDoc at the PixelLab native size
+  const newDoc = newSpriteDoc(name, fw, fh, ["skin", "hair", "shirt", "pants", "accessory"], DEFAULT_DYES, [clipName]);
+  const clip = newDoc.animations[clipName];
+  clip.fps = 6; clip.loop = true;
+
+  for (let fi = 0; fi < 8; fi++) {
+    const facing = PL_FACING_MAP[fi];
+    clip.facings[facing] = [];
+    for (let fr = 0; fr < nf; fr++) {
+      const col = facingsInRows ? fr : fi;
+      const row = facingsInRows ? fi : fr;
+      const px = pliExtractPixels(src, col * fw, row * fh, fw, fh);
+      const frame: SpriteFrame = { layers: [px, ...Array.from({ length: 4 }, () => emptyPixels(fw, fh))] };
+      clip.facings[facing].push(frame);
+    }
+  }
+
+  // Replace charDoc and switch editor to it
+  charDoc = newDoc;
+  doc = charDoc;
+  currentClip = clipName;
+  facing = "down"; frameIdx = 0; layerIdx = 0;
+  layerVisible = doc.layerNames.map(() => true);
+  ($<HTMLInputElement>("docname")).value = name;
+  saveToStorage();
+  category = "characters";
+  charSubject = "player";
+  ($("category-select") as unknown as HTMLSelectElement).value = "characters";
+
+  // Close modal and refresh
+  pliGetEl("pli-modal").style.display = "none";
+  flash(`Imported "${name}" — ${8} facings × ${nf} frame(s) on skin layer ✓`);
+  buildSubjectGrid();
+  updateUI();
+}
+
+// ── Wire up PixelLab modal ────────────────────────────────────────────────────
+function pliApplyPreset(facingsInRows: boolean, fw: number, fh: number, nf: number) {
+  (pliGetEl<HTMLInputElement>("pli-fw")).value = String(fw);
+  (pliGetEl<HTMLInputElement>("pli-fh")).value = String(fh);
+  (pliGetEl<HTMLInputElement>("pli-nf")).value = String(nf);
+  (pliGetEl<HTMLInputElement>(facingsInRows ? "pli-axis-rows" : "pli-axis-cols")).checked = true;
+  pliRedrawPreview();
+}
+
+function pliOpenModal() {
+  const modal = pliGetEl("pli-modal");
+  modal.style.display = "flex";
+  pliImageBitmap = null;
+  pliGetEl("pli-preview-wrap").style.display = "none";
+  (pliGetEl<HTMLElement>("pli-settings") as HTMLElement).style.display = "none";
+  (pliGetEl<HTMLButtonElement>("pli-import")).disabled = true;
+  pliGetEl("pli-filename").textContent = "No file chosen";
+}
+
+$("btn-pixellab")?.addEventListener("click", pliOpenModal);
+$("pli-close")?.addEventListener("click", () => { pliGetEl("pli-modal").style.display = "none"; });
+$("pli-cancel")?.addEventListener("click", () => { pliGetEl("pli-modal").style.display = "none"; });
+
+$("pli-choose")?.addEventListener("click", () => pliGetEl<HTMLInputElement>("pli-file").click());
+
+$("pli-file")?.addEventListener("change", async (e) => {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  if (!file) return;
+  pliGetEl("pli-filename").textContent = file.name;
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = async () => {
+    pliImgW = img.naturalWidth;
+    pliImgH = img.naturalHeight;
+    pliImageBitmap = await createImageBitmap(img);
+    URL.revokeObjectURL(url);
+
+    // Auto-guess frame size: assume 8 facings in rows
+    const guessH = Math.floor(pliImgH / 8);
+    const guessW = pliImgW; // single frame wide by default
+    (pliGetEl<HTMLInputElement>("pli-fw")).value = String(guessW);
+    (pliGetEl<HTMLInputElement>("pli-fh")).value = String(guessH);
+    (pliGetEl<HTMLInputElement>("pli-nf")).value = "1";
+
+    // Guess layout: if taller than wide → likely rows=facings
+    if (pliImgH > pliImgW) {
+      (pliGetEl<HTMLInputElement>("pli-axis-rows")).checked = true;
+    } else {
+      (pliGetEl<HTMLInputElement>("pli-axis-cols")).checked = true;
+      (pliGetEl<HTMLInputElement>("pli-fw")).value = String(Math.floor(pliImgW / 8));
+      (pliGetEl<HTMLInputElement>("pli-fh")).value = String(pliImgH);
+    }
+
+    pliGetEl("pli-preview-wrap").style.display = "block";
+    (pliGetEl<HTMLElement>("pli-settings") as HTMLElement).style.display = "flex";
+    (pliGetEl<HTMLButtonElement>("pli-import")).disabled = false;
+
+    // Default name from filename
+    const base = file.name.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ");
+    (pliGetEl<HTMLInputElement>("pli-name")).value = base || "imported";
+
+    pliRedrawPreview();
+  };
+  img.src = url;
+});
+
+// Redraw preview when settings change
+["pli-fw","pli-fh","pli-nf"].forEach(id =>
+  pliGetEl<HTMLInputElement>(id).addEventListener("input", pliRedrawPreview));
+pliGetEl<HTMLInputElement>("pli-axis-rows").addEventListener("change", pliRedrawPreview);
+pliGetEl<HTMLInputElement>("pli-axis-cols").addEventListener("change", pliRedrawPreview);
+
+$("pli-preset-v3rows")?.addEventListener("click", () => {
+  if (!pliImageBitmap) return;
+  pliApplyPreset(true, pliImgW, Math.floor(pliImgH / 8), 1);
+});
+$("pli-preset-v3cols")?.addEventListener("click", () => {
+  if (!pliImageBitmap) return;
+  pliApplyPreset(false, Math.floor(pliImgW / 8), pliImgH, 1);
+});
+
+$("pli-import")?.addEventListener("click", pliDoImport);
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 function refreshAll() {

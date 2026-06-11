@@ -134,6 +134,7 @@
         <button id="btn-export">Export JSON</button>
         <button id="btn-import">Import</button>
         <button id="btn-png">PNG sheet</button>
+        <button id="btn-pixellab" style="background:#1a4a3a;border-color:#2e8b6e;color:#7fffd4" title="Import a PixelLab sprite sheet PNG">⬇ PixelLab</button>
         <input type="file" id="file-import" accept="application/json" hidden />
       </div>
 
@@ -321,5 +322,98 @@
       </div>
     </main>
     <script type="module" src="/src/editor/main.ts"></script>
+
+    <!-- PixelLab import modal -->
+    <div id="pli-modal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.78);align-items:center;justify-content:center">
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;width:600px;max-height:92vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px">
+
+        <div style="display:flex;align-items:center;gap:8px">
+          <h2 style="margin:0;font-size:14px;color:#7fffd4">⬇ Import PixelLab PNG</h2>
+          <button id="pli-close" style="margin-left:auto">✕</button>
+        </div>
+
+        <p style="margin:0;font-size:11px;color:var(--muted)">
+          Upload the PNG sprite sheet from PixelLab. Pixels land on the <strong>skin</strong> layer — other layers stay empty for you to paint clothing on top.
+        </p>
+
+        <!-- File pick -->
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="pli-choose">Choose PNG</button>
+          <input type="file" id="pli-file" accept="image/*" hidden />
+          <span id="pli-filename" style="font-size:11px;color:var(--muted)">No file chosen</span>
+        </div>
+
+        <!-- Sheet preview with grid overlay -->
+        <div id="pli-preview-wrap" style="display:none;overflow:auto;max-height:260px;border:1px solid var(--border);border-radius:6px;background:#0c1820;position:relative">
+          <canvas id="pli-preview" style="image-rendering:pixelated;display:block"></canvas>
+        </div>
+
+        <!-- Settings (hidden until file loaded) -->
+        <div id="pli-settings" style="display:none;flex-direction:column;gap:9px">
+
+          <!-- Presets -->
+          <div class="row" style="gap:6px">
+            <span style="font-size:11px;color:var(--muted);flex-shrink:0">Preset:</span>
+            <button id="pli-preset-v3rows" style="font-size:11px;background:#1a3a2a;border-color:#2e8b6e">v3 — 8 rows (facings top→bottom)</button>
+            <button id="pli-preset-v3cols" style="font-size:11px">v3 — 8 cols (facings left→right)</button>
+          </div>
+
+          <!-- Frame dimensions + count -->
+          <div class="row" style="gap:12px">
+            <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+              <span>Frame W</span>
+              <input type="number" id="pli-fw" value="48" min="1" max="512"
+                style="width:56px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 5px" />
+            </label>
+            <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+              <span>Frame H</span>
+              <input type="number" id="pli-fh" value="48" min="1" max="512"
+                style="width:56px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 5px" />
+            </label>
+            <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+              <span>Frames/clip</span>
+              <input type="number" id="pli-nf" value="1" min="1" max="64"
+                style="width:48px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 5px" />
+            </label>
+          </div>
+
+          <!-- Layout: which axis = facings -->
+          <div class="row" style="gap:12px">
+            <span style="font-size:11px;color:var(--muted)">Facings along:</span>
+            <label style="font-size:11px"><input type="radio" name="pli-axis" id="pli-axis-rows" value="rows" checked /> Rows (↕)</label>
+            <label style="font-size:11px"><input type="radio" name="pli-axis" id="pli-axis-cols" value="cols" /> Columns (↔)</label>
+          </div>
+
+          <!-- Facing order info -->
+          <div style="font-size:10px;color:var(--muted);background:var(--panel2);border-radius:5px;padding:6px 8px">
+            Facing order assumed: S(↓) · SE(↘) · E(→) · NE(↗) · N(↑) · NW(↖) · W(←) · SW(↙)
+            — matches PixelLab v3 default.
+          </div>
+
+          <!-- Names -->
+          <div class="row" style="gap:12px">
+            <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+              <span>Clip name</span>
+              <input type="text" id="pli-clip" value="idle"
+                style="width:80px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 5px" />
+            </label>
+            <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+              <span>Character name</span>
+              <input type="text" id="pli-name" value="imported"
+                style="width:120px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 5px" />
+            </label>
+          </div>
+
+          <!-- Status line -->
+          <div id="pli-status" style="font-size:11px;color:var(--muted)">Ready</div>
+        </div>
+
+        <!-- Actions -->
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+          <button id="pli-cancel">Cancel</button>
+          <button id="pli-import" disabled style="background:#1a4a3a;border-color:#2e8b6e;color:#7fffd4">Import as player character</button>
+        </div>
+      </div>
+    </div>
   </body>
 </html>
