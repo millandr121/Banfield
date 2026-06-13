@@ -19,6 +19,7 @@ import rawCreatureSheet from "../assets/creature-sprites.json";
 import rawClothingSheet from "../assets/clothing-sprites.json";
 import rawObjectSheet from "../assets/object-sprites.json";
 import rawNpcSheet from "../assets/npc-sprites.json";
+import rawTerrainSprites from "../assets/terrain-sprites.json";
 import { drawCharacterPixel, rasterizeCharacterToPixels } from "../pixelchar";
 import { drawFullCreature, rasterizeCreatureToPixels, setCreatureDocProvider } from "../creatures";
 import type { Appearance } from "../../../shared/protocol";
@@ -33,7 +34,7 @@ let charSubject = ""; // will be set to playerSheet.active once playerSheet is l
 function isSpriteMode(): boolean {
   // Everything except flat items and terrain colours is a paintable sprite —
   // player, NPCs, creatures, clothing and objects all share the paint pipeline.
-  return category !== "items" && category !== "terrain";
+  return category !== "items" && (category !== "terrain" || !!editingTerrainTile);
 }
 
 // ── Terrain settings state ────────────────────────────────────────────────────
@@ -50,6 +51,51 @@ function loadTerrainSettings(): TerrainSettings {
   return { colors: { ...TERRAIN_DEFAULTS } };
 }
 function saveTerrainSettings() { localStorage.setItem(TERRAIN_KEY, JSON.stringify(terrainSettings)); }
+
+// ── Terrain sprite sheet (pixel art per tile type) ─────────────────────────
+interface TerrainSpriteSheet { version: number; tileSize: number; docs: Record<string, SpriteDoc>; }
+const TERRAIN_SPRITES_KEY = "banfield-terrain-sprites";
+const TERRAIN_TILE_SIZE = 24; // art pixels per tile
+const TERRAIN_TILE_TYPES = ["grass", "forest", "sand", "hill", "rock", "road", "water", "freshwater", "dock"];
+const TERRAIN_TILE_LABELS: Record<string, string> = {
+  grass: "Grass", forest: "Forest", sand: "Sand", hill: "Hill",
+  rock: "Rock", road: "Road", water: "Ocean Water", freshwater: "Fresh Water", dock: "Dock",
+};
+let terrainSpriteSheet: TerrainSpriteSheet = loadTerrainSpriteSheet();
+let editingTerrainTile: string | null = null;
+
+function loadTerrainSpriteSheet(): TerrainSpriteSheet {
+  let base = JSON.parse(JSON.stringify(rawTerrainSprites)) as TerrainSpriteSheet;
+  try {
+    const raw = localStorage.getItem(TERRAIN_SPRITES_KEY);
+    if (raw) base = JSON.parse(raw) as TerrainSpriteSheet;
+  } catch { /* ignore */ }
+  if (!base.docs) base.docs = {};
+  if (!base.tileSize) base.tileSize = TERRAIN_TILE_SIZE;
+  for (const k of Object.keys(base.docs)) base.docs[k] = normalizeLayers(base.docs[k]);
+  return base;
+}
+function saveTerrainSpriteSheet() { localStorage.setItem(TERRAIN_SPRITES_KEY, JSON.stringify(terrainSpriteSheet)); }
+
+function terrainTileDocFor(tileKey: string): SpriteDoc {
+  if (!terrainSpriteSheet.docs[tileKey]) {
+    const T = terrainSpriteSheet.tileSize ?? TERRAIN_TILE_SIZE;
+    terrainSpriteSheet.docs[tileKey] = newSpriteDoc(TERRAIN_TILE_LABELS[tileKey] ?? tileKey, T, T, ["base", "overlay"], ["none", "none"], ["idle"]);
+  }
+  return terrainSpriteSheet.docs[tileKey];
+}
+
+function selectTerrainTile(tileKey: string) {
+  editingTerrainTile = tileKey;
+  editingCreature = null; editingClothing = null; editingObject = null; editingNpc = null;
+  doc = terrainTileDocFor(tileKey);
+  currentClip = doc.defaultClip;
+  facing = "down"; frameIdx = 0; layerIdx = 0; previewFrame = 0;
+  layerVisible = doc.layerNames.map(() => true);
+  onionRefPixels = null;
+  buildSubjectGrid();
+  updateUI();
+}
 
 // ── Item sprites state ────────────────────────────────────────────────────────
 interface ItemSheet { version: number; size: number; icons: Record<string, string[]>; }
@@ -331,6 +377,7 @@ function ensureClip() {
 }
 
 function saveToStorage() {
+  if (editingTerrainTile) { saveTerrainSpriteSheet(); return; }
   if (editingCreature) { saveCreatureSheet(); return; }
   if (editingClothing) { saveClothingSheet(); return; }
   if (editingObject) { saveObjectSheet(); return; }
@@ -1267,7 +1314,7 @@ function updateUI() {
   // Header ops
   show("paint-ops",           isPaint && !isNPC,                                "flex");
   show("item-ops",            isItem,                                           "flex");
-  show("terrain-ops",         isTerrain,                                        "flex");
+  show("terrain-ops",         isTerrain && !editingTerrainTile,                 "flex");
   show("npc-ops",             isNPC,                                            "flex");
   show("creature-extra-ops",  category === "creatures" && !!editingCreature,    "flex");
   show("clothing-ops",        category === "clothing",                          "flex");
@@ -1283,7 +1330,7 @@ function updateUI() {
   show("item-preview-wrap",   isItem);
   show("canvas-placeholder",  !isPaint && !isItem && !isTerrain);
   show("npc-stage-wrap",      false,     "flex");
-  show("terrain-stage-wrap",  isTerrain, "flex");
+  show("terrain-stage-wrap",  isTerrain && !editingTerrainTile, "flex");
 
   // Timeline
   show("timeline", isPaint);
@@ -1307,7 +1354,8 @@ function updateUI() {
   // Update subject title
   const titleEl = document.getElementById("subject-title");
   if (titleEl) {
-    if (editingCreature) titleEl.textContent = CREATURE_DISPLAY[editingCreature] ?? editingCreature;
+    if (editingTerrainTile) titleEl.textContent = TERRAIN_TILE_LABELS[editingTerrainTile] ?? editingTerrainTile;
+    else if (editingCreature) titleEl.textContent = CREATURE_DISPLAY[editingCreature] ?? editingCreature;
     else if (editingClothing) titleEl.textContent = CLOTHING_DISPLAY[editingClothing] ?? editingClothing;
     else if (editingObject) titleEl.textContent = OBJECT_DISPLAY[editingObject] ?? editingObject;
     else if (isNPC) titleEl.textContent = NPC_DISPLAY[charSubject] ?? charSubject;
@@ -1343,6 +1391,7 @@ function setCategory(c: Category) {
     }
   }
   if (c !== "characters") editingNpc = null;
+  if (c !== "terrain") editingTerrainTile = null;
 
   buildSubjectGrid();
 
@@ -1533,13 +1582,10 @@ const terrainPctx = terrainCanvas?.getContext("2d");
 
 function buildTerrainRows() {
   // For terrain category, terrain rows go in subject-scroll
-  let wrap: HTMLElement;
-  if (category === "terrain") {
-    wrap = $("subject-scroll");
-    wrap.innerHTML = "";
-  } else {
-    wrap = $("subject-scroll");
-  }
+  const wrap = $("subject-scroll");
+  wrap.innerHTML = "";
+
+  // Color picker rows
   for (const [key, label] of Object.entries(TERRAIN_LABELS)) {
     const row = document.createElement("div");
     row.className = "terrain-row";
@@ -1560,6 +1606,48 @@ function buildTerrainRows() {
     row.appendChild(swatch); row.appendChild(lbl); row.appendChild(inp);
     wrap.appendChild(row);
   }
+
+  // Separator
+  const sep = document.createElement("div");
+  sep.style.cssText = "margin:8px 0 4px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em";
+  sep.textContent = "Pixel tile sprites";
+  wrap.appendChild(sep);
+
+  // Terrain tile subject cards (like objects grid)
+  const grid = document.createElement("div");
+  grid.style.cssText = "display:grid;grid-template-columns:repeat(2,1fr);gap:6px";
+  for (const tileKey of TERRAIN_TILE_TYPES) {
+    const card = document.createElement("div");
+    card.className = "subj-card" + (tileKey === editingTerrainTile ? " sel" : "");
+    const c = document.createElement("canvas");
+    c.width = 60; c.height = 60;
+    const cx2 = c.getContext("2d")!;
+    const baseCol = terrainSettings.colors[tileKey] ?? TERRAIN_DEFAULTS[tileKey] ?? "#888";
+    cx2.fillStyle = baseCol;
+    cx2.fillRect(0, 0, 60, 60);
+    const d = terrainSpriteSheet.docs[tileKey];
+    if (d && docHasPaint(d)) {
+      const scale = Math.floor(60 / Math.max(d.w, d.h));
+      const frame = d.animations[d.defaultClip]?.facings.down?.[0];
+      if (frame) {
+        const px = compositeFrame(frame, d.layerNames.map(() => true), d.w, d.h);
+        cx2.save(); cx2.translate((60 - d.w * scale) / 2, (60 - d.h * scale) / 2);
+        paintPixels(cx2, px, scale, d.w, d.h);
+        cx2.restore();
+      }
+      cx2.fillStyle = "#ffd54f"; cx2.font = "8px system-ui"; cx2.textAlign = "right";
+      cx2.fillText("✎", 58, 10);
+    }
+    const lbl2 = document.createElement("div");
+    lbl2.className = "subj-label";
+    lbl2.textContent = TERRAIN_TILE_LABELS[tileKey] ?? tileKey;
+    card.style.cursor = "pointer";
+    card.appendChild(c); card.appendChild(lbl2);
+    card.addEventListener("click", () => selectTerrainTile(tileKey));
+    grid.appendChild(card);
+  }
+  wrap.appendChild(grid);
+
   renderTerrainPreview();
 }
 
@@ -1728,6 +1816,20 @@ $("btn-terrain-reset")?.addEventListener("click", () => {
   saveTerrainSettings();
   buildSubjectGrid();
   flash("Terrain reset to defaults ✓");
+});
+
+$("btn-terrain-sprites-save")?.addEventListener("click", async () => {
+  saveTerrainSpriteSheet();
+  const out: TerrainSpriteSheet = { version: 1, tileSize: terrainSpriteSheet.tileSize, docs: {} };
+  for (const [k, d] of Object.entries(terrainSpriteSheet.docs)) if (docHasPaint(d)) out.docs[k] = d;
+  try {
+    await fetch("/api/save-asset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "terrain-sprites.json", data: out }),
+    });
+    flash("Terrain sprites saved to game ✓");
+  } catch { flash("Terrain sprites saved (localStorage only)"); }
 });
 
 // ── New sprite creation ────────────────────────────────────────────────────────

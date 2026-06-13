@@ -10,6 +10,7 @@ import {
   ITEM_IDS,
   ITEM_LABEL,
   WornSlot,
+  WornItems,
   SLOT_FOR_ITEM,
   ItemId,
   LootDrop,
@@ -49,7 +50,10 @@ import { drawFullCreature, drawCreatureSprite, MARINE_KINDS, setCreatureDocProvi
 import creatureSpriteData from "./assets/creature-sprites.json";
 import playerSpriteData from "./assets/player-sprite.json";
 import npcSpriteData from "./assets/npc-sprites.json";
-import { SpriteDoc, normalizeLayers, docHasPaint, renderFrame } from "../../shared/sprite";
+import clothingSpriteData from "./assets/clothing-sprites.json";
+import objectSpriteData from "./assets/object-sprites.json";
+import terrainSpritesData from "./assets/terrain-sprites.json";
+import { SpriteDoc, normalizeLayers, docHasPaint, renderFrame, compositeFrame } from "../../shared/sprite";
 
 // Painted creature sprite-docs (authored in the editor). Empty docs fall back
 // to the procedural vector art. Each kind animates through its "down" frames.
@@ -98,47 +102,146 @@ const PAINTED_NPCS = new Map<string, SpriteDoc>();
   }
 }
 
-/** Shared sprite blitter: draws a SpriteDoc frame centred on (cx,cy) feet. */
+const PAINTED_CLOTHING = new Map<string, SpriteDoc>();
+{
+  const docs = (clothingSpriteData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
+  for (const [kind, raw] of Object.entries(docs)) {
+    const doc = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
+    if (docHasPaint(doc)) PAINTED_CLOTHING.set(kind, doc);
+  }
+}
+
+const PAINTED_OBJECTS = new Map<string, SpriteDoc>();
+{
+  const docs = (objectSpriteData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
+  for (const [kind, raw] of Object.entries(docs)) {
+    const doc = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
+    if (docHasPaint(doc)) PAINTED_OBJECTS.set(kind, doc);
+  }
+}
+
+// Terrain tiles pre-rendered to OffscreenCanvas for fast drawImage per-tile.
+const TERRAIN_SPRITE_CACHE = new Map<string, OffscreenCanvas>();
+{
+  const tileSize = (terrainSpritesData as { tileSize?: number }).tileSize ?? TILE_SIZE;
+  const docs = (terrainSpritesData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
+  for (const [key, raw] of Object.entries(docs)) {
+    const doc = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
+    if (!docHasPaint(doc)) continue;
+    const frame = doc.animations[doc.defaultClip]?.facings.down?.[0];
+    if (!frame) continue;
+    const px = compositeFrame(frame, doc.layerNames.map(() => true), doc.w, doc.h);
+    const oc = new OffscreenCanvas(TILE_SIZE, TILE_SIZE);
+    const octx = oc.getContext("2d")!;
+    const scale = TILE_SIZE / doc.w;
+    for (let ty = 0; ty < doc.h; ty++) {
+      for (let tx = 0; tx < doc.w; tx++) {
+        const c = px[ty * doc.w + tx];
+        if (!c) continue;
+        octx.fillStyle = c;
+        octx.fillRect(Math.floor(tx * scale), Math.floor(ty * scale), Math.ceil(scale), Math.ceil(scale));
+      }
+    }
+    TERRAIN_SPRITE_CACHE.set(key, oc);
+  }
+  void tileSize; // suppress unused-variable warning
+}
+
+// Map Tile enum to terrain sprite key
+const TILE_SPRITE_KEY: Partial<Record<number, string>> = {
+  [Tile.Grass]: "grass", [Tile.Forest]: "forest", [Tile.Sand]: "sand",
+  [Tile.Hill]: "hill", [Tile.Rock]: "rock", [Tile.Road]: "road",
+  [Tile.Dock]: "dock",
+};
+
+/** Shared sprite blitter: draws a SpriteDoc frame centred on (cx,cy) feet. overlays are composited on top (clothing). */
 function drawSpriteDoc(
   ctx: CanvasRenderingContext2D, cx: number, cy: number,
   doc: SpriteDoc, facing: Facing, moving: boolean,
+  overlays?: SpriteDoc[],
 ): void {
   const clip = doc.animations.walk && moving ? "walk"
     : doc.animations.idle ? "idle" : doc.defaultClip;
   const frameCount = doc.animations[clip]?.facings[facing]?.length ?? 1;
-  const frameIdx = moving ? Math.floor(performance.now() / 150) % Math.max(1, frameCount) : 0;
-  const px = renderFrame(doc, clip, facing, frameIdx, {});
-  const scale = (TILE_SIZE * 2) / doc.h;          // ~2 tiles tall
+  const fps = doc.animations[clip]?.fps ?? 6;
+  const frameIdx = moving ? Math.floor(performance.now() / (1000 / Math.max(1, fps))) % Math.max(1, frameCount) : 0;
+  const px = [...renderFrame(doc, clip, facing, frameIdx, {})];
+
+  // Composite any worn clothing layers on top
+  if (overlays && overlays.length > 0) {
+    for (const overlay of overlays) {
+      if (overlay.w !== doc.w || overlay.h !== doc.h) continue;
+      const oclip = overlay.animations.walk && moving ? "walk"
+        : overlay.animations.idle ? "idle" : overlay.defaultClip;
+      const oFrameCount = overlay.animations[oclip]?.facings[facing]?.length ?? 1;
+      const oFrameIdx = frameIdx % Math.max(1, oFrameCount);
+      const opx = renderFrame(overlay, oclip, facing, oFrameIdx, {});
+      for (let i = 0; i < px.length; i++) { if (opx[i]) px[i] = opx[i]; }
+    }
+  }
+
+  const scale = (TILE_SIZE * 2) / doc.h;
   const ox = cx - (doc.w * scale) / 2;
-  const oy = cy - doc.h * scale + TILE_SIZE * 0.45; // feet near cy
+  const oy = cy - doc.h * scale + TILE_SIZE * 0.45;
   for (let y = 0; y < doc.h; y++) {
     for (let x = 0; x < doc.w; x++) {
       const c = px[y * doc.w + x];
       if (!c) continue;
       ctx.fillStyle = c;
-      ctx.fillRect(Math.floor(ox + x * scale), Math.floor(oy + y * scale),
-        Math.ceil(scale), Math.ceil(scale));
+      ctx.fillRect(Math.floor(ox + x * scale), Math.floor(oy + y * scale), Math.ceil(scale), Math.ceil(scale));
     }
   }
 }
 
+function wornClothingDocs(worn?: WornItems): SpriteDoc[] {
+  if (!worn) return [];
+  const docs: SpriteDoc[] = [];
+  for (const slot of ["legs", "torso", "head", "back"] as const) {
+    const itemId = worn[slot];
+    if (!itemId) continue;
+    const d = PAINTED_CLOTHING.get(itemId);
+    if (d) docs.push(d);
+  }
+  return docs;
+}
+
 /** Draw the painted player sprite. Returns true if drawn, false to fall back. */
 function drawPlayerSprite(
-  ctx: CanvasRenderingContext2D, cx: number, cy: number, facing: Facing, moving: boolean,
+  ctx: CanvasRenderingContext2D, cx: number, cy: number, facing: Facing, moving: boolean, worn?: WornItems,
 ): boolean {
   if (!PLAYER_SPRITE) return false;
-  drawSpriteDoc(ctx, cx, cy, PLAYER_SPRITE, facing, moving);
+  drawSpriteDoc(ctx, cx, cy, PLAYER_SPRITE, facing, moving, wornClothingDocs(worn));
   return true;
 }
 
 /** Draw a painted NPC sprite for the given kind. Returns true if drawn. */
 function drawNpcSprite(
-  ctx: CanvasRenderingContext2D, cx: number, cy: number, kind: string, facing: Facing, moving: boolean,
+  ctx: CanvasRenderingContext2D, cx: number, cy: number, kind: string, facing: Facing, moving: boolean, worn?: WornItems,
 ): boolean {
   const doc = PAINTED_NPCS.get(kind);
   if (!doc) return false;
-  drawSpriteDoc(ctx, cx, cy, doc, facing, moving);
+  drawSpriteDoc(ctx, cx, cy, doc, facing, moving, wornClothingDocs(worn));
   return true;
+}
+
+/** Draw a painted object sprite, anchored at its base, scaled to fit its natural tile footprint. */
+function drawObjectSprite(ctx: CanvasRenderingContext2D, cx: number, cy: number, doc: SpriteDoc): void {
+  const scale = TILE_SIZE / Math.min(doc.w, doc.h);
+  const clip = doc.animations.idle ? "idle" : doc.defaultClip;
+  const fps = doc.animations[clip]?.fps ?? 4;
+  const frames = doc.animations[clip]?.facings.down?.length ?? 1;
+  const frameIdx = frames > 1 ? Math.floor(performance.now() / (1000 / fps)) % frames : 0;
+  const px = renderFrame(doc, clip, "down", frameIdx, {});
+  const ox = cx - (doc.w * scale) / 2;
+  const oy = cy - doc.h * scale;
+  for (let y = 0; y < doc.h; y++) {
+    for (let x = 0; x < doc.w; x++) {
+      const c = px[y * doc.w + x];
+      if (!c) continue;
+      ctx.fillStyle = c;
+      ctx.fillRect(Math.floor(ox + x * scale), Math.floor(oy + y * scale), Math.ceil(scale), Math.ceil(scale));
+    }
+  }
 }
 
 const ANIM_G = animData as Record<string, number>;
@@ -1460,13 +1563,20 @@ export class Game {
             ctx.fillStyle = `rgba(86,58,33,${(0.1 + 0.3 * wet).toFixed(3)})`;
             ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
           }
-          // Eastward-style tile textures.
-          if (tile === Tile.Grass) drawGrassTexture(ctx, sx, sy, x, y);
-          else if (tile === Tile.Forest) drawForestTexture(ctx, sx, sy, x, y);
-          else if (tile === Tile.Sand) drawSandTexture(ctx, sx, sy, x, y);
-          else if (tile === Tile.Road) drawRoadTexture(ctx, sx, sy, x, y);
-          else if (tile === Tile.Hill) drawHillTexture(ctx, sx, sy, x, y);
-          else if (tile === Tile.Rock) drawRockTexture(ctx, sx, sy, x, y, tile);
+          // Painted terrain sprite overrides procedural texture.
+          const tileKey = TILE_SPRITE_KEY[tile as number];
+          const tileSprite = tileKey ? TERRAIN_SPRITE_CACHE.get(tileKey) : undefined;
+          if (tileSprite) {
+            ctx.drawImage(tileSprite, sx, sy, TILE_SIZE, TILE_SIZE);
+          } else {
+            // Eastward-style procedural tile textures.
+            if (tile === Tile.Grass) drawGrassTexture(ctx, sx, sy, x, y);
+            else if (tile === Tile.Forest) drawForestTexture(ctx, sx, sy, x, y);
+            else if (tile === Tile.Sand) drawSandTexture(ctx, sx, sy, x, y);
+            else if (tile === Tile.Road) drawRoadTexture(ctx, sx, sy, x, y);
+            else if (tile === Tile.Hill) drawHillTexture(ctx, sx, sy, x, y);
+            else if (tile === Tile.Rock) drawRockTexture(ctx, sx, sy, x, y, tile);
+          }
         }
       }
     }
@@ -2472,7 +2582,7 @@ export class Game {
     const npcAppearance: Appearance =
       NPC_LOOKS[n.kind] ?? { skin: "#e0ac69", hair: "#3a2a18", shirt: NPC_COLORS[n.kind] ?? "#607d8b" };
 
-    if (!drawNpcSprite(ctx, sx, sy, n.kind, facing, gait.moving)) {
+    if (!drawNpcSprite(ctx, sx, sy, n.kind, facing, gait.moving, undefined)) {
       drawCharacterPixel(ctx, sx, sy, npcAppearance, {
         facing: facing as PixelCharOpts["facing"],
         phase: gait.phase,
@@ -2937,7 +3047,7 @@ export class Game {
       attack,
     };
     if (!drawPlayerSprite(ctx, sx + swayX, sy + jumpOffset - researchBob,
-        pixelOpts.facing as Facing, gait.moving)) {
+        pixelOpts.facing as Facing, gait.moving, p.appearance?.worn)) {
       drawCharacterPixel(ctx, sx + swayX, sy + jumpOffset - researchBob, p.appearance, pixelOpts);
     }
 
@@ -3794,6 +3904,15 @@ function drawBroadleaf(ctx: CanvasRenderingContext2D, x: number, y: number, R: n
 }
 
 function drawResourceSprite(ctx: CanvasRenderingContext2D, n: ResourceNode, x: number, y: number) {
+  // Check for a painted object sprite (tree variety or generic fallback)
+  if (n.kind === "tree") {
+    const treeKey = `tree_${n.variety ?? ""}`.replace(/_$/, "");
+    const doc = PAINTED_OBJECTS.get(treeKey) ?? PAINTED_OBJECTS.get("tree");
+    if (doc) { drawObjectSprite(ctx, x, y, doc); return; }
+  } else {
+    const doc = PAINTED_OBJECTS.get(n.kind);
+    if (doc) { drawObjectSprite(ctx, x, y, doc); return; }
+  }
   // Trees stand taller than ground resources, for a proper forest canopy.
   // Per-tree size: species base × old-growth spread (giants tower over saplings).
   const spec = n.kind === "tree" ? TREE_SPECS[n.variety ?? ""] : undefined;
@@ -4008,6 +4127,8 @@ function drawPlantSprite(ctx: CanvasRenderingContext2D, pl: PlantState, x: numbe
 }
 
 function drawCampfireSprite(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const doc = PAINTED_OBJECTS.get("campfire");
+  if (doc) { drawObjectSprite(ctx, x, y, doc); return; }
   const t = performance.now() / 140;
   // Log ring
   ctx.strokeStyle = "#5b3a1e";
@@ -4037,6 +4158,8 @@ function drawCampfireSprite(ctx: CanvasRenderingContext2D, x: number, y: number)
 }
 
 function drawFurnaceSprite(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const doc = PAINTED_OBJECTS.get("furnace");
+  if (doc) { drawObjectSprite(ctx, x, y, doc); return; }
   const T = TILE_SIZE;
   const hw = T * 0.44;
   const hh = T * 0.40;
