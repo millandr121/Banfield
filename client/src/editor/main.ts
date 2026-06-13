@@ -32,9 +32,8 @@ let category: Category = "characters";
 let charSubject = ""; // will be set to playerSheet.active once playerSheet is loaded
 
 function isSpriteMode(): boolean {
-  // Everything except flat items and terrain colours is a paintable sprite —
-  // player, NPCs, creatures, clothing and objects all share the paint pipeline.
-  return category !== "items" && (category !== "terrain" || !!editingTerrainTile);
+  // Everything except flat items is a paintable sprite.
+  return category !== "items";
 }
 
 // ── Terrain settings state ────────────────────────────────────────────────────
@@ -1314,7 +1313,7 @@ function updateUI() {
   // Header ops
   show("paint-ops",           isPaint && !isNPC,                                "flex");
   show("item-ops",            isItem,                                           "flex");
-  show("terrain-ops",         isTerrain && !editingTerrainTile,                 "flex");
+  show("terrain-ops",         isTerrain,                                        "flex");
   show("npc-ops",             isNPC,                                            "flex");
   show("creature-extra-ops",  category === "creatures" && !!editingCreature,    "flex");
   show("clothing-ops",        category === "clothing",                          "flex");
@@ -1328,9 +1327,9 @@ function updateUI() {
   // Center canvas
   ($("stage") as HTMLElement).style.display = (isPaint || isItem) ? "" : "none";
   show("item-preview-wrap",   isItem);
-  show("canvas-placeholder",  !isPaint && !isItem && !isTerrain);
+  show("canvas-placeholder",  !isPaint && !isItem);
   show("npc-stage-wrap",      false,     "flex");
-  show("terrain-stage-wrap",  isTerrain && !editingTerrainTile, "flex");
+  show("terrain-stage-wrap",  false,     "flex");
 
   // Timeline
   show("timeline", isPaint);
@@ -1409,7 +1408,10 @@ function setCategory(c: Category) {
     if (!currentItemId && Object.keys(itemSheet.icons).length > 0) selectItem(Object.keys(itemSheet.icons)[0]);
     else if (currentItemId) { sizeStage(); drawStage(); }
   } else if (c === "terrain") {
-    updateUI();
+    // Auto-open the first tile so the pixel editor appears immediately,
+    // same as characters/creatures always auto-select something.
+    const firstTile = editingTerrainTile ?? TERRAIN_TILE_TYPES[0];
+    selectTerrainTile(firstTile);
   }
 }
 
