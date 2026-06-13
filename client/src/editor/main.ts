@@ -1585,7 +1585,58 @@ function buildTerrainRows() {
   const wrap = $("subject-scroll");
   wrap.innerHTML = "";
 
-  // Color picker rows
+  // ── Pixel tile sprites (PRIMARY) ──────────────────────────────────────────
+  // Click a tile to open the full pixel editor and paint its 24×24 art.
+  const hdr = document.createElement("div");
+  hdr.style.cssText = "margin:2px 0 6px;font-size:11px;font-weight:600;color:var(--fg)";
+  hdr.textContent = "Paint a tile (click to edit pixels)";
+  wrap.appendChild(hdr);
+
+  const grid = document.createElement("div");
+  grid.style.cssText = "display:grid;grid-template-columns:repeat(2,1fr);gap:6px";
+  for (const tileKey of TERRAIN_TILE_TYPES) {
+    const card = document.createElement("div");
+    card.className = "subj-card" + (tileKey === editingTerrainTile ? " sel" : "");
+    const c = document.createElement("canvas");
+    c.width = 60; c.height = 60;
+    const cx2 = c.getContext("2d")!;
+    const baseCol = terrainSettings.colors[tileKey] ?? TERRAIN_DEFAULTS[tileKey] ?? "#888";
+    cx2.fillStyle = baseCol;
+    cx2.fillRect(0, 0, 60, 60);
+    const d = terrainSpriteSheet.docs[tileKey];
+    let painted = false;
+    if (d && docHasPaint(d)) {
+      const scale = Math.floor(60 / Math.max(d.w, d.h));
+      const frame = d.animations[d.defaultClip]?.facings.down?.[0];
+      if (frame) {
+        const px = compositeFrame(frame, d.layerNames.map(() => true), d.w, d.h);
+        cx2.save(); cx2.translate((60 - d.w * scale) / 2, (60 - d.h * scale) / 2);
+        paintPixels(cx2, px, scale, d.w, d.h);
+        cx2.restore();
+        painted = true;
+      }
+    }
+    // Badge: painted (✎) vs still procedural colour (○)
+    cx2.font = "9px system-ui"; cx2.textAlign = "right";
+    cx2.fillStyle = painted ? "#ffd54f" : "rgba(255,255,255,.5)";
+    cx2.fillText(painted ? "✎" : "○", 58, 11);
+    const lbl2 = document.createElement("div");
+    lbl2.className = "subj-label";
+    lbl2.textContent = TERRAIN_TILE_LABELS[tileKey] ?? tileKey;
+    card.style.cursor = "pointer";
+    card.appendChild(c); card.appendChild(lbl2);
+    card.addEventListener("click", () => selectTerrainTile(tileKey));
+    grid.appendChild(card);
+  }
+  wrap.appendChild(grid);
+
+  // ── Fallback colours (SECONDARY) ──────────────────────────────────────────
+  // For tiles you haven't painted yet, the game uses these flat colours.
+  const sep = document.createElement("div");
+  sep.style.cssText = "margin:14px 0 4px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em";
+  sep.textContent = "Fallback colours (used until painted)";
+  wrap.appendChild(sep);
+
   for (const [key, label] of Object.entries(TERRAIN_LABELS)) {
     const row = document.createElement("div");
     row.className = "terrain-row";
@@ -1606,47 +1657,6 @@ function buildTerrainRows() {
     row.appendChild(swatch); row.appendChild(lbl); row.appendChild(inp);
     wrap.appendChild(row);
   }
-
-  // Separator
-  const sep = document.createElement("div");
-  sep.style.cssText = "margin:8px 0 4px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em";
-  sep.textContent = "Pixel tile sprites";
-  wrap.appendChild(sep);
-
-  // Terrain tile subject cards (like objects grid)
-  const grid = document.createElement("div");
-  grid.style.cssText = "display:grid;grid-template-columns:repeat(2,1fr);gap:6px";
-  for (const tileKey of TERRAIN_TILE_TYPES) {
-    const card = document.createElement("div");
-    card.className = "subj-card" + (tileKey === editingTerrainTile ? " sel" : "");
-    const c = document.createElement("canvas");
-    c.width = 60; c.height = 60;
-    const cx2 = c.getContext("2d")!;
-    const baseCol = terrainSettings.colors[tileKey] ?? TERRAIN_DEFAULTS[tileKey] ?? "#888";
-    cx2.fillStyle = baseCol;
-    cx2.fillRect(0, 0, 60, 60);
-    const d = terrainSpriteSheet.docs[tileKey];
-    if (d && docHasPaint(d)) {
-      const scale = Math.floor(60 / Math.max(d.w, d.h));
-      const frame = d.animations[d.defaultClip]?.facings.down?.[0];
-      if (frame) {
-        const px = compositeFrame(frame, d.layerNames.map(() => true), d.w, d.h);
-        cx2.save(); cx2.translate((60 - d.w * scale) / 2, (60 - d.h * scale) / 2);
-        paintPixels(cx2, px, scale, d.w, d.h);
-        cx2.restore();
-      }
-      cx2.fillStyle = "#ffd54f"; cx2.font = "8px system-ui"; cx2.textAlign = "right";
-      cx2.fillText("✎", 58, 10);
-    }
-    const lbl2 = document.createElement("div");
-    lbl2.className = "subj-label";
-    lbl2.textContent = TERRAIN_TILE_LABELS[tileKey] ?? tileKey;
-    card.style.cursor = "pointer";
-    card.appendChild(c); card.appendChild(lbl2);
-    card.addEventListener("click", () => selectTerrainTile(tileKey));
-    grid.appendChild(card);
-  }
-  wrap.appendChild(grid);
 
   renderTerrainPreview();
 }
