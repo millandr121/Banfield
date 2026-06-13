@@ -55,16 +55,33 @@ import objectSpriteData from "./assets/object-sprites.json";
 import terrainSpritesData from "./assets/terrain-sprites.json";
 import { SpriteDoc, normalizeLayers, docHasPaint, renderFrame, compositeFrame } from "../../shared/sprite";
 
+// The editor saves painted sprites to localStorage (same origin as the game)
+// AND writes the JSON asset files. localStorage is the live source of truth:
+// reading it here means paint → save in the editor → reload the game shows the
+// change instantly, without waiting on a file write / rebuild. The bundled JSON
+// is the committed fallback when no local edits exist.
+function loadDocs(bundled: unknown, lsKey: string): Record<string, SpriteDoc> {
+  const out: Record<string, SpriteDoc> = {};
+  const take = (src: unknown) => {
+    const docs = (src as { docs?: Record<string, SpriteDoc> })?.docs ?? {};
+    for (const [k, raw] of Object.entries(docs)) {
+      const d = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
+      if (docHasPaint(d)) out[k] = d;
+    }
+  };
+  take(bundled);
+  try {
+    const raw = localStorage.getItem(lsKey);
+    if (raw) take(JSON.parse(raw)); // local edits override bundled
+  } catch { /* ignore */ }
+  return out;
+}
+
+
 // Painted creature sprite-docs (authored in the editor). Empty docs fall back
 // to the procedural vector art. Each kind animates through its "down" frames.
-const PAINTED_CREATURES = new Map<string, SpriteDoc>();
-{
-  const docs = (creatureSpriteData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
-  for (const [kind, raw] of Object.entries(docs)) {
-    const doc = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
-    if (docHasPaint(doc)) PAINTED_CREATURES.set(kind, doc);
-  }
-}
+const PAINTED_CREATURES = new Map<string, SpriteDoc>(
+  Object.entries(loadDocs(creatureSpriteData, "banfield-creature-sprites")));
 setCreatureDocProvider((kind) => {
   const doc = PAINTED_CREATURES.get(kind);
   if (!doc) return null;
@@ -77,14 +94,15 @@ setCreatureDocProvider((kind) => {
 // Painted player sprites — all authored characters, keyed by id.
 // `activePlayerCharId` tracks which one is currently shown for the local player.
 // Cycle through them with [ / ] keys.
-const ALL_PLAYER_SPRITES = new Map<string, SpriteDoc>();
+const ALL_PLAYER_SPRITES = new Map<string, SpriteDoc>(
+  Object.entries(loadDocs(playerSpriteData, "banfield-player-sheet")));
 let activePlayerCharId = (playerSpriteData as { active?: string }).active ?? "player";
 {
-  const docs = (playerSpriteData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
-  for (const [id, raw] of Object.entries(docs)) {
-    const d = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
-    if (docHasPaint(d)) ALL_PLAYER_SPRITES.set(id, d);
-  }
+  // Prefer the active id the editor last saved to localStorage.
+  try {
+    const raw = localStorage.getItem("banfield-player-sheet");
+    if (raw) activePlayerCharId = (JSON.parse(raw) as { active?: string }).active ?? activePlayerCharId;
+  } catch { /* ignore */ }
   // Fall back to first available if active key has no painted doc
   if (!ALL_PLAYER_SPRITES.has(activePlayerCharId)) {
     activePlayerCharId = ALL_PLAYER_SPRITES.keys().next().value ?? "player";
@@ -93,41 +111,20 @@ let activePlayerCharId = (playerSpriteData as { active?: string }).active ?? "pl
 let PLAYER_SPRITE: SpriteDoc | null = ALL_PLAYER_SPRITES.get(activePlayerCharId) ?? null;
 
 // Painted NPC sprites, keyed by NPC kind (authored in the editor).
-const PAINTED_NPCS = new Map<string, SpriteDoc>();
-{
-  const docs = (npcSpriteData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
-  for (const [kind, raw] of Object.entries(docs)) {
-    const doc = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
-    if (docHasPaint(doc)) PAINTED_NPCS.set(kind, doc);
-  }
-}
+const PAINTED_NPCS = new Map<string, SpriteDoc>(
+  Object.entries(loadDocs(npcSpriteData, "banfield-npc-sprites")));
 
-const PAINTED_CLOTHING = new Map<string, SpriteDoc>();
-{
-  const docs = (clothingSpriteData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
-  for (const [kind, raw] of Object.entries(docs)) {
-    const doc = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
-    if (docHasPaint(doc)) PAINTED_CLOTHING.set(kind, doc);
-  }
-}
+const PAINTED_CLOTHING = new Map<string, SpriteDoc>(
+  Object.entries(loadDocs(clothingSpriteData, "banfield-clothing-sprites")));
 
-const PAINTED_OBJECTS = new Map<string, SpriteDoc>();
-{
-  const docs = (objectSpriteData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
-  for (const [kind, raw] of Object.entries(docs)) {
-    const doc = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
-    if (docHasPaint(doc)) PAINTED_OBJECTS.set(kind, doc);
-  }
-}
+const PAINTED_OBJECTS = new Map<string, SpriteDoc>(
+  Object.entries(loadDocs(objectSpriteData, "banfield-object-sprites")));
 
 // Terrain tiles pre-rendered to OffscreenCanvas for fast drawImage per-tile.
 const TERRAIN_SPRITE_CACHE = new Map<string, OffscreenCanvas>();
 {
-  const tileSize = (terrainSpritesData as { tileSize?: number }).tileSize ?? TILE_SIZE;
-  const docs = (terrainSpritesData as { docs?: Record<string, SpriteDoc> }).docs ?? {};
-  for (const [key, raw] of Object.entries(docs)) {
-    const doc = normalizeLayers(JSON.parse(JSON.stringify(raw)) as SpriteDoc);
-    if (!docHasPaint(doc)) continue;
+  const docs = loadDocs(terrainSpritesData, "banfield-terrain-sprites");
+  for (const [key, doc] of Object.entries(docs)) {
     const frame = doc.animations[doc.defaultClip]?.facings.down?.[0];
     if (!frame) continue;
     const px = compositeFrame(frame, doc.layerNames.map(() => true), doc.w, doc.h);
@@ -144,7 +141,6 @@ const TERRAIN_SPRITE_CACHE = new Map<string, OffscreenCanvas>();
     }
     TERRAIN_SPRITE_CACHE.set(key, oc);
   }
-  void tileSize; // suppress unused-variable warning
 }
 
 // Map Tile enum to terrain sprite key

@@ -561,6 +561,9 @@ stage.addEventListener("pointerup", (e) => {
   painting = false;
   try { stage.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
   saveToStorage();
+  // Keep the left-sidebar subject thumbnails in sync with what was just painted
+  // (terrain tile cards, character cards, etc. otherwise show stale art).
+  if (category === "terrain") refreshTerrainCard();
 });
 
 // ── UI helper ─────────────────────────────────────────────────────────────────
@@ -1582,6 +1585,40 @@ function populateNpcCopySelect() {
 const terrainCanvas = $<HTMLCanvasElement>("terrain-preview");
 const terrainPctx = terrainCanvas?.getContext("2d");
 
+// Draw one terrain tile-card thumbnail: painted pixels if present, else the
+// flat fallback colour, with a painted (✎) / unpainted (○) badge.
+function drawTerrainCardCanvas(c: HTMLCanvasElement, tileKey: string) {
+  const cx2 = c.getContext("2d")!;
+  cx2.clearRect(0, 0, 60, 60);
+  cx2.fillStyle = terrainSettings.colors[tileKey] ?? TERRAIN_DEFAULTS[tileKey] ?? "#888";
+  cx2.fillRect(0, 0, 60, 60);
+  const d = terrainSpriteSheet.docs[tileKey];
+  let painted = false;
+  if (d && docHasPaint(d)) {
+    const scale = Math.floor(60 / Math.max(d.w, d.h));
+    const frame = d.animations[d.defaultClip]?.facings.down?.[0];
+    if (frame) {
+      const px = compositeFrame(frame, d.layerNames.map(() => true), d.w, d.h);
+      cx2.save(); cx2.translate((60 - d.w * scale) / 2, (60 - d.h * scale) / 2);
+      paintPixels(cx2, px, scale, d.w, d.h);
+      cx2.restore();
+      painted = true;
+    }
+  }
+  cx2.font = "9px system-ui"; cx2.textAlign = "right";
+  cx2.fillStyle = painted ? "#ffd54f" : "rgba(255,255,255,.5)";
+  cx2.fillText(painted ? "✎" : "○", 58, 11);
+}
+
+// Live-update the selected tile's sidebar thumbnail after painting, without
+// rebuilding the whole grid (which would reset scroll / selection).
+function refreshTerrainCard() {
+  if (!editingTerrainTile) return;
+  const card = document.querySelector(`#subject-scroll .subj-card[data-tile="${editingTerrainTile}"]`);
+  const c = card?.querySelector("canvas") as HTMLCanvasElement | null;
+  if (c) drawTerrainCardCanvas(c, editingTerrainTile);
+}
+
 function buildTerrainRows() {
   // For terrain category, terrain rows go in subject-scroll
   const wrap = $("subject-scroll");
@@ -1599,29 +1636,10 @@ function buildTerrainRows() {
   for (const tileKey of TERRAIN_TILE_TYPES) {
     const card = document.createElement("div");
     card.className = "subj-card" + (tileKey === editingTerrainTile ? " sel" : "");
+    card.dataset.tile = tileKey;
     const c = document.createElement("canvas");
     c.width = 60; c.height = 60;
-    const cx2 = c.getContext("2d")!;
-    const baseCol = terrainSettings.colors[tileKey] ?? TERRAIN_DEFAULTS[tileKey] ?? "#888";
-    cx2.fillStyle = baseCol;
-    cx2.fillRect(0, 0, 60, 60);
-    const d = terrainSpriteSheet.docs[tileKey];
-    let painted = false;
-    if (d && docHasPaint(d)) {
-      const scale = Math.floor(60 / Math.max(d.w, d.h));
-      const frame = d.animations[d.defaultClip]?.facings.down?.[0];
-      if (frame) {
-        const px = compositeFrame(frame, d.layerNames.map(() => true), d.w, d.h);
-        cx2.save(); cx2.translate((60 - d.w * scale) / 2, (60 - d.h * scale) / 2);
-        paintPixels(cx2, px, scale, d.w, d.h);
-        cx2.restore();
-        painted = true;
-      }
-    }
-    // Badge: painted (✎) vs still procedural colour (○)
-    cx2.font = "9px system-ui"; cx2.textAlign = "right";
-    cx2.fillStyle = painted ? "#ffd54f" : "rgba(255,255,255,.5)";
-    cx2.fillText(painted ? "✎" : "○", 58, 11);
+    drawTerrainCardCanvas(c, tileKey);
     const lbl2 = document.createElement("div");
     lbl2.className = "subj-label";
     lbl2.textContent = TERRAIN_TILE_LABELS[tileKey] ?? tileKey;
