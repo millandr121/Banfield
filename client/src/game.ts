@@ -155,8 +155,12 @@ function drawSpriteDoc(
   ctx: CanvasRenderingContext2D, cx: number, cy: number,
   doc: SpriteDoc, facing: Facing, moving: boolean,
   overlays?: SpriteDoc[],
+  animState?: string,
 ): void {
-  const clip = doc.animations.walk && moving ? "walk"
+  const clip = moving && doc.animations.run && animState === "run" ? "run"
+    : doc.animations.walk && moving ? "walk"
+    : doc.animations.swim && animState === "swim" ? "swim"
+    : doc.animations.jump && (animState === "jump" || animState === "fall") ? "jump"
     : doc.animations.idle ? "idle" : doc.defaultClip;
   const frameCount = doc.animations[clip]?.facings[facing]?.length ?? 1;
   const fps = doc.animations[clip]?.fps ?? 6;
@@ -204,9 +208,10 @@ function wornClothingDocs(worn?: WornItems): SpriteDoc[] {
 /** Draw the painted player sprite. Returns true if drawn, false to fall back. */
 function drawPlayerSprite(
   ctx: CanvasRenderingContext2D, cx: number, cy: number, facing: Facing, moving: boolean, worn?: WornItems,
+  animState?: string,
 ): boolean {
   if (!PLAYER_SPRITE) return false;
-  drawSpriteDoc(ctx, cx, cy, PLAYER_SPRITE, facing, moving, wornClothingDocs(worn));
+  drawSpriteDoc(ctx, cx, cy, PLAYER_SPRITE, facing, moving, wornClothingDocs(worn), animState);
   return true;
 }
 
@@ -590,6 +595,23 @@ export class Game {
   onJoinDenied?: (reason: string) => void;
   private started = false;
 
+  // Client-side prediction state
+  private predX = 0;
+  private predY = 0;
+  private predVx = 0;       // horizontal velocity for accel/decel
+  private predVy = 0;       // vertical velocity for accel/decel
+  private predInitialized = false;
+  private lastFrameMs = 0;
+
+  // Jump physics (client-side visual — server still authoritative for position)
+  private jumpVy = 0;       // upward velocity (negative = going up)
+  private jumpOff = 0;      // current pixel offset above ground
+  private jumpGrounded = true;
+
+  // Smooth animation state
+  private animSpeed = 0;    // smoothed speed for animation decisions
+  private animState: "idle" | "walk" | "run" | "jump" | "fall" | "swim" = "idle";
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d")!;
@@ -599,6 +621,20 @@ export class Game {
     window.addEventListener("keydown", (e) => this.onKey(e, true));
     window.addEventListener("keyup", (e) => this.onKey(e, false));
     this.canvas.addEventListener("mousedown", (e) => this.onCanvasMouseDown(e));
+    this.canvas.addEventListener("mousedown", (e) => {
+      if (e.button === 0 && !this.chatOpen) {
+        if (this.chargeStart === null) this.chargeStart = performance.now();
+      }
+    });
+    this.canvas.addEventListener("mouseup", (e) => {
+      if (e.button === 0 && this.chargeStart !== null) {
+        const held = performance.now() - this.chargeStart;
+        this.chargeStart = null;
+        const charge = Math.max(0, Math.min(1, held / CHARGE_MAX_MS));
+        this.net.send({ t: "attack", charge });
+        this.attackAnim.set(this.myId, { at: performance.now(), stance: this.me?.stance ?? "high" });
+      }
+    });
     this.canvas.addEventListener("wheel", (e) => this.onCanvasWheel(e), { passive: false });
     // Restore saved tile overrides
     try {
@@ -774,9 +810,14 @@ export class Game {
         return;
       }
       if (k === " ") {
-        // Start charging on first press; the swing fires on release.
-        if (this.chargeStart === null) this.chargeStart = performance.now();
+        if (this.jumpGrounded && !this.me?.swimming) {
+          this.jumpGrounded = false;
+          this.jumpVy = 0;
+          this.jumpOff = 0.1; // tiny lift to start
+          this.net.send({ t: "jump" });
+        }
         e.preventDefault();
+        return;
       } else if (k === "tab") {
         this.cycleMode();
         e.preventDefault();
@@ -931,16 +972,6 @@ export class Game {
           e.preventDefault();
         }
       }
-    } else if (k === " ") {
-      if (this.chargeStart !== null) {
-        const held = performance.now() - this.chargeStart;
-        this.chargeStart = null;
-        const charge = Math.max(0, Math.min(1, held / CHARGE_MAX_MS));
-        this.net.send({ t: "attack", charge });
-        // Immediately start a local attack animation so the swing feels responsive.
-        this.attackAnim.set(this.myId, { at: performance.now(), stance: this.me?.stance ?? "high" });
-        e.preventDefault();
-      }
     }
     if (
       ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)
@@ -1069,13 +1100,108 @@ export class Game {
   }
 
   private frame() {
+    const now = performance.now();
+    const dt = this.lastFrameMs === 0 ? 0.016 : Math.min((now - this.lastFrameMs) / 1000, 0.05);
+    this.lastFrameMs = now;
+    this.tickPrediction(dt);
     this.sendInput();
-    this.render();
+    this.render(dt);
     requestAnimationFrame(() => this.frame());
   }
 
+  private tickPrediction(dt: number) {
+    const me = this.me;
+    if (!me || !this.map) return;
+
+    // One-time init from server position
+    if (!this.predInitialized) {
+      this.predX = me.x;
+      this.predY = me.y;
+      this.predInitialized = true;
+    }
+
+    // Build target velocity from keys
+    let ix = 0, iy = 0;
+    if (this.keys.has("w") || this.keys.has("arrowup"))    iy -= 1;
+    if (this.keys.has("s") || this.keys.has("arrowdown"))  iy += 1;
+    if (this.keys.has("a") || this.keys.has("arrowleft"))  ix -= 1;
+    if (this.keys.has("d") || this.keys.has("arrowright")) ix += 1;
+    const len = Math.hypot(ix, iy);
+    if (len > 0) { ix /= len; iy /= len; }
+
+    const sprint = this.keys.has("shift") && !me.swimming;
+    const baseSpeed = me.swimming ? 2.4 : sprint ? 4.5 * 1.85 : 4.5;
+    const targetVx = ix * baseSpeed;
+    const targetVy = iy * baseSpeed;
+
+    // Smooth acceleration / deceleration
+    const accelRate = 14;
+    const blend = Math.min(1, accelRate * dt);
+    this.predVx += (targetVx - this.predVx) * blend;
+    this.predVy += (targetVy - this.predVy) * blend;
+
+    // Advance local prediction
+    this.predX += this.predVx * dt;
+    this.predY += this.predVy * dt;
+
+    // Reconcile with server position — smooth pull toward server, snap if too far
+    const errX = me.x - this.predX;
+    const errY = me.y - this.predY;
+    const dist = Math.hypot(errX, errY);
+    if (dist > 2.5) {
+      this.predX = me.x;
+      this.predY = me.y;
+    } else {
+      const pull = Math.min(1, 7 * dt);
+      this.predX += errX * pull;
+      this.predY += errY * pull;
+    }
+
+    // Jump physics — client-side only (server still tracks jumpPhase for other players)
+    const GRAVITY = 36;    // tiles/sec²
+    const TILE_PX = TILE_SIZE; // 24px
+
+    if (!this.jumpGrounded) {
+      this.jumpVy += GRAVITY * dt;
+      this.jumpOff -= this.jumpVy * dt * TILE_PX;
+      if (this.jumpOff <= 0) {
+        this.jumpOff = 0;
+        this.jumpVy = 0;
+        this.jumpGrounded = true;
+      }
+    }
+
+    // Animation state
+    const speed = Math.hypot(this.predVx, this.predVy);
+    this.animSpeed += (speed - this.animSpeed) * Math.min(1, 10 * dt);
+
+    if (me.swimming) {
+      this.animState = "swim";
+    } else if (!this.jumpGrounded && this.jumpVy < 0) {
+      this.animState = "jump";
+    } else if (!this.jumpGrounded && this.jumpVy > 0) {
+      this.animState = "fall";
+    } else if (this.animSpeed > 5.5) {
+      this.animState = "run";
+    } else if (this.animSpeed > 0.3) {
+      this.animState = "walk";
+    } else {
+      this.animState = "idle";
+    }
+
+    // Camera: smooth follow using predicted position, lead slightly in movement direction
+    const visW = this.canvas.width / this.zoom;
+    const visH = this.canvas.height / this.zoom;
+    const LEAD = 1.2; // tiles of camera lead
+    const camTargX = this.predX * TILE_SIZE + ix * LEAD * TILE_SIZE - visW / 2;
+    const camTargY = this.predY * TILE_SIZE + iy * LEAD * TILE_SIZE - visH / 2;
+    const camBlend = Math.min(1, 9 * dt);
+    this.cam.x += (camTargX - this.cam.x) * camBlend;
+    this.cam.y += (camTargY - this.cam.y) * camBlend;
+  }
+
   // --- rendering ------------------------------------------------------------
-  private render() {
+  private render(dt = 0) {
     const ctx = this.ctx;
     ctx.fillStyle = "#07131c";
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
@@ -1083,14 +1209,6 @@ export class Game {
 
     const me = this.snap.players.find((p) => p.id === this.myId);
     const z = this.zoom;
-    if (me) {
-      // Centre player in the visible area, accounting for the zoom so the camera
-      // frames the same world point however far in.
-      const visW = this.canvas.width / z;
-      const visH = this.canvas.height / z;
-      this.cam.x += (me.x * TILE_SIZE - visW / 2 - this.cam.x) * 0.15;
-      this.cam.y += (me.y * TILE_SIZE - visH / 2 - this.cam.y) * 0.15;
-    }
 
     // === World pass: drawn under a zoom transform (everything via toScreen) ===
     ctx.save();
@@ -2984,9 +3102,14 @@ export class Game {
     }
 
     // --- Jump: parabolic arc offset + shrinking ground shadow ---
-    const jumpOffset = p.jumping ? -Math.sin((p.jumpPhase ?? 0) * Math.PI) * TILE_SIZE * JUMP_HEIGHT : 0;
-    if (p.jumping) {
-      const shadowScale = 1 - (p.jumpPhase ?? 0) * 0.5;
+    const isJumping = isMe ? !this.jumpGrounded : p.jumping;
+    const jumpOffset = isMe
+      ? -this.jumpOff
+      : (p.jumping ? -Math.sin((p.jumpPhase ?? 0) * Math.PI) * TILE_SIZE * JUMP_HEIGHT : 0);
+    if (isJumping) {
+      const shadowScale = isMe
+        ? Math.max(0.2, 1 - this.jumpOff / (TILE_SIZE * JUMP_HEIGHT))
+        : 1 - (p.jumpPhase ?? 0) * 0.5;
       ctx.save();
       ctx.globalAlpha = ctx.globalAlpha * 0.25;
       ctx.fillStyle = "#000";
@@ -3043,7 +3166,8 @@ export class Game {
       attack,
     };
     if (!drawPlayerSprite(ctx, sx + swayX, sy + jumpOffset - researchBob,
-        pixelOpts.facing as Facing, gait.moving, p.appearance?.worn)) {
+        pixelOpts.facing as Facing, gait.moving, p.appearance?.worn,
+        isMe ? this.animState : undefined)) {
       drawCharacterPixel(ctx, sx + swayX, sy + jumpOffset - researchBob, p.appearance, pixelOpts);
     }
 

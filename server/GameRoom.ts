@@ -1444,11 +1444,11 @@ export class GameRoom {
       const nx = p.x + (s.dx * speed + (imp?.x ?? 0)) * dt;
       const ny = p.y + (s.dy * speed + (imp?.y ?? 0)) * dt;
       let moved = false;
-      if (this.inBounds(region.map, nx, p.y)) {
+      if (this.inBounds(region.map, nx, p.y) && !this.isSolidTile(region.map, nx, p.y)) {
         if (nx !== p.x) moved = true;
         p.x = nx;
       }
-      if (this.inBounds(region.map, p.x, ny)) {
+      if (this.inBounds(region.map, p.x, ny) && !this.isSolidTile(region.map, p.x, ny)) {
         if (ny !== p.y) moved = true;
         p.y = ny;
       }
@@ -1474,8 +1474,8 @@ export class GameRoom {
       // --- Jump arc update ---
       const jumpEnd = this.jumpUntil.get(p.id);
       if (jumpEnd) {
-        const elapsed = 400 - Math.max(0, jumpEnd - now);
-        p.jumpPhase = Math.min(1, elapsed / 400);
+        const elapsed = 450 - Math.max(0, jumpEnd - now);
+        p.jumpPhase = Math.min(1, elapsed / 450);
         if (now >= jumpEnd) {
           p.jumping = false;
           p.jumpPhase = 0;
@@ -3070,10 +3070,12 @@ export class GameRoom {
   // --- Jump -----------------------------------------------------------------
   private doJump(playerId: string) {
     const p = this.players.get(playerId);
-    if (!p || p.dead || p.vehicleId || p.jumping) return;
+    const now = Date.now();
+    if (!p || p.dead || p.vehicleId || p.swimming) return;
+    if ((this.jumpUntil.get(playerId) ?? 0) > now) return; // already jumping
     p.jumping = true;
     p.jumpPhase = 0;
-    this.jumpUntil.set(playerId, Date.now() + 400);
+    this.jumpUntil.set(playerId, now + 450);
   }
 
   // --- Listen mode ----------------------------------------------------------
@@ -3461,6 +3463,15 @@ export class GameRoom {
     const tx = Math.floor(x);
     const ty = Math.floor(y);
     return tx >= 0 && ty >= 0 && tx < map.width && ty < map.height;
+  }
+
+  private isSolidTile(map: WorldMap, x: number, y: number): boolean {
+    const tx = Math.floor(x + 0.5);
+    const ty = Math.floor(y + 0.5);
+    if (tx < 0 || ty < 0 || tx >= map.width || ty >= map.height) return true;
+    const tile = map.tiles[ty * map.width + tx];
+    // Rock is impassable solid terrain
+    return tile === Tile.Rock;
   }
 
   private tileAt(map: WorldMap, x: number, y: number): Tile | null {
