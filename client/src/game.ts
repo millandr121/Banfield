@@ -621,13 +621,8 @@ export class Game {
     window.addEventListener("keydown", (e) => this.onKey(e, true));
     window.addEventListener("keyup", (e) => this.onKey(e, false));
     this.canvas.addEventListener("mousedown", (e) => this.onCanvasMouseDown(e));
-    this.canvas.addEventListener("mousedown", (e) => {
-      if (e.button === 0 && !this.chatOpen) {
-        if (this.chargeStart === null) this.chargeStart = performance.now();
-      }
-    });
     this.canvas.addEventListener("mouseup", (e) => {
-      if (e.button === 0 && this.chargeStart !== null) {
+      if (e.button === 0 && this.chargeStart !== null && !this.chatOpen) {
         const held = performance.now() - this.chargeStart;
         this.chargeStart = null;
         const charge = Math.max(0, Math.min(1, held / CHARGE_MAX_MS));
@@ -713,6 +708,10 @@ export class Game {
         e.preventDefault();
         return;
       }
+    }
+    // Left click on world = start attack charge
+    if (!this.chatOpen && this.chargeStart === null) {
+      this.chargeStart = performance.now();
     }
   }
 
@@ -1201,7 +1200,7 @@ export class Game {
   }
 
   // --- rendering ------------------------------------------------------------
-  private render(dt = 0) {
+  private render(_dt = 0) {
     const ctx = this.ctx;
     ctx.fillStyle = "#07131c";
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
