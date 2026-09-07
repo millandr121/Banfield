@@ -613,6 +613,8 @@ export class Game {
   private animSpeed = 0;    // smoothed speed for animation decisions
   private animState: "idle" | "walk" | "run" | "jump" | "fall" | "swim" = "idle";
   private predSwimming = false; // client-predicted swimming (matches predX/predY tile depth)
+  private landedAt = 0;         // timestamp of last landing from a jump (for squash effect)
+  private wasGrounded = true;   // previous-frame jumpGrounded (landing transition detection)
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -1190,6 +1192,10 @@ export class Game {
         this.jumpGrounded = true;
       }
     }
+
+    // Landing detection (false→true transition triggers squash)
+    if (this.jumpGrounded && !this.wasGrounded) this.landedAt = performance.now();
+    this.wasGrounded = this.jumpGrounded;
 
     // Animation state
     const speed = Math.hypot(this.predVx, this.predVy);
@@ -3185,10 +3191,58 @@ export class Game {
       weapon: p.equipped,
       attack,
     };
-    if (!drawPlayerSprite(ctx, sx + swayX, sy + jumpOffset - researchBob,
+    // Landing squash / jump stretch (local player only)
+    const LAND_MS = 260;
+    const landAge = isMe ? performance.now() - this.landedAt : LAND_MS + 1;
+    let landScaleX = 1, landScaleY = 1;
+    if (isMe && landAge < LAND_MS) {
+      // Post-land squash: wide & short, springs back with slight overshoot
+      const t = landAge / LAND_MS;
+      const wave = Math.sin(t * Math.PI) * (1 - t * 0.5);
+      landScaleX = 1 + wave * 0.22;
+      landScaleY = 1 - wave * 0.32;
+    } else if (isMe && !this.jumpGrounded && this.jumpVy < 0) {
+      // Ascending stretch: tall & narrow while going up
+      const h = Math.min(1, this.jumpOff / (TILE_SIZE * JUMP_HEIGHT));
+      landScaleX = 1 - h * 0.07;
+      landScaleY = 1 + h * 0.15;
+    }
+
+    const charX = sx + swayX, charY = sy + jumpOffset - researchBob;
+    const pivY = sy + TILE_SIZE * 0.25; // pivot at foot level for squash
+    ctx.save();
+    if (landScaleX !== 1 || landScaleY !== 1) {
+      ctx.translate(charX, pivY);
+      ctx.scale(landScaleX, landScaleY);
+      ctx.translate(-charX, -pivY);
+    }
+    if (!drawPlayerSprite(ctx, charX, charY,
         pixelOpts.facing as Facing, gait.moving, p.appearance?.worn,
         isMe ? this.animState : undefined)) {
-      drawCharacterPixel(ctx, sx + swayX, sy + jumpOffset - researchBob, p.appearance, pixelOpts);
+      drawCharacterPixel(ctx, charX, charY, p.appearance, pixelOpts);
+    }
+    ctx.restore();
+
+    // Landing impact ring — brief expanding halo at foot level
+    if (isMe && landAge < 180) {
+      const t = landAge / 180;
+      const r = TILE_SIZE * 0.3 + t * TILE_SIZE * 0.8;
+      const alpha = 0.55 * (1 - t);
+      const inWater = this.predSwimming;
+      ctx.save();
+      ctx.strokeStyle = inWater ? `rgba(130,200,255,${alpha.toFixed(3)})` : `rgba(200,185,155,${alpha.toFixed(3)})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy + TILE_SIZE * 0.2, r, r * 0.38, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      if (inWater) {
+        // second inner ring for water
+        ctx.strokeStyle = `rgba(180,225,255,${(alpha * 0.5).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.ellipse(sx, sy + TILE_SIZE * 0.2, r * 0.55, r * 0.21, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
     }
 
     // Leaf shimmer overlay when hiding (environment-blend effect).
