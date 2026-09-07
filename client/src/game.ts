@@ -36,6 +36,7 @@ import {
   DEPTH_SWIM,
   DEPTH_DEEP,
   DEPTH_OCEAN,
+  isWaterTile,
   skillLevel,
 } from "../../shared/protocol";
 import { LogbookEntry, LeaderboardData } from "../../shared/protocol";
@@ -611,6 +612,7 @@ export class Game {
   // Smooth animation state
   private animSpeed = 0;    // smoothed speed for animation decisions
   private animState: "idle" | "walk" | "run" | "jump" | "fall" | "swim" = "idle";
+  private predSwimming = false; // client-predicted swimming (matches predX/predY tile depth)
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -809,7 +811,7 @@ export class Game {
         return;
       }
       if (k === " ") {
-        if (this.jumpGrounded && !this.me?.swimming) {
+        if (this.jumpGrounded && !this.predSwimming) {
           this.jumpGrounded = false;
           this.jumpVy = 0;
           this.jumpOff = 0.1; // tiny lift to start
@@ -1111,6 +1113,7 @@ export class Game {
   private tickPrediction(dt: number) {
     const me = this.me;
     if (!me || !this.map) return;
+    const map = this.map;
 
     // One-time init from server position
     if (!this.predInitialized) {
@@ -1118,6 +1121,24 @@ export class Game {
       this.predY = me.y;
       this.predInitialized = true;
     }
+
+    // Client-side tile helpers — mirrors server logic for same-frame response
+    const tileAt = (px: number, py: number): Tile => {
+      const tx = Math.floor(px + 0.5);
+      const ty = Math.floor(py + 0.5);
+      if (tx < 0 || ty < 0 || tx >= map.width || ty >= map.height) return Tile.Water;
+      return (this.tileOverrides.get(`${tx},${ty}`) ?? map.tiles[ty * map.width + tx]) as Tile;
+    };
+    const isSolid = (px: number, py: number): boolean => tileAt(px, py) === Tile.Rock;
+
+    // Client-side swimming: predict depth from local waterline so water entry/exit
+    // responds in the same frame as movement, not 100 ms later from the server.
+    const waterline = this.snap?.waterline ?? 0;
+    const etx = Math.max(0, Math.min(map.width - 1, Math.floor(this.predX + 0.5)));
+    const ety = Math.max(0, Math.min(map.height - 1, Math.floor(this.predY + 0.5)));
+    const elev = map.elevation[ety * map.width + etx] ?? 0;
+    const predSwimming = isWaterTile(tileAt(this.predX, this.predY)) || (waterline - elev) >= DEPTH_SWIM;
+    this.predSwimming = predSwimming;
 
     // Build target velocity from keys
     let ix = 0, iy = 0;
@@ -1128,20 +1149,21 @@ export class Game {
     const len = Math.hypot(ix, iy);
     if (len > 0) { ix /= len; iy /= len; }
 
-    const sprint = this.keys.has("shift") && !me.swimming;
-    const baseSpeed = me.swimming ? 2.4 : sprint ? 4.5 * 1.85 : 4.5;
+    const sprint = this.keys.has("shift") && !predSwimming;
+    const baseSpeed = predSwimming ? 2.4 : sprint ? 4.5 * 1.85 : 4.5;
     const targetVx = ix * baseSpeed;
     const targetVy = iy * baseSpeed;
 
     // Smooth acceleration / deceleration
-    const accelRate = 14;
-    const blend = Math.min(1, accelRate * dt);
+    const blend = Math.min(1, 14 * dt);
     this.predVx += (targetVx - this.predVx) * blend;
     this.predVy += (targetVy - this.predVy) * blend;
 
-    // Advance local prediction
-    this.predX += this.predVx * dt;
-    this.predY += this.predVy * dt;
+    // Axis-separated solid tile collision — mirrors server movePlayers()
+    const nextX = this.predX + this.predVx * dt;
+    const nextY = this.predY + this.predVy * dt;
+    if (!isSolid(nextX, this.predY)) { this.predX = nextX; } else { this.predVx = 0; }
+    if (!isSolid(this.predX, nextY)) { this.predY = nextY; } else { this.predVy = 0; }
 
     // Reconcile with server position — smooth pull toward server, snap if too far
     const errX = me.x - this.predX;
@@ -1157,13 +1179,12 @@ export class Game {
     }
 
     // Jump physics — client-side only (server still tracks jumpPhase for other players)
-    const GRAVITY = 36;    // tiles/sec²
-    const TILE_PX = TILE_SIZE; // 24px
-
+    const GRAVITY = 36;
     if (!this.jumpGrounded) {
       this.jumpVy += GRAVITY * dt;
-      this.jumpOff -= this.jumpVy * dt * TILE_PX;
-      if (this.jumpOff <= 0) {
+      this.jumpOff -= this.jumpVy * dt * TILE_SIZE;
+      if (this.jumpOff <= 0 || predSwimming) {
+        // Land normally, or splash-land immediately when entering water
         this.jumpOff = 0;
         this.jumpVy = 0;
         this.jumpGrounded = true;
@@ -1174,7 +1195,7 @@ export class Game {
     const speed = Math.hypot(this.predVx, this.predVy);
     this.animSpeed += (speed - this.animSpeed) * Math.min(1, 10 * dt);
 
-    if (me.swimming) {
+    if (predSwimming) {
       this.animState = "swim";
     } else if (!this.jumpGrounded && this.jumpVy < 0) {
       this.animState = "jump";
@@ -1191,7 +1212,7 @@ export class Game {
     // Camera: smooth follow using predicted position, lead slightly in movement direction
     const visW = this.canvas.width / this.zoom;
     const visH = this.canvas.height / this.zoom;
-    const LEAD = 1.2; // tiles of camera lead
+    const LEAD = 1.2;
     const camTargX = this.predX * TILE_SIZE + ix * LEAD * TILE_SIZE - visW / 2;
     const camTargY = this.predY * TILE_SIZE + iy * LEAD * TILE_SIZE - visH / 2;
     const camBlend = Math.min(1, 9 * dt);
