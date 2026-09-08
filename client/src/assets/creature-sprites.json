@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "w": 32,
+  "h": 24,
+  "layers": ["body", "shade", "detail"],
+  "docs": {}
+}

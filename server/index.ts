@@ -3,6 +3,7 @@ import { GameRoom } from "./GameRoom";
 export interface Env {
   GAME_ROOM: DurableObjectNamespace;
   ASSETS: Fetcher;
+  DB: D1Database;
 }
 
 // The Worker is a thin front door:

@@ -5,7 +5,7 @@ export const TILE_SIZE = 24; // pixels per tile on the client
 
 // --- Tile types -------------------------------------------------------------
 export enum Tile {
-  Water = 0,
+  Water = 0,      // salt water — the ocean & tidal inlets
   Sand = 1,
   Grass = 2,
   Forest = 3,
@@ -13,6 +13,12 @@ export enum Tile {
   Rock = 5,
   Road = 6,
   Dock = 7,
+  FreshWater = 8, // inland lakes / ponds — drinkable, not tidal salt
+}
+
+// Both ocean and lake tiles count as "water" for swimming, depth & rendering.
+export function isWaterTile(t: Tile): boolean {
+  return t === Tile.Water || t === Tile.FreshWater;
 }
 
 // Base elevation per tile type, used only as a seed/bump. The AUTHORITATIVE
@@ -20,6 +26,7 @@ export enum Tile {
 // tide can sweep gradually across a beach instead of toggling one tile.
 export const TILE_ELEVATION: Record<Tile, number> = {
   [Tile.Water]: 4,
+  [Tile.FreshWater]: 6,
   [Tile.Sand]: 18,
   [Tile.Dock]: 22,
   [Tile.Road]: 40,
@@ -57,12 +64,71 @@ export interface WorldMap {
   elevation: number[]; // per-tile height; tile is submerged when elevation < waterline
 }
 
+// --- Chunked map streaming --------------------------------------------------
+// Big maps aren't shipped whole. The server streams CHUNK×CHUNK tile blocks
+// around each player as they move, and sends a single downsampled OVERVIEW up
+// front for the full-region minimap. Default (unloaded) tiles read as ocean.
+export const CHUNK = 32;
+
+// A low-res snapshot of the whole region for the map overlay. `scale` is how
+// many real tiles each overview cell covers.
+export interface OverviewMap {
+  scale: number;
+  width: number;  // overview cells across = ceil(mapWidth / scale)
+  height: number;
+  tiles: number[];
+  elevation: number[];
+}
+
 // --- Entities ---------------------------------------------------------------
+// Worn clothing & gear slots — which ItemId is in each slot. These drive
+// appearance overrides (shirt/pants/hat color) and show in the equip panel.
+export type WornSlot = "head" | "torso" | "legs" | "back" | "hand";
+export type WornItems = Partial<Record<WornSlot, ItemId>>;
+
+// Which items are equippable to which slot.
+export const SLOT_FOR_ITEM: Partial<Record<string, WornSlot>> = {
+  clothShirt: "torso", waxedJacket: "torso", rainCoat: "torso", woolSweater: "torso", wetsuitTop: "torso",
+  clothPants: "legs", wetsuitBottom: "legs",
+  fieldHat: "head", snorkelMask: "head", divingTank: "back",
+  // research tools → hand slot
+  binoculars: "hand", butterflyNet: "hand", listeningDevice: "hand", fieldNotebook: "hand",
+  // profession tools → hand slot
+  pickaxe: "hand", fishingCage: "hand", surveyFlag: "hand",
+  // weapons → hand slot (backed by the existing `equipped` field, kept in sync)
+  stick: "hand", huntingKnife: "hand", bow: "hand", crossbow: "hand", speargun: "hand", rifle: "hand",
+};
+
+// Visual color override when a clothing item is worn.
+export const CLOTHING_COLOR: Partial<Record<string, { shirt?: string; pants?: string; hat?: string }>> = {
+  clothShirt:     { shirt: "#c8a97a" },
+  clothPants:     { pants: "#7a6a4a" },
+  fieldHat:       { hat:   "#c2a35a" }, // tan sun hat — research/profession default
+  waxedJacket:    { shirt: "#3d5228" },
+  rainCoat:       { shirt: "#1565c0" },
+  woolSweater:    { shirt: "#7b4f2e" },
+  wetsuitTop:     { shirt: "#1a1a2e" },
+  wetsuitBottom:  { pants: "#1a1a2e" },
+  snorkelMask:    { hat:   "#222" },
+  divingTank:     { hat:   "#556" },   // used as a back-piece tint hint
+};
+
 export interface Appearance {
   skin: string;
   hair: string;
   shirt: string;
+  pants?: string; // leg colour (defaults to denim when absent)
+  hat?: string;   // head covering colour (none when absent)
+  hairStyle?: "short" | "medium" | "long";
+  bodyBuild?: "slight" | "medium" | "sturdy";
+  breastSize?: "non" | "modest" | "expressive";
+  hipSize?: "narrow" | "medium" | "wide";
+  worn?: WornItems; // currently equipped items by slot (serialized with appearance)
 }
+
+// The 3-way mode switch that organises the whole game.
+export type PlayerMode = "combat" | "research" | "profession";
+export type Stance = "high" | "low";
 
 export type RegionId = string;
 
@@ -84,26 +150,64 @@ export function defaultSkills(): Skills {
 
 // --- Inventory --------------------------------------------------------------
 export const ITEM_IDS = [
-  "wood", "iron", "stone", "plank", "scrap", "rod",
+  // generic wood (for crafting when species doesn't matter)
+  "wood",
+  // species-specific lumber — each tree drops its own kind
+  "cedarwood", "sprucewood", "firwood", "hemwood", "pinewood",
+  "yewwood", "alderwood", "mapwood",
+  "iron", "stone", "plank", "scrap", "rod",
+  "clay", "pottery",
   "crabmeat", "fish", "liveFish", "salmon", "lingcod", "halibut", "tuna",
-  "venison", "poultry",
+  "venison", "poultry", "bearMeat", "sealMeat",
+  "bones", "leather",
   "berry", "cookedcrab", "cookedfish", "cookedsalmon", "cookedlingcod",
   "cookedvenison", "cookedpoultry",
   "ironBar", "shinyLure", "jerryCan",
+  // weapons
+  "stick", "huntingKnife", "bow", "crossbow", "speargun", "rifle",
+  // ammo
+  "arrow", "bolt", "spear", "bullet",
+  // clothing
+  "clothShirt", "clothPants", "fieldHat",
+  "waxedJacket", "rainCoat", "woolSweater",
+  "fabricDye", "seamstressKit", "snorkelMask", "divingTank", "wetsuitTop", "wetsuitBottom",
+  // research tools
+  "binoculars", "butterflyNet", "listeningDevice", "fieldNotebook",
+  // profession tools
+  "pickaxe", "fishingCage", "surveyFlag",
+  // dev/creative tools
+  "paintWand",
 ] as const;
 export type ItemId = (typeof ITEM_IDS)[number];
 export type Inventory = Partial<Record<ItemId, number>>;
 export const ITEM_LABEL: Record<ItemId, string> = {
   wood: "Wood", iron: "Iron ore", stone: "Stone", plank: "Plank", scrap: "Scrap", rod: "Rod",
+  clay: "Clay", pottery: "Pottery",
+  cedarwood: "Cedar wood", sprucewood: "Spruce wood", firwood: "Fir wood",
+  hemwood: "Hemlock wood", pinewood: "Shore pine wood", yewwood: "Yew wood",
+  alderwood: "Alder wood", mapwood: "Maple wood",
   crabmeat: "Crab meat",
   fish: "Raw fish", liveFish: "Live fish",
   salmon: "Salmon", lingcod: "Lingcod", halibut: "Halibut", tuna: "Tuna",
-  venison: "Venison", poultry: "Game bird",
+  venison: "Venison", poultry: "Game bird", bearMeat: "Bear meat", sealMeat: "Seal meat",
+  bones: "Bones", leather: "Leather",
   berry: "Berries",
   cookedcrab: "Cooked crab", cookedfish: "Cooked fish",
   cookedsalmon: "Cooked salmon", cookedlingcod: "Cooked lingcod",
   cookedvenison: "Roast venison", cookedpoultry: "Roast game bird",
   ironBar: "Iron Bar", shinyLure: "Shiny Lure", jerryCan: "Jerry can",
+  stick: "Stick", huntingKnife: "Hunting Knife", bow: "Bow", crossbow: "Crossbow",
+  speargun: "Speargun", rifle: "Rifle",
+  arrow: "Arrow", bolt: "Bolt", spear: "Spear", bullet: "Bullet",
+  clothShirt: "Cloth Shirt", clothPants: "Cloth Pants", fieldHat: "Field Hat",
+  waxedJacket: "Waxed Jacket",
+  rainCoat: "Rain Coat", woolSweater: "Wool Sweater", fabricDye: "Fabric Dye",
+  seamstressKit: "Seamstress Kit", snorkelMask: "Snorkel Mask", divingTank: "Diving Tank",
+  wetsuitTop: "Wetsuit Top", wetsuitBottom: "Wetsuit Bottom",
+  binoculars: "Binoculars", butterflyNet: "Butterfly Net",
+  listeningDevice: "Listening Device", fieldNotebook: "Field Notebook",
+  pickaxe: "Pickaxe", fishingCage: "Fishing Cage", surveyFlag: "Survey Flag",
+  paintWand: "Paint Wand",
 };
 
 // What eating an item restores.
@@ -117,6 +221,8 @@ export const FOOD_VALUE: Partial<Record<ItemId, { hunger: number; hp: number }>>
   tuna:          { hunger: 28, hp: 14 },
   venison:       { hunger: 16, hp: 6  },
   poultry:       { hunger: 10, hp: 4  },
+  bearMeat:      { hunger: 20, hp: 8  },
+  sealMeat:      { hunger: 18, hp: 7  },
   berry:         { hunger: 15, hp: 6  },
   cookedcrab:    { hunger: 36, hp: 20 },
   cookedfish:    { hunger: 42, hp: 24 },
@@ -136,7 +242,7 @@ export const COOK_MAP: Partial<Record<ItemId, ItemId>> = {
 
 // --- Resource nodes ---------------------------------------------------------
 // Trees, ore veins, and native berry bushes — all harvest-and-respawn.
-export type ResourceKind = "tree" | "ironOre" | "stoneOre" | "berryBush";
+export type ResourceKind = "tree" | "ironOre" | "stoneOre" | "clayDeposit" | "berryBush";
 export interface ResourceNode {
   id: string;
   kind: ResourceKind;
@@ -201,7 +307,8 @@ export interface FurnaceState {
 export type CraftRecipeId =
   | "plank" | "rod" | "campfire" | "cook"
   | "smelt" | "furnace" | "shinyLure"
-  | "repairVehicle" | "repairBuilding";
+  | "repairVehicle" | "repairBuilding"
+  | "pottery";
 
 // Shared recipe data — used by server for logic AND by client for the craft panel.
 export interface RecipeInfo {
@@ -213,7 +320,8 @@ export interface RecipeInfo {
 }
 
 export const CRAFT_RECIPES: RecipeInfo[] = [
-  { id: "plank",         name: "Plank",              needs: { wood: 3 },                gives: { plank: 1 },     note: "3 timber → 1 plank" },
+  { id: "plank",         name: "Plank",              needs: { wood: 3 },                gives: { plank: 1 },     note: "3 timber → 1 plank (any wood type)" },
+  { id: "pottery",      name: "Pottery",             needs: { clay: 3 },                gives: { pottery: 1 },   note: "3 clay → 1 pottery vessel (fire in a furnace)" },
   { id: "rod",           name: "Fishing Rod",         needs: { wood: 3, iron: 2 },       gives: { rod: 1 },       note: "3 wood + 2 iron ore → fishing rod" },
   { id: "campfire",      name: "Campfire",             needs: { wood: 4 },                gives: {},               note: "4 wood — light a fire to cook on" },
   { id: "cook",          name: "Cook (at a fire)",     needs: {},                         gives: {},               note: "Cook raw meat/fish on a nearby fire" },
@@ -223,6 +331,16 @@ export const CRAFT_RECIPES: RecipeInfo[] = [
   { id: "repairVehicle", name: "Repair Vehicle",       needs: { plank: 2, scrap: 2 },     gives: {},               note: "2 plank + 2 scrap → +50 HP nearest vehicle" },
   { id: "repairBuilding",name: "Repair Building",      needs: { wood: 5, stone: 3 },      gives: {},               note: "5 wood + 3 stone → +80 HP nearest building" },
 ];
+
+// A loot item dropped on the ground after a creature death.
+export interface LootDrop {
+  id: string;
+  region: RegionId;
+  x: number;
+  y: number;
+  item: ItemId;
+  qty: number;
+}
 
 export interface PlayerState {
   id: string;
@@ -251,6 +369,29 @@ export interface PlayerState {
   sleeping: boolean; // resting by a fire to heal (vulnerable, can't move)
   vehicleId: string | null; // id of the vehicle being driven, else null
   dead: boolean;
+  equipped: ItemId | null; // currently wielded weapon (null = bare hands)
+  titles: string[]; // earned community roles (Mayor, BMSC President, Nurse, ...)
+  speedBoosted: boolean; // /give wings active — 5× speed
+  // --- Modes & grappling ---
+  mode: PlayerMode;        // combat / research / profession
+  stance: Stance;          // combat stance (high = punch, low = kick)
+  transforming: boolean;   // mid mode-switch (2 s strip + re-clothe animation)
+  grabbing: string | null; // id of the player/creature I'm currently holding
+  grabbedBy: string | null;// id of whoever is holding me
+  spin: number;            // 0..1 helicopter wind-up while holding someone
+  knockedOut: boolean;     // dizzy/down phase after being thrown
+  blocking: boolean;       // briefly raising a block
+  hiding: boolean;         // hidden behind a tree/bush
+  playingDead: boolean;    // playing dead (research mode vs bears)
+  jumping: boolean;        // in the air
+  jumpPhase: number;       // 0..1 arc
+  listenMode: boolean;     // research "listen" posture active
+  // --- Home spawn (set with /setspawn) ---
+  homeRegion?: RegionId;
+  homeX?: number;
+  homeY?: number;
+  // --- Property interiors ---
+  inRoom?: string | null;  // buildingId if inside a room, else null/undefined
 }
 
 export type CreatureKind =
@@ -318,6 +459,20 @@ export interface ShopDef {
 
 export const STARTING_MONEY = 20;
 
+// --- Interior rooms ---------------------------------------------------------
+export type RoomTileKind = "floor" | "wall" | "door" | "window" | "stairs" | "rug";
+export interface RoomTile { kind: RoomTileKind; variant?: number; }
+export interface RoomDef {
+  id: string;        // same as the buildingId that owns it
+  width: number;
+  height: number;
+  tiles: RoomTile[]; // row-major, length = width * height
+  doorX: number;     // exit door tile x inside the room
+  doorY: number;
+  spawnX: number;    // where the player appears when entering
+  spawnY: number;
+}
+
 export type BuildingKind = "house" | "shop" | "boathouse" | "dock" | "rubble";
 
 export interface BuildingState {
@@ -330,10 +485,16 @@ export interface BuildingState {
   hp: number;
   maxHp: number;
   shop?: ShopDef; // present if you can trade here
+  name?: string;  // real-world name from OSM (e.g. "Flora's Restaurant")
+  // Property ownership
+  ownerId?: string;
+  ownerName?: string;
+  locked?: boolean;
+  hasRoom?: boolean; // true when this building has a generated interior room
 }
 
 // --- NPCs -------------------------------------------------------------------
-export type NpcKind = "naturalist" | "pirate" | "scientist" | "westsider" | "eastsider" | "huuayaht" | "mayor" | "historian" | "boatdealer" | "icevendor";
+export type NpcKind = "naturalist" | "pirate" | "scientist" | "westsider" | "eastsider" | "huuayaht" | "mayor" | "historian" | "boatdealer" | "icevendor" | "seamstress" | "researcher2" | "marineBiologist" | "snorkeler";
 
 export interface NpcState {
   id: string;
@@ -359,33 +520,67 @@ export interface TravelNode {
   label: string; // e.g. "Catch the bus to Anacla"
   toRegion: RegionId;
   toSpawn: { x: number; y: number };
+  fare?: number; // dollars charged to ride (bus only); omitted/0 = free
 }
 
 // Static, per-region info the client needs once on entry.
 export interface RegionInfo {
   id: RegionId;
   name: string;
-  map: WorldMap;
+  width: number;
+  height: number;
+  overview: OverviewMap;   // downsampled whole map for the minimap
   travelNodes: TravelNode[];
 }
 
 // --- Messages: client -> server --------------------------------------------
+// One logged species in a player's BMSC logbook.
+export interface LogbookEntry { key: string; count: number; firstAt: number }
+
+// Town leaderboard / current title holders.
+export interface LeaderboardData {
+  mayor: string | null;       // unofficial mayor (top Banfielder points)
+  president: string | null;   // BMSC President (most species logged)
+  chief: string | null;       // Fire Chief (most building repairs)
+  nurse: string | null;       // Nurse (top first responder)
+  responders: string[];       // other first responders (max 5)
+  topBanfielders: Array<{ name: string; pts: number }>;
+}
+
 export type ClientMessage =
-  | { t: "join"; name: string; appearance: Appearance }
+  | { t: "join"; name: string; appearance: Appearance; secret?: string; register?: boolean; email?: string }
+  | { t: "checkName"; name: string } // login screen: is this name already taken?
+  | { t: "scan" } // fire the discovery radius — log nearby species
+  | { t: "equip"; item: ItemId | null } // wield a weapon (null = bare hands)
+  | { t: "wear"; slot: WornSlot; item: ItemId | null } // put on / take off a clothing or tool item
+  | { t: "heal" } // patch up the nearest hurt player (uses cooked food)
   | { t: "input"; dx: number; dy: number; sprint?: boolean } // intended direction, each -1..1
   | { t: "attack"; charge?: number } // charge 0..1 from how long Space was held
   | { t: "dodge" } // quick lunge + i-frames in the current heading
+  | { t: "setMode"; mode: PlayerMode } // switch combat/research/profession (2 s transform)
+  | { t: "setStance"; stance: Stance } // combat: high (punch) / low (kick)
+  | { t: "grab" } // lunge to seize a target ahead (combat mode)
+  | { t: "throwGrab" } // release + fling whoever you're holding
+  | { t: "block" } // momentary block (break a grab in high stance; soften strikes)
   | { t: "board" } // get in / out of the nearest vehicle
   | { t: "harvest" } // chop/mine/forage nearest resource node, or pull invasive plant
   | { t: "craft"; recipe: CraftRecipeId } // craft (recipe validated server-side)
   | { t: "fish" } // toggle fishing on/off (needs rod in inventory)
-  | { t: "eat" } // consume food from inventory for hunger/HP
+  | { t: "eat"; item?: ItemId } // consume food (specific item, else best) for hunger/HP
+  | { t: "drop"; item: ItemId; all?: boolean } // drop 1 (or all) of an item on the ground
+  | { t: "drink" } // sip from an adjacent freshwater lake (a little hunger back)
   | { t: "sleep" } // toggle resting by a fire to heal
   | { t: "chat"; msg: string } // text; / global, // team, ///name private
   | { t: "repair" }
   | { t: "trade"; buildingId: string; kind: "buy" | "sell"; item: ItemId; qty: number }
   | { t: "travel" }
-  | { t: "refuel" };
+  | { t: "refuel" }
+  | { t: "hide" }         // toggle hiding behind a tree/bush
+  | { t: "playDead" }     // toggle play dead (research only)
+  | { t: "jump" }         // jump
+  | { t: "listen" }       // research listen mode toggle
+  | { t: "enter-building"; buildingId: string } // walk inside a building
+  | { t: "exit-building" };                     // leave current room
 
 // --- Messages: server -> client --------------------------------------------
 export interface Snapshot {
@@ -402,14 +597,30 @@ export interface Snapshot {
   campfires: CampfireState[];
   furnaces: FurnaceState[];
   npcs: NpcState[];
+  lootDrops: LootDrop[];
 }
 
 export type ServerMessage =
   // Sent on join AND whenever the player changes region (the map swaps).
   | { t: "init"; id: string; region: RegionInfo; snapshot: Snapshot }
   | { t: "snapshot"; snapshot: Snapshot }
+  // A streamed map block: tiles/elevation for chunk (cx,cy), w×h tiles, with
+  // top-left at (cx*CHUNK, cy*CHUNK). `region` lets the client drop stale
+  // chunks that arrive after a region change.
+  | { t: "chunk"; region: RegionId; cx: number; cy: number; w: number; h: number; tiles: number[]; elevation: number[] }
   | { t: "log"; msg: string }
-  | { t: "chat"; from: string; msg: string; channel: "global" | "team" | "private" };
+  | { t: "logbook"; entries: LogbookEntry[] } // your BMSC logbook contents
+  | { t: "leaderboard"; data: LeaderboardData } // current town title holders
+  // A transient visual effect (e.g. a ranged-shot tracer) for clients to draw.
+  | { t: "fx"; kind: "tracer"; region: RegionId; x1: number; y1: number; x2: number; y2: number; weapon: string }
+  // A melee swing — clients animate the attacker's arm/leg thrust for ~250 ms.
+  | { t: "fx"; kind: "melee"; region: RegionId; id: string; stance: Stance; weapon: string | null }
+  // Login screen support: live name-availability + a rejected sign-in.
+  | { t: "nameStatus"; name: string; taken: boolean }
+  | { t: "joinDenied"; reason: string }
+  | { t: "chat"; from: string; msg: string; channel: "global" | "team" | "private" }
+  | { t: "room"; def: RoomDef; playerX: number; playerY: number }
+  | { t: "room-exit" };
 
 // Helper shared by both sides: a tile is under water when its (per-tile)
 // elevation sits below the current waterline.

@@ -6,35 +6,57 @@
     <title>Banfield, The Game</title>
     <style>
       :root {
-        font-family: system-ui, sans-serif;
+        font-family: system-ui, -apple-system, sans-serif;
         color: #eaf2f8;
+        --ocean: #0b1d2a;
+        --deep: #07131c;
+        --panel: #091e2c;
+        --panel-border: #1d4a66;
+        --panel-hi: #1a3a52;
+        --accent: #1e88e5;
+        --accent-hi: #42a5f5;
+        --gold: #ffd54f;
+        --gold-dim: #c9a227;
+        --teal: #7fd0c2;
+        --muted: #8fb4c9;
+        --dim: #5a7f96;
+        --danger: #e53935;
+        --forest: #2e7d32;
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
-        background: #0b1d2a;
+        background: var(--ocean);
         overflow: hidden;
       }
       #game { display: block; width: 100vw; height: 100vh; }
 
+      /* ── Login / character creator ── */
       #creator {
         position: fixed;
         inset: 0;
         display: flex;
         align-items: center;
         justify-content: center;
-        background: radial-gradient(circle at 50% 30%, #15384f, #07131c);
+        background:
+          radial-gradient(ellipse 80% 60% at 50% 0%, #12354f 0%, transparent 70%),
+          radial-gradient(ellipse 60% 40% at 20% 90%, #0d2a1a 0%, transparent 70%),
+          radial-gradient(ellipse 50% 30% at 80% 80%, #0a1a2e 0%, transparent 70%),
+          linear-gradient(160deg, #07151f 0%, #0b1d2a 50%, #091810 100%);
       }
       .card {
-        width: min(420px, 92vw);
-        background: #0f2738;
-        border: 1px solid #1d4a66;
-        border-radius: 14px;
-        padding: 22px 24px;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        width: min(460px, 94vw);
+        background: linear-gradient(175deg, #0e2233 0%, #0a1c2a 100%);
+        border: 1px solid #255575;
+        border-radius: 16px;
+        padding: 24px 26px;
+        box-shadow:
+          0 24px 60px rgba(0,0,0,0.65),
+          0 0 0 1px rgba(255,255,255,0.04) inset,
+          0 1px 0 rgba(100,180,255,0.08) inset;
       }
       .card h1.title { margin: 0 0 4px; font-size: 30px; letter-spacing: 0.5px; }
-      .card p.sub { margin: 0 0 18px; color: #8fb4c9; font-size: 13px; }
+      .card p.sub { margin: 0 0 16px; color: #7ba8c4; font-size: 13px; letter-spacing: 0.2px; }
       /* The name gag: the "m" in Bamfield struck out, a fresh "n" stickered over it. */
       .swap { position: relative; display: inline-block; }
       .swap .m { color: #5f7d8c; }
@@ -63,71 +85,102 @@
         font-weight: 800;
       }
       .title .rest { font-weight: 600; color: #cfe3ef; font-size: 0.62em; }
-      label { display: block; font-size: 13px; margin: 12px 0 4px; color: #b8d4e3; }
-      input[type="text"] {
+      label { display: block; font-size: 12px; margin: 10px 0 3px; color: #9fc8de; letter-spacing: 0.3px; text-transform: uppercase; font-weight: 600; }
+      input[type="text"], input[type="password"], input[type="email"] {
         width: 100%;
-        padding: 10px;
+        padding: 10px 12px;
         border-radius: 8px;
         border: 1px solid #2a5a78;
-        background: #0a1c29;
+        background: rgba(5,14,22,0.7);
         color: #eaf2f8;
         font-size: 15px;
+        outline: none;
+        transition: border-color 0.15s, box-shadow 0.15s;
+      }
+      input[type="text"]:focus, input[type="password"]:focus, input[type="email"]:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(30,136,229,0.18);
       }
       .swatches { display: flex; gap: 8px; flex-wrap: wrap; }
       .swatches input[type="color"] {
         width: 44px; height: 36px; border: none; background: none; cursor: pointer;
+        border-radius: 6px; overflow: hidden;
       }
-      .row { display: flex; gap: 16px; }
+      .row { display: flex; gap: 12px; }
       .row > div { flex: 1; }
-      #preview { display: block; margin: 14px auto 4px; background: #0a1c29; border-radius: 8px; }
+      #preview { display: block; margin: 12px auto 4px; background: rgba(5,14,22,0.5); border-radius: 10px; border: 1px solid #1d4a66; }
       button {
         width: 100%;
-        margin-top: 16px;
-        padding: 12px;
+        margin-top: 14px;
+        padding: 13px;
         border: none;
-        border-radius: 8px;
-        background: #1e88e5;
+        border-radius: 10px;
+        background: linear-gradient(135deg, #1976d2, #1e88e5 50%, #1565c0);
         color: white;
         font-size: 16px;
-        font-weight: 600;
+        font-weight: 700;
         cursor: pointer;
+        letter-spacing: 0.4px;
+        box-shadow: 0 4px 16px rgba(30,136,229,0.35), 0 1px 0 rgba(255,255,255,0.1) inset;
+        transition: filter 0.12s, box-shadow 0.12s;
       }
-      button:hover { background: #1976d2; }
+      button:hover { filter: brightness(1.1); box-shadow: 0 6px 22px rgba(30,136,229,0.5), 0 1px 0 rgba(255,255,255,0.1) inset; }
+      button:active { filter: brightness(0.93); }
 
+      .tabs { display: flex; gap: 6px; margin: 4px 0 6px; }
+      .tab {
+        flex: 1; margin: 0; padding: 9px; font-size: 13px; font-weight: 600;
+        background: rgba(5,14,22,0.5); color: var(--muted); border: 1px solid #2a5a78;
+        border-radius: 8px; cursor: pointer; width: auto; transition: background 0.12s;
+      }
+      .tab.active { background: var(--accent); color: #fff; border-color: var(--accent);
+        box-shadow: 0 2px 10px rgba(30,136,229,0.4); }
+      .tab:hover:not(.active) { background: #122d42; color: #cfe3ef; }
+      .status { font-size: 12px; font-weight: 600; }
+      .status.free { color: #57c46a; }
+      .status.taken { color: #ff7676; }
+      .status.checking { color: #8fb4c9; }
+      .hint { color: #6f93a8; font-size: 11px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+      .error {
+        margin-top: 12px; padding: 10px 14px; border-radius: 10px;
+        background: rgba(229,57,53,0.14); border: 1px solid rgba(229,57,53,0.5);
+        color: #ffb3b1; font-size: 13px;
+      }
+
+      /* ── In-game HUD (top-left) ── */
       #hud {
         position: fixed;
         left: 12px;
-        top: 12px;
-        font-size: 13px;
-        text-shadow: 0 1px 2px #000;
+        top: 10px;
+        font-size: 12px;
+        font-weight: 500;
+        text-shadow: 0 1px 3px #000, 0 0 8px rgba(0,0,0,0.6);
         pointer-events: none;
+        background: rgba(7,19,28,0.55);
+        border: 1px solid rgba(100,180,255,0.1);
+        border-radius: 8px;
+        padding: 5px 10px;
+        backdrop-filter: blur(4px);
+        color: #b0d4ec;
+        line-height: 1.6;
       }
       #log {
         position: fixed;
         left: 12px;
-        bottom: 12px;
+        bottom: 150px;
         max-width: 360px;
         font-size: 12px;
-        color: #cfe3ef;
-        text-shadow: 0 1px 2px #000;
+        color: #b8d8ec;
+        text-shadow: 0 1px 3px #000;
         pointer-events: none;
-      }
-      #help {
-        position: fixed;
-        right: 12px;
-        top: 12px;
-        font-size: 12px;
-        color: #9fc2d6;
-        text-align: right;
-        text-shadow: 0 1px 2px #000;
-        pointer-events: none;
+        line-height: 1.5;
       }
       .hidden { display: none !important; }
 
       #chat-input {
         position: fixed;
         left: 12px;
-        bottom: 48px;
+        bottom: 118px;
         width: min(380px, 80vw);
         padding: 8px 12px;
         border-radius: 8px;
@@ -139,47 +192,117 @@
         z-index: 10;
       }
       #chat-input::placeholder { color: #5a7f96; }
+
+      /* Body-customisation chip selectors */
+      .chip-group { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+      .chip {
+        padding: 4px 10px; border-radius: 12px; font-size: 12px;
+        background: #0a1c29; color: #8fb4c9; border: 1px solid #2a5a78;
+        cursor: pointer; user-select: none; transition: background 0.12s;
+      }
+      .chip.selected { background: #1e88e5; color: #fff; border-color: #1e88e5; }
+      .chip:hover:not(.selected) { background: #123247; }
+
+      /* Item right-click / tap context menu */
+      #item-menu {
+        position: fixed; z-index: 30; min-width: 130px;
+        background: #0d2433; border: 1px solid #2a5a78; border-radius: 8px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.55); padding: 4px; overflow: hidden;
+      }
+      #item-menu .im-title {
+        font-size: 11px; font-weight: 700; color: #ffd98a;
+        padding: 4px 8px 5px; border-bottom: 1px solid #1d4a66; margin-bottom: 3px;
+      }
+      #item-menu button {
+        display: block; width: 100%; margin: 0; text-align: left;
+        padding: 7px 10px; font-size: 12px; font-weight: 600; border-radius: 5px;
+        background: transparent; color: #cfe3ef;
+      }
+      #item-menu button:hover { background: #1e88e5; color: #fff; }
     </style>
   </head>
   <body>
     <canvas id="game"></canvas>
 
     <div id="hud" class="hidden"></div>
-    <div id="help" class="hidden">
-      WASD: move &nbsp; Shift: dodge &nbsp; Space: attack (hold=charge)<br />
-      E: chop / mine / pick / pull weeds / refuel &nbsp; Q: eat &nbsp; N: talk to locals<br />
-      G: fish &nbsp; F: board vehicle &nbsp; Z: sleep by fire &nbsp; T: travel<br />
-      C: craft (cook at a fire) &nbsp; B: shop/trade &nbsp; I: inventory &nbsp; M: map &nbsp; Enter: chat<br />
-      Pull invasive plants while they FLOWER to kill them for good<br />
-      Chat: / global &nbsp; // team &nbsp; ///Name private &nbsp; /team Name
-    </div>
     <div id="log" class="hidden"></div>
     <input id="chat-input" class="hidden" type="text" maxlength="160" placeholder="Chat — / global, // team, ///Name private, /team Name — Enter to send" autocomplete="off" />
+
+    <!-- Item context menu (equip / eat / drop), positioned on click -->
+    <div id="item-menu" class="hidden"></div>
 
     <div id="creator">
       <div class="card">
         <h1 class="title">Ba<span class="swap"><span class="m">m</span><span class="n">n</span></span>field<span class="rest">,&nbsp;The Game</span></h1>
         <p class="sub">Survive low tide and high tide on the coast of Barkley Sound.</p>
 
-        <label for="name">Name</label>
-        <input id="name" type="text" maxlength="16" placeholder="Settler" />
+        <div class="tabs">
+          <button type="button" id="tab-new" class="tab active">New here</button>
+          <button type="button" id="tab-return" class="tab">Returning</button>
+        </div>
 
-        <div class="row">
-          <div>
-            <label>Skin</label>
-            <div class="swatches"><input id="skin" type="color" value="#e0ac69" /></div>
-          </div>
-          <div>
-            <label>Hair</label>
-            <div class="swatches"><input id="hair" type="color" value="#3b2a1a" /></div>
-          </div>
-          <div>
-            <label>Shirt</label>
-            <div class="swatches"><input id="shirt" type="color" value="#2e7d32" /></div>
+        <label for="name">Name <span id="name-status" class="status"></span></label>
+        <input id="name" type="text" maxlength="16" placeholder="Pick a unique name" autocomplete="off" />
+
+        <label for="pass">Password <span class="hint">— remembers your character on any device</span></label>
+        <input id="pass" type="password" maxlength="64" placeholder="Something you'll remember" autocomplete="off" />
+
+        <div id="email-row">
+          <label for="email">Email <span class="hint">— optional, for account recovery</span></label>
+          <input id="email" type="email" maxlength="120" placeholder="you@example.com (optional)" autocomplete="off" />
+        </div>
+
+        <div id="design">
+          <div style="display:flex;gap:12px;align-items:flex-start;">
+            <canvas id="preview" width="80" height="160" style="border-radius:8px;background:#0a1c29;flex-shrink:0;"></canvas>
+            <div style="flex:1;min-width:0;">
+              <div class="row">
+                <div>
+                  <label>Skin</label>
+                  <div class="swatches"><input id="skin" type="color" value="#e0ac69" /></div>
+                </div>
+                <div>
+                  <label>Hair</label>
+                  <div class="swatches"><input id="hair" type="color" value="#3b2a1a" /></div>
+                </div>
+                <div>
+                  <label>Shirt</label>
+                  <div class="swatches"><input id="shirt" type="color" value="#2e7d32" /></div>
+                </div>
+              </div>
+
+              <label>Hair length</label>
+              <div class="chip-group" id="chips-hairStyle">
+                <span class="chip selected" data-val="short">Buzz</span>
+                <span class="chip" data-val="medium">Medium</span>
+                <span class="chip" data-val="long">Long</span>
+              </div>
+
+              <label>Build</label>
+              <div class="chip-group" id="chips-bodyBuild">
+                <span class="chip selected" data-val="slight">Wiry</span>
+                <span class="chip" data-val="medium">Solid</span>
+                <span class="chip" data-val="sturdy">Stout</span>
+              </div>
+
+              <label>Chest</label>
+              <div class="chip-group" id="chips-breastSize">
+                <span class="chip selected" data-val="non">Flat</span>
+                <span class="chip" data-val="modest">Modest</span>
+                <span class="chip" data-val="expressive">Expressive</span>
+              </div>
+
+              <label>Hips</label>
+              <div class="chip-group" id="chips-hipSize">
+                <span class="chip selected" data-val="narrow">Narrow</span>
+                <span class="chip" data-val="medium">Average</span>
+                <span class="chip" data-val="wide">Wide</span>
+              </div>
+            </div>
           </div>
         </div>
 
-        <canvas id="preview" width="96" height="96"></canvas>
+        <div id="auth-error" class="error hidden"></div>
         <button id="play">Wash ashore</button>
       </div>
     </div>

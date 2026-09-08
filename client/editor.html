@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Banfield — Sprite Editor</title>
+    <style>
+      :root {
+        font-family: system-ui, -apple-system, sans-serif;
+        --bg: #11202b; --panel: #162a38; --panel2: #1e3a4c;
+        --border: #2b5067; --text: #eaf2f8; --muted: #8fb4c9;
+        --accent: #2e9bd6; --accent-hi: #54b8ef; --gold: #ffd54f;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--text);
+        height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-size: 13px; }
+      header { display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+        background: var(--panel); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+      header h1 { font-size: 14px; margin: 0; color: var(--gold); font-weight: 700; white-space: nowrap; }
+      header .spacer { flex: 1; }
+      header input.docname { background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+        border-radius: 5px; padding: 4px 8px; font-size: 12px; width: 140px; }
+      button, select { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 5px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
+      button:hover { background: var(--accent); border-color: var(--accent-hi); }
+      button.active { background: var(--accent); border-color: var(--accent-hi); color: #fff; }
+      select#category-select { font-size: 12px; padding: 4px 8px; }
+      #subject-title { color: var(--gold); font-size: 12px; font-weight: 700; min-width: 80px; }
+      a.back { color: var(--accent-hi); text-decoration: none; font-size: 12px; }
+      main { flex: 1; display: flex; min-height: 0; }
+      .left { width: 200px; min-width: 150px; max-width: 420px; background: var(--panel);
+        border-right: 1px solid var(--border); display: flex; flex-direction: column;
+        overflow: hidden; resize: horizontal; }
+      .right { width: 210px; min-width: 160px; max-width: 420px; background: var(--panel);
+        border-left: 1px solid var(--border); display: flex; flex-direction: column;
+        overflow-y: auto; gap: 8px; padding: 8px; resize: horizontal; direction: rtl; }
+      .right > * { direction: ltr; }
+      .center { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #0c1820; }
+      .canvas-area { flex: 1; display: flex; align-items: center; justify-content: center;
+        position: relative; overflow: hidden; }
+      .group { background: var(--panel2); border: 1px solid var(--border); border-radius: 7px; padding: 8px; }
+      .group h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+        color: var(--muted); margin: 0 0 6px; }
+      .row { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+      .tools button { width: 34px; height: 30px; font-size: 15px; padding: 0; }
+      .palette { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
+      .swatch { width: 100%; aspect-ratio: 1; border-radius: 3px; cursor: pointer;
+        border: 1px solid rgba(0,0,0,.4); }
+      .swatch.sel { outline: 2px solid var(--gold); outline-offset: 1px; }
+      .curcolor { width: 100%; height: 26px; border-radius: 5px; border: 1px solid var(--border); }
+      .layer { display: flex; align-items: center; gap: 5px; padding: 4px 5px; border-radius: 5px;
+        cursor: pointer; border: 1px solid transparent; font-size: 11px; }
+      .layer.sel { background: var(--panel); border-color: var(--accent); }
+      .layer .vis { width: 16px; text-align: center; }
+      .layer .nm { flex: 1; }
+      input[type=color] { width: 32px; height: 26px; padding: 0; border: 1px solid var(--border);
+        border-radius: 4px; background: none; cursor: pointer; }
+      label.fld { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+      label.fld input[type=number] { width: 56px; background: var(--panel); color: var(--text);
+        border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px; }
+      .hint { color: var(--muted); font-size: 11px; line-height: 1.5; }
+
+      /* Subject grid (left scroll area) */
+      #subject-scroll { flex: 1; overflow-y: auto; padding: 8px; display: grid;
+        grid-template-columns: repeat(2, 1fr); gap: 6px; align-content: start; }
+      .subj-card { background: var(--panel2); border: 2px solid var(--border); border-radius: 6px;
+        padding: 5px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+      .subj-card.sel { border-color: var(--gold); }
+      .subj-card canvas { image-rendering: pixelated; max-width: 100%; height: auto; }
+      .subj-label { font-size: 9px; color: var(--muted); text-align: center; word-break: break-word;
+        line-height: 1.1; }
+      /* Terrain rows take the full sidebar width (no 2-col squeeze). */
+      #subject-scroll.single-col { grid-template-columns: 1fr; }
+      .terrain-row { display: flex; align-items: center; gap: 6px; padding: 4px;
+        border-radius: 5px; margin-bottom: 3px; background: var(--panel2); border: 1px solid var(--border); }
+      .terrain-row .tswatch { width: 32px; height: 24px; border-radius: 4px; border: 1px solid rgba(0,0,0,.4); flex-shrink: 0; }
+      .terrain-row .tlabel { flex: 1; font-size: 11px; }
+      .terrain-row input[type=color] { width: 30px; height: 22px; }
+      .app-row { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+      .app-row label { font-size: 11px; color: var(--muted); width: 34px; flex-shrink: 0; }
+
+      /* Stage */
+      #stage { image-rendering: pixelated;
+        background: repeating-conic-gradient(#1a2c38 0% 25%, #16242e 0% 50%) 50% / 20px 20px;
+        border: 1px solid var(--border); cursor: crosshair; }
+      #preview { image-rendering: pixelated; border: 1px solid var(--border); background: #0c1820; }
+
+      /* Item icon browser */
+      .iicon { width: 38px; height: 38px; image-rendering: pixelated; cursor: pointer;
+        border: 2px solid transparent; border-radius: 4px; background: #0c1820; }
+      .iicon.sel { border-color: var(--gold); }
+
+      /* NPC/creature stage area */
+      #npc-stage-wrap { flex-direction: column; align-items: center; gap: 10px; }
+      #npc-stage-wrap canvas { image-rendering: pixelated; border: 1px solid var(--border); background: #0c1820; border-radius: 6px; }
+      #terrain-stage-wrap { flex-direction: column; align-items: center; gap: 8px; }
+      #terrain-stage-wrap canvas { image-rendering: pixelated; border: 1px solid var(--border); border-radius: 6px; }
+
+      /* Timeline bar */
+      #timeline { background: var(--panel); border-top: 1px solid var(--border);
+        padding: 5px 10px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; }
+      .tl-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 28px; }
+      .tl-sep { width: 1px; background: var(--border); align-self: stretch; margin: 0 3px; }
+      .tl-label { font-size: 10px; color: var(--muted); white-space: nowrap; }
+      #tl-clips, #tl-facings { display: flex; gap: 3px; flex-wrap: wrap; }
+      #tl-frames { display: flex; gap: 3px; overflow-x: auto; max-width: 400px; padding-bottom: 2px; }
+      .frame-thumb { image-rendering: pixelated; cursor: pointer;
+        border: 2px solid var(--border); border-radius: 3px; flex-shrink: 0; }
+      .frame-thumb.sel { border-color: var(--gold); }
+      #tl-frames::-webkit-scrollbar { height: 4px; }
+      #tl-frames::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+      /* Left bottom tool/palette panels */
+      #tools-group, #palette-group, #canvas-options { padding: 7px; flex-shrink: 0; }
+      #tools-group { border-top: 1px solid var(--border); }
+      #palette-group { border-top: 1px solid var(--border); }
+      #canvas-options { border-top: 1px solid var(--border); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>✎ Banfield</h1>
+      <select id="category-select">
+        <option value="characters">Characters</option>
+        <option value="creatures">Creatures</option>
+        <option value="clothing">Clothing</option>
+        <option value="objects">Objects</option>
+        <option value="items">Items</option>
+        <option value="terrain">Terrain</option>
+      </select>
+      <span id="subject-title"></span>
+      <span class="spacer"></span>
+      <a class="back" href="/">← game</a>
+
+      <!-- paint ops (char / creatures / clothing / objects) -->
+      <div id="paint-ops" style="display:none;gap:6px;align-items:center;flex-wrap:wrap">
+        <input class="docname" id="docname" value="character" />
+        <button id="btn-new" title="Create a new character">+ New Char</button>
+        <button id="btn-char-delete" title="Delete this character" style="padding:4px 7px;font-size:11px" id="btn-char-delete">✕ Del</button>
+        <button id="btn-save">Save to game</button>
+        <button id="btn-export">Export JSON</button>
+        <button id="btn-import">Import</button>
+        <button id="btn-png">PNG sheet</button>
+        <button id="btn-pixellab" style="background:#1a4a3a;border-color:#2e8b6e;color:#7fffd4" title="Import a PixelLab sprite sheet PNG">⬇ PixelLab</button>
+        <input type="file" id="file-import" accept="application/json" hidden />
+      </div>
+
+      <!-- item ops -->
+      <div id="item-ops" style="display:none;gap:6px;align-items:center">
+        <button id="btn-item-save">Save icon</button>
+        <button id="btn-item-export">Export JSON</button>
+        <button id="btn-item-import">Import JSON</button>
+        <input type="file" id="file-item-import" accept="application/json" hidden />
+      </div>
+
+      <!-- terrain ops -->
+      <div id="terrain-ops" style="display:none;gap:6px;align-items:center">
+        <button id="btn-terrain-save">Save terrain</button>
+        <button id="btn-terrain-reset">Reset defaults</button>
+        <button id="btn-terrain-sprites-save">Save tile sprites</button>
+      </div>
+
+      <!-- npc ops (shown when charSubject is an NPC) -->
+      <div id="npc-ops" style="display:none;gap:6px;align-items:center;flex-wrap:wrap">
+        <button id="btn-npc-reset" title="Re-seed pixels from the built-in procedural art">↻ Reseed</button>
+        <button id="btn-npc-save">Save NPCs to game</button>
+        <span style="font-size:11px;color:var(--muted)">|</span>
+        <span style="font-size:11px;color:var(--muted)">Use character:</span>
+        <select id="npc-copy-char-sel" style="font-size:11px;padding:3px 5px;max-width:120px"></select>
+        <button id="btn-npc-copy-char" title="Copy a saved character's sprite into this NPC slot">← Copy to NPC</button>
+      </div>
+
+      <!-- creature extra ops (when editingCreature) -->
+      <div id="creature-extra-ops" style="display:none;gap:6px;align-items:center">
+        <button id="btn-creature-raster" title="Seed from built-in vector art">⟳ Rasterize</button>
+        <button id="btn-creature-clear">Clear sprite</button>
+        <button id="btn-creature-save">Save creatures</button>
+      </div>
+
+      <!-- clothing ops -->
+      <div id="clothing-ops" style="display:none;gap:6px;align-items:center">
+        <button id="btn-clothing-clear">Clear sprite</button>
+        <button id="btn-clothing-save">Save clothing</button>
+      </div>
+
+      <!-- objects ops -->
+      <div id="objects-ops" style="display:none;gap:6px;align-items:center">
+        <button id="btn-object-clear">Clear sprite</button>
+        <button id="btn-objects-save">Save objects</button>
+      </div>
+    </header>
+
+    <main>
+      <!-- LEFT COLUMN -->
+      <div class="left">
+        <div id="subject-scroll"></div>
+
+        <!-- Tools -->
+        <div id="tools-group" style="display:none">
+          <div class="row tools" id="tools" style="margin-bottom:5px">
+            <button data-tool="pencil" class="active" title="Pencil (B)">✏️</button>
+            <button data-tool="eraser" title="Eraser (E)">🧽</button>
+            <button data-tool="fill" title="Fill (G)">🪣</button>
+            <button data-tool="pick" title="Pick (I)">💧</button>
+          </div>
+          <div class="row">
+            <button id="btn-clear" style="font-size:11px;padding:3px 7px">Clear layer</button>
+          </div>
+        </div>
+
+        <!-- Palette -->
+        <div id="palette-group" style="display:none">
+          <div class="row" style="margin-bottom:6px">
+            <input type="color" id="colorpick" value="#e0ac69" />
+            <div class="curcolor" id="curcolor" style="background:#e0ac69"></div>
+          </div>
+          <div class="palette" id="palette"></div>
+        </div>
+
+        <!-- Canvas options (zoom, grid, onion) -->
+        <div id="canvas-options" style="display:none">
+          <div class="row">
+            <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+              <span style="font-size:10px;color:var(--muted)">Zoom</span>
+              <input type="range" id="zoom" min="4" max="28" step="1" value="14" />
+            </label>
+          </div>
+          <div class="row" style="margin-top:4px">
+            <label style="font-size:11px"><input type="checkbox" id="grid" checked /> Grid</label>
+            <label style="font-size:11px"><input type="checkbox" id="onion" /> Onion</label>
+          </div>
+        </div>
+      </div>
+
+      <!-- CENTER COLUMN -->
+      <div class="center">
+        <div class="canvas-area">
+          <!-- Paint canvas -->
+          <canvas id="stage" style="display:none"></canvas>
+          <!-- Item preview (top-right overlay) -->
+          <div id="item-preview-wrap" style="display:none;position:absolute;top:12px;right:12px;text-align:center">
+            <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Preview</div>
+            <canvas id="item-preview" width="80" height="80" style="image-rendering:pixelated;border:1px solid var(--border);background:#0c1820"></canvas>
+          </div>
+          <!-- canvas placeholder for modes without a paint canvas -->
+          <div id="canvas-placeholder" style="display:none;color:var(--muted);font-size:12px;text-align:center;padding:20px">
+            Select a subject on the left to begin.
+          </div>
+          <!-- NPC animated preview area -->
+          <div id="npc-stage-wrap" style="display:none;flex-direction:column;align-items:center;gap:10px">
+            <canvas id="npc-preview" width="100" height="130"
+              style="image-rendering:pixelated;border:1px solid var(--border);background:#0c1820;border-radius:6px"></canvas>
+          </div>
+          <!-- Terrain preview area -->
+          <div id="terrain-stage-wrap" style="display:none;flex-direction:column;align-items:center;gap:8px">
+            <div style="color:var(--muted);font-size:11px">Tile preview (3×3)</div>
+            <canvas id="terrain-preview" width="192" height="192"
+              style="image-rendering:pixelated;border:1px solid var(--border);border-radius:6px"></canvas>
+          </div>
+        </div>
+
+        <!-- TIMELINE BAR (bottom of center) -->
+        <div id="timeline" style="display:none">
+          <!-- Row 1: clips + facings -->
+          <div class="tl-row">
+            <span class="tl-label">Clip:</span>
+            <div id="tl-clips"></div>
+            <button id="clip-add" style="font-size:10px;padding:2px 6px" title="Add animation">+</button>
+            <button id="clip-del" style="font-size:10px;padding:2px 6px" title="Delete animation">✕</button>
+            <button id="clip-default" style="font-size:10px;padding:2px 6px" title="Make default">★</button>
+            <label style="font-size:10px;color:var(--muted);display:flex;gap:4px;align-items:center;margin-left:4px">
+              <input type="checkbox" id="clip-loop" checked />loop
+            </label>
+            <div class="tl-sep"></div>
+            <span class="tl-label">Facing:</span>
+            <div id="tl-facings"></div>
+          </div>
+          <!-- Row 2: play + frames + frame ops -->
+          <div class="tl-row">
+            <button id="btn-play" class="active" style="font-size:11px;padding:3px 7px">▶</button>
+            <label class="fld" style="flex-direction:row;align-items:center;gap:4px">
+              <span style="font-size:10px;color:var(--muted)">FPS</span>
+              <input type="number" id="fps" min="1" max="24" value="6" style="width:44px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px;font-size:11px" />
+            </label>
+            <div class="tl-sep"></div>
+            <div id="tl-frames"></div>
+            <div class="tl-sep"></div>
+            <button id="frame-add" style="font-size:10px;padding:2px 6px">+Frame</button>
+            <button id="frame-dup" style="font-size:10px;padding:2px 6px">Dup</button>
+            <button id="frame-del" style="font-size:10px;padding:2px 6px">Del</button>
+            <div class="tl-sep"></div>
+            <button id="frame-copy" style="font-size:10px;padding:2px 6px" title="Copy this frame">⧉ Copy</button>
+            <button id="frame-paste" style="font-size:10px;padding:2px 6px" title="Paste copied frame here">⧉ Paste</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT COLUMN -->
+      <div class="right">
+        <!-- Sprite preview (walk preview) -->
+        <div id="preview-group" class="group" style="display:none">
+          <h2 id="preview-label">Preview</h2>
+          <canvas id="preview" width="80" height="104"></canvas>
+          <div class="row" style="margin-top:5px;justify-content:center">
+            <!-- play is in timeline; this preview is passive -->
+          </div>
+        </div>
+
+        <!-- NPC appearance editor -->
+        <div id="npc-app-group" class="group" style="display:none">
+          <h2 id="npc-editor-title">NPC Appearance</h2>
+          <div id="npc-app-editor"><div class="hint">Select an NPC from the left.</div></div>
+        </div>
+
+        <!-- Layers -->
+        <div id="layers-group" class="group" style="display:none">
+          <h2>Layers</h2>
+          <div id="layers"></div>
+          <div class="row" style="margin-top:6px;gap:4px">
+            <button id="layer-add" style="font-size:10px;padding:3px 6px" title="Add a new layer on top">+ Layer</button>
+            <button id="layer-rename" style="font-size:10px;padding:3px 6px" title="Rename selected layer">Rename</button>
+            <button id="layer-del" style="font-size:10px;padding:3px 6px" title="Delete selected layer">Del</button>
+          </div>
+        </div>
+
+        <!-- Dye preview -->
+        <div id="dye-group" class="group" style="display:none">
+          <h2>Dye preview</h2>
+          <label style="display:flex;gap:5px;align-items:center;margin-bottom:6px;font-size:11px">
+            <input type="checkbox" id="tintToggle" /> show dyed colours
+          </label>
+          <div id="dye-rows"></div>
+        </div>
+
+        <!-- Canvas options panel (right side info for items/terrain) -->
+        <div id="canvas-options-group" class="group" style="display:none">
+          <h2>Canvas</h2>
+          <div class="hint" style="line-height:1.7" id="canvas-options-hint">
+            B = pencil · E = eraser<br>G = fill · I = eyedropper
+          </div>
+        </div>
+      </div>
+    </main>
+    <script type="module" src="/src/editor/main.ts"></script>
+
+    <!-- PixelLab import modal -->
+    <div id="pli-modal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.78);align-items:center;justify-content:center">
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;width:640px;max-height:92vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px">
+
+        <div style="display:flex;align-items:center;gap:8px">
+          <h2 style="margin:0;font-size:14px;color:#7fffd4">⬇ Import PixelLab Character</h2>
+          <button id="pli-close" style="margin-left:auto">✕</button>
+        </div>
+
+        <!-- Mode tabs -->
+        <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+          <button id="pli-tab-8png" class="active" style="flex:1;border-radius:0;border:none;padding:6px;font-size:11px">8 Rotation PNGs (PixelLab v3)</button>
+          <button id="pli-tab-sheet" style="flex:1;border-radius:0;border:none;border-left:1px solid var(--border);padding:6px;font-size:11px">Sprite Sheet (single PNG)</button>
+        </div>
+
+        <!-- ══ MODE A: 8 separate PNGs ══ -->
+        <div id="pli-mode-8png" style="display:flex;flex-direction:column;gap:10px">
+          <p style="margin:0;font-size:11px;color:var(--muted)">
+            Select all 8 rotation PNGs from your PixelLab export folder at once
+            (<code>south.png</code>, <code>south-east.png</code>, … or numbered 0–7).
+            They land on the <strong>skin</strong> layer — other layers are empty for painting clothes.
+          </p>
+
+          <div style="display:flex;gap:8px;align-items:center">
+            <button id="pli-choose-8">Choose 8 PNGs</button>
+            <input type="file" id="pli-file-8" accept="image/*" multiple hidden />
+            <span id="pli-8-count" style="font-size:11px;color:var(--muted)">No files chosen</span>
+          </div>
+
+          <!-- 8-facing preview grid -->
+          <div id="pli-8-grid" style="display:none;grid-template-columns:repeat(4,1fr);gap:6px">
+            <!-- filled by JS: 8 cells, each label + canvas -->
+          </div>
+
+          <div class="row" style="gap:12px;margin-top:2px">
+            <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+              <span style="font-size:11px">Character name</span>
+              <input type="text" id="pli-8-name" value="imported"
+                style="width:130px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 5px;font-size:11px" />
+            </label>
+            <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+              <span style="font-size:11px">Clip name</span>
+              <input type="text" id="pli-8-clip" value="idle"
+                style="width:70px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 5px;font-size:11px" />
+            </label>
+          </div>
+          <div id="pli-8-status" style="font-size:11px;color:var(--muted)">Load 8 PNGs to continue.</div>
+        </div>
+
+        <!-- ══ MODE B: sprite sheet ══ -->
+        <div id="pli-mode-sheet" style="display:none;flex-direction:column;gap:9px">
+          <p style="margin:0;font-size:11px;color:var(--muted)">
+            Upload a single PNG where all 8 facings are arranged in a grid.
+          </p>
+
+          <div style="display:flex;gap:8px;align-items:center">
+            <button id="pli-choose">Choose PNG</button>
+            <input type="file" id="pli-file" accept="image/*" hidden />
+            <span id="pli-filename" style="font-size:11px;color:var(--muted)">No file chosen</span>
+          </div>
+
+          <div id="pli-preview-wrap" style="display:none;overflow:auto;max-height:220px;border:1px solid var(--border);border-radius:6px;background:#0c1820">
+            <canvas id="pli-preview" style="image-rendering:pixelated;display:block"></canvas>
+          </div>
+
+          <div id="pli-settings" style="display:none;flex-direction:column;gap:9px">
+            <div class="row" style="gap:6px">
+              <span style="font-size:11px;color:var(--muted);flex-shrink:0">Preset:</span>
+              <button id="pli-preset-v3rows" style="font-size:11px;background:#1a3a2a;border-color:#2e8b6e">8 rows (facings ↕)</button>
+              <button id="pli-preset-v3cols" style="font-size:11px">8 cols (facings ↔)</button>
+            </div>
+            <div class="row" style="gap:12px">
+              <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+                <span>Frame W</span>
+                <input type="number" id="pli-fw" value="48" min="1" max="512"
+                  style="width:56px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 5px" />
+              </label>
+              <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+                <span>Frame H</span>
+                <input type="number" id="pli-fh" value="48" min="1" max="512"
+                  style="width:56px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 5px" />
+              </label>
+              <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+                <span>Frames/clip</span>
+                <input type="number" id="pli-nf" value="1" min="1" max="64"
+                  style="width:48px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 5px" />
+              </label>
+            </div>
+            <div class="row" style="gap:12px">
+              <span style="font-size:11px;color:var(--muted)">Facings along:</span>
+              <label style="font-size:11px"><input type="radio" name="pli-axis" id="pli-axis-rows" value="rows" checked /> Rows (↕)</label>
+              <label style="font-size:11px"><input type="radio" name="pli-axis" id="pli-axis-cols" value="cols" /> Columns (↔)</label>
+            </div>
+            <div class="row" style="gap:12px">
+              <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+                <span>Clip</span>
+                <input type="text" id="pli-clip" value="idle"
+                  style="width:70px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 5px" />
+              </label>
+              <label class="fld" style="flex-direction:row;align-items:center;gap:5px">
+                <span>Character name</span>
+                <input type="text" id="pli-name" value="imported"
+                  style="width:120px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 5px" />
+              </label>
+            </div>
+            <div id="pli-status" style="font-size:11px;color:var(--muted)">Ready</div>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+          <button id="pli-cancel">Cancel</button>
+          <button id="pli-import" disabled style="background:#1a4a3a;border-color:#2e8b6e;color:#7fffd4">Import character</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
