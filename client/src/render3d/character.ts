@@ -30,24 +30,26 @@ const SLOT_BONE: Record<EquipSlot, BoneName> = {
 // Limb bones sit at their joint and their mesh hangs downward from it.
 const REST: Record<BoneName, [number, number, number]> = {
   root:     [0, 0, 0],
-  // Hip height is set so the soles land exactly on y=0: legs 0.42 + shins 0.40
+  // Hip height is set so the soles land exactly on y=0: legs 0.38 + shins 0.36
   // + feet 0.10. Change a limb length and this must move with it.
-  hips:     [0, 0.92, 0],
+  hips:     [0, 0.84, 0],
   torso:    [0, 0, 0],
-  neck:     [0, 0.55, 0],
-  head:     [0, 0.05, 0],
-  armL:     [-0.30, 0.48, 0],
-  forearmL: [0, -0.34, 0],
-  handL:    [0, -0.32, 0],
-  armR:     [0.30, 0.48, 0],
-  forearmR: [0, -0.34, 0],
-  handR:    [0, -0.32, 0],
-  legL:     [-0.11, 0, 0],
-  shinL:    [0, -0.42, 0],
-  footL:    [0, -0.40, 0],
-  legR:     [0.11, 0, 0],
-  shinR:    [0, -0.42, 0],
-  footR:    [0, -0.40, 0],
+  neck:     [0, 0.50, 0],
+  head:     [0, 0.08, 0],
+  armL:     [-0.30, 0.46, 0],
+  forearmL: [0, -0.30, 0],
+  handL:    [0, -0.28, 0],
+  armR:     [0.30, 0.46, 0],
+  forearmR: [0, -0.30, 0],
+  handR:    [0, -0.28, 0],
+  // Stance is wide enough that the two legs read as separate limbs rather
+  // than one column — at this scale a narrow gap just closes up visually.
+  legL:     [-0.12, 0, 0],
+  shinL:    [0, -0.38, 0],
+  footL:    [0, -0.36, 0],
+  legR:     [0.12, 0, 0],
+  shinR:    [0, -0.38, 0],
+  footR:    [0, -0.36, 0],
 };
 
 const PARENT: Partial<Record<BoneName, BoneName>> = {
@@ -90,7 +92,10 @@ function taperedBox(topW: number, topD: number, botW: number, botD: number, h: n
 
 interface PartSpec {
   bone: BoneName;
-  role: Exclude<DyeRole, "none">;
+  /** Dye role, for parts that recolour with the character's appearance. */
+  role?: Exclude<DyeRole, "none">;
+  /** Fixed colour, for parts that never dye (eyes). */
+  color?: number;
   geo: THREE.BufferGeometry;
   /** Offset applied to the mesh within its bone. */
   offset?: [number, number, number];
@@ -98,21 +103,31 @@ interface PartSpec {
 
 function bodyParts(): PartSpec[] {
   return [
-    { bone: "head",  role: "skin",  geo: taperedBox(0.24, 0.22, 0.22, 0.21, 0.26), offset: [0, 0.26, 0] },
-    { bone: "head",  role: "hair",  geo: taperedBox(0.25, 0.235, 0.255, 0.24, 0.10), offset: [0, 0.30, 0] },
-    { bone: "torso", role: "shirt", geo: taperedBox(0.46, 0.24, 0.38, 0.22, 0.55), offset: [0, 0.55, 0] },
-    { bone: "armL",  role: "skin",  geo: taperedBox(0.14, 0.14, 0.12, 0.12, 0.34) },
-    { bone: "armR",  role: "skin",  geo: taperedBox(0.14, 0.14, 0.12, 0.12, 0.34) },
-    { bone: "forearmL", role: "skin", geo: taperedBox(0.12, 0.12, 0.10, 0.10, 0.32) },
-    { bone: "forearmR", role: "skin", geo: taperedBox(0.12, 0.12, 0.10, 0.10, 0.32) },
-    { bone: "handL", role: "skin",  geo: taperedBox(0.11, 0.11, 0.09, 0.09, 0.12) },
-    { bone: "handR", role: "skin",  geo: taperedBox(0.11, 0.11, 0.09, 0.09, 0.12) },
-    { bone: "legL",  role: "pants", geo: taperedBox(0.18, 0.18, 0.15, 0.15, 0.42) },
-    { bone: "legR",  role: "pants", geo: taperedBox(0.18, 0.18, 0.15, 0.15, 0.42) },
-    { bone: "shinL", role: "pants", geo: taperedBox(0.15, 0.15, 0.12, 0.12, 0.40) },
-    { bone: "shinR", role: "pants", geo: taperedBox(0.15, 0.15, 0.12, 0.12, 0.40) },
-    { bone: "footL", role: "accent", geo: taperedBox(0.14, 0.26, 0.13, 0.24, 0.10) },
-    { bone: "footR", role: "accent", geo: taperedBox(0.14, 0.26, 0.13, 0.24, 0.10) },
+    // Deliberately stylised rather than anatomical: a slightly oversized head
+    // and stocky limbs stay readable at gameplay camera distance, where
+    // realistic proportions just render as a thin stick.
+    { bone: "head",  role: "skin",  geo: taperedBox(0.26, 0.25, 0.23, 0.23, 0.30), offset: [0, 0.30, 0] },
+    { bone: "head",  role: "hair",  geo: taperedBox(0.265, 0.255, 0.275, 0.265, 0.12), offset: [0, 0.33, 0] },
+    // Eyes sit proud of the face on -Z, which is also the model's forward axis
+    // — so they double as the visual check that heading is not reversed.
+    { bone: "head", color: 0x231a12, geo: taperedBox(0.05, 0.03, 0.05, 0.03, 0.045), offset: [-0.06, 0.21, -0.116] },
+    { bone: "head", color: 0x231a12, geo: taperedBox(0.05, 0.03, 0.05, 0.03, 0.045), offset: [0.06, 0.21, -0.116] },
+    { bone: "neck",  role: "skin",  geo: taperedBox(0.14, 0.14, 0.16, 0.16, 0.08), offset: [0, 0.08, 0] },
+    // The torso carries the silhouette: broad shoulders, a real waist break,
+    // and enough depth that it isn't a plank from an overhead camera.
+    { bone: "torso", role: "shirt", geo: taperedBox(0.50, 0.30, 0.40, 0.26, 0.50), offset: [0, 0.50, 0] },
+    { bone: "armL",  role: "skin",  geo: taperedBox(0.13, 0.15, 0.115, 0.135, 0.30) },
+    { bone: "armR",  role: "skin",  geo: taperedBox(0.13, 0.15, 0.115, 0.135, 0.30) },
+    { bone: "forearmL", role: "skin", geo: taperedBox(0.115, 0.135, 0.10, 0.12, 0.28) },
+    { bone: "forearmR", role: "skin", geo: taperedBox(0.115, 0.135, 0.10, 0.12, 0.28) },
+    { bone: "handL", role: "skin",  geo: taperedBox(0.105, 0.125, 0.095, 0.115, 0.11) },
+    { bone: "handR", role: "skin",  geo: taperedBox(0.105, 0.125, 0.095, 0.115, 0.11) },
+    { bone: "legL",  role: "pants", geo: taperedBox(0.17, 0.20, 0.145, 0.175, 0.38) },
+    { bone: "legR",  role: "pants", geo: taperedBox(0.17, 0.20, 0.145, 0.175, 0.38) },
+    { bone: "shinL", role: "pants", geo: taperedBox(0.145, 0.175, 0.125, 0.155, 0.36) },
+    { bone: "shinR", role: "pants", geo: taperedBox(0.145, 0.175, 0.125, 0.155, 0.36) },
+    { bone: "footL", role: "accent", geo: taperedBox(0.16, 0.28, 0.15, 0.27, 0.10) },
+    { bone: "footR", role: "accent", geo: taperedBox(0.16, 0.28, 0.15, 0.27, 0.10) },
   ];
 }
 
@@ -141,12 +156,13 @@ export class CharacterRig {
     }
 
     for (const spec of bodyParts()) {
-      const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
+      const mat = new THREE.MeshLambertMaterial({ color: spec.color ?? 0xffffff, flatShading: true });
       const mesh = new THREE.Mesh(spec.geo, mat);
       if (spec.offset) mesh.position.fromArray(spec.offset);
       mesh.castShadow = true;
       this.bones[spec.bone].add(mesh);
       this.owned.push(spec.geo, mat);
+      if (!spec.role) continue;
       const list = this.byRole.get(spec.role) ?? [];
       list.push(mat);
       this.byRole.set(spec.role, list);
@@ -180,9 +196,15 @@ export class CharacterRig {
     this.equipped.set(slot, mesh);
   }
 
-  /** Face the given world heading (radians, 0 = +x/east). */
+  /**
+   * Face the given world heading (radians, 0 = +x/east).
+   *
+   * Three.js treats -Z as forward, and world-y maps to scene-z. Solving
+   * "rotate so -Z lands on (cos rad, sin rad)" gives -rad - π/2; the +π/2
+   * form points the model exactly backwards.
+   */
   setHeading(rad: number) {
-    this.root.rotation.y = -rad + Math.PI / 2;
+    this.root.rotation.y = -rad - Math.PI / 2;
   }
 
   /** Advance the procedural pose. `speed` is in tiles/sec. */
@@ -231,7 +253,10 @@ export class CharacterRig {
     } else {
       const breathe = Math.sin(t * 0.9);
       b.torso.rotation.x = 0.03 + breathe * 0.02;
-      b.armL.rotation.z = 0.10; b.armR.rotation.z = -0.10;
+      // Arms hang clear of the body rather than flush against it, so the
+      // silhouette reads as limbs instead of one solid column.
+      b.armL.rotation.z = 0.15; b.armR.rotation.z = -0.15;
+      b.forearmL.rotation.z = 0.06; b.forearmR.rotation.z = -0.06;
       b.armL.rotation.x = breathe * 0.05;
       b.armR.rotation.x = -breathe * 0.05;
       b.hips.position.y += breathe * 0.012;
