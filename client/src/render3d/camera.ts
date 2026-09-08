@@ -17,10 +17,10 @@ export class OrbitCamera {
 
   private yaw = 0;
   private pitch = 0.75;
-  private dist = 14;
+  private dist = 9;
   private tYaw = 0;
   private tPitch = 0.75;
-  private tDist = 14;
+  private tDist = 9;
 
   private readonly target = new THREE.Vector3();
   private targetInit = false;

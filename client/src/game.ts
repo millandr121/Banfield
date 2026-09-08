@@ -1,19 +1,14 @@
 import {
   Appearance,
   BuildingState,
-  CampfireState,
-  FurnaceState,
   CRAFT_RECIPES,
-  CreatureState,
   FOOD_VALUE,
   INVASIVE_LABEL,
   ITEM_IDS,
   ITEM_LABEL,
   WornSlot,
-  WornItems,
   SLOT_FOR_ITEM,
   ItemId,
-  LootDrop,
   NpcState,
   PlantState,
   PlayerMode,
@@ -31,30 +26,21 @@ import {
   WorldMap,
   OverviewMap,
   CHUNK,
-  WATERLINE_HIGH,
-  DEPTH_ANKLE,
   DEPTH_SWIM,
-  DEPTH_DEEP,
-  DEPTH_OCEAN,
   isWaterTile,
   skillLevel,
 } from "../../shared/protocol";
 import { LogbookEntry, LeaderboardData } from "../../shared/protocol";
 import { SPECIES, resourceSpeciesKey } from "../../shared/species";
 import { Net } from "./net";
-import { drawCharacterPixel, type CharOpts as PixelCharOpts } from "./pixelchar";
-import npcLooksData from "./assets/npc-looks.json";
 import terrainData from "./assets/terrain-settings.json";
-import animData from "./assets/anim-settings.json";
 import { drawItemIcon } from "./itemicon";
-import { drawFullCreature, drawCreatureSprite, MARINE_KINDS, setCreatureDocProvider } from "./creatures";
+import { drawFullCreature, setCreatureDocProvider } from "./creatures";
 import creatureSpriteData from "./assets/creature-sprites.json";
 import playerSpriteData from "./assets/player-sprite.json";
-import npcSpriteData from "./assets/npc-sprites.json";
-import clothingSpriteData from "./assets/clothing-sprites.json";
-import objectSpriteData from "./assets/object-sprites.json";
 import terrainSpritesData from "./assets/terrain-sprites.json";
-import { SpriteDoc, normalizeLayers, docHasPaint, renderFrame, compositeFrame } from "../../shared/sprite";
+import { SpriteDoc, normalizeLayers, docHasPaint, compositeFrame } from "../../shared/sprite";
+import { Renderer3D, type PlayerView } from "./render3d";
 
 // The editor saves painted sprites to localStorage (same origin as the game)
 // AND writes the JSON asset files. localStorage is the live source of truth:
@@ -111,16 +97,6 @@ let activePlayerCharId = (playerSpriteData as { active?: string }).active ?? "pl
 }
 let PLAYER_SPRITE: SpriteDoc | null = ALL_PLAYER_SPRITES.get(activePlayerCharId) ?? null;
 
-// Painted NPC sprites, keyed by NPC kind (authored in the editor).
-const PAINTED_NPCS = new Map<string, SpriteDoc>(
-  Object.entries(loadDocs(npcSpriteData, "banfield-npc-sprites")));
-
-const PAINTED_CLOTHING = new Map<string, SpriteDoc>(
-  Object.entries(loadDocs(clothingSpriteData, "banfield-clothing-sprites")));
-
-const PAINTED_OBJECTS = new Map<string, SpriteDoc>(
-  Object.entries(loadDocs(objectSpriteData, "banfield-object-sprites")));
-
 // Terrain tiles pre-rendered to OffscreenCanvas for fast drawImage per-tile.
 const TERRAIN_SPRITE_CACHE = new Map<string, OffscreenCanvas>();
 {
@@ -144,112 +120,6 @@ const TERRAIN_SPRITE_CACHE = new Map<string, OffscreenCanvas>();
   }
 }
 
-// Map Tile enum to terrain sprite key
-const TILE_SPRITE_KEY: Partial<Record<number, string>> = {
-  [Tile.Grass]: "grass", [Tile.Forest]: "forest", [Tile.Sand]: "sand",
-  [Tile.Hill]: "hill", [Tile.Rock]: "rock", [Tile.Road]: "road",
-  [Tile.Dock]: "dock",
-};
-
-/** Shared sprite blitter: draws a SpriteDoc frame centred on (cx,cy) feet. overlays are composited on top (clothing). */
-function drawSpriteDoc(
-  ctx: CanvasRenderingContext2D, cx: number, cy: number,
-  doc: SpriteDoc, facing: Facing, moving: boolean,
-  overlays?: SpriteDoc[],
-  animState?: string,
-): void {
-  const clip = moving && doc.animations.run && animState === "run" ? "run"
-    : doc.animations.walk && moving ? "walk"
-    : doc.animations.swim && animState === "swim" ? "swim"
-    : doc.animations.jump && (animState === "jump" || animState === "fall") ? "jump"
-    : doc.animations.idle ? "idle" : doc.defaultClip;
-  const frameCount = doc.animations[clip]?.facings[facing]?.length ?? 1;
-  const fps = doc.animations[clip]?.fps ?? 6;
-  const frameIdx = moving ? Math.floor(performance.now() / (1000 / Math.max(1, fps))) % Math.max(1, frameCount) : 0;
-  const px = [...renderFrame(doc, clip, facing, frameIdx, {})];
-
-  // Composite any worn clothing layers on top
-  if (overlays && overlays.length > 0) {
-    for (const overlay of overlays) {
-      if (overlay.w !== doc.w || overlay.h !== doc.h) continue;
-      const oclip = overlay.animations.walk && moving ? "walk"
-        : overlay.animations.idle ? "idle" : overlay.defaultClip;
-      const oFrameCount = overlay.animations[oclip]?.facings[facing]?.length ?? 1;
-      const oFrameIdx = frameIdx % Math.max(1, oFrameCount);
-      const opx = renderFrame(overlay, oclip, facing, oFrameIdx, {});
-      for (let i = 0; i < px.length; i++) { if (opx[i]) px[i] = opx[i]; }
-    }
-  }
-
-  const scale = (TILE_SIZE * 2) / doc.h;
-  const ox = cx - (doc.w * scale) / 2;
-  const oy = cy - doc.h * scale + TILE_SIZE * 0.45;
-  for (let y = 0; y < doc.h; y++) {
-    for (let x = 0; x < doc.w; x++) {
-      const c = px[y * doc.w + x];
-      if (!c) continue;
-      ctx.fillStyle = c;
-      ctx.fillRect(Math.floor(ox + x * scale), Math.floor(oy + y * scale), Math.ceil(scale), Math.ceil(scale));
-    }
-  }
-}
-
-function wornClothingDocs(worn?: WornItems): SpriteDoc[] {
-  if (!worn) return [];
-  const docs: SpriteDoc[] = [];
-  for (const slot of ["legs", "torso", "head", "back"] as const) {
-    const itemId = worn[slot];
-    if (!itemId) continue;
-    const d = PAINTED_CLOTHING.get(itemId);
-    if (d) docs.push(d);
-  }
-  return docs;
-}
-
-/** Draw the painted player sprite. Returns true if drawn, false to fall back. */
-function drawPlayerSprite(
-  ctx: CanvasRenderingContext2D, cx: number, cy: number, facing: Facing, moving: boolean, worn?: WornItems,
-  animState?: string,
-): boolean {
-  if (!PLAYER_SPRITE) return false;
-  drawSpriteDoc(ctx, cx, cy, PLAYER_SPRITE, facing, moving, wornClothingDocs(worn), animState);
-  return true;
-}
-
-/** Draw a painted NPC sprite for the given kind. Returns true if drawn. */
-function drawNpcSprite(
-  ctx: CanvasRenderingContext2D, cx: number, cy: number, kind: string, facing: Facing, moving: boolean, worn?: WornItems,
-): boolean {
-  const doc = PAINTED_NPCS.get(kind);
-  if (!doc) return false;
-  drawSpriteDoc(ctx, cx, cy, doc, facing, moving, wornClothingDocs(worn));
-  return true;
-}
-
-/** Draw a painted object sprite, anchored at its base, scaled to fit its natural tile footprint. */
-function drawObjectSprite(ctx: CanvasRenderingContext2D, cx: number, cy: number, doc: SpriteDoc): void {
-  const scale = TILE_SIZE / Math.min(doc.w, doc.h);
-  const clip = doc.animations.idle ? "idle" : doc.defaultClip;
-  const fps = doc.animations[clip]?.fps ?? 4;
-  const frames = doc.animations[clip]?.facings.down?.length ?? 1;
-  const frameIdx = frames > 1 ? Math.floor(performance.now() / (1000 / fps)) % frames : 0;
-  const px = renderFrame(doc, clip, "down", frameIdx, {});
-  const ox = cx - (doc.w * scale) / 2;
-  const oy = cy - doc.h * scale;
-  for (let y = 0; y < doc.h; y++) {
-    for (let x = 0; x < doc.w; x++) {
-      const c = px[y * doc.w + x];
-      if (!c) continue;
-      ctx.fillStyle = c;
-      ctx.fillRect(Math.floor(ox + x * scale), Math.floor(oy + y * scale), Math.ceil(scale), Math.ceil(scale));
-    }
-  }
-}
-
-const ANIM_G = animData as Record<string, number>;
-const JUMP_HEIGHT = ANIM_G.jumpHeight ?? 0.8;
-const TRANSFORM_SPEED = ANIM_G.transformSpeed ?? 90;
-
 const CHARGE_MAX_MS = 600; // hold Space this long for a full-power swing
 const HARVEST_RANGE_PX = 1.8 * TILE_SIZE; // client-side prompt range (cosmetic only)
 
@@ -268,267 +138,6 @@ const TILE_COLORS: Record<Tile, string> = {
 
 // ── Eastward-style tile texture helpers ──────────────────────────────────────
 // Deterministic per-tile hash — stable decoration, never flickers.
-function tileHash(x: number, y: number): number {
-  let h = (x * 374761393 + y * 1234567891) | 0;
-  h ^= h >>> 13; h = Math.imul(h, 1540483477); h ^= h >>> 15;
-  return (h >>> 0) / 0xffffffff;
-}
-
-// Grass: OSRS-style pixel dithering — no big rectangular blobs.
-function drawGrassTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
-  const h1 = tileHash(tx, ty);
-  const h2 = tileHash(tx + 97, ty + 13);
-  const h3 = tileHash(tx * 3 + 1, ty * 5 + 7);
-  const h4 = tileHash(tx * 7 + 29, ty + 53);
-  const T = TILE_SIZE;
-
-  // Micro-variation sub-patches — break up the flat base colour with warm/cool spots
-  const patchCount = 2 + (h1 * 3 | 0);
-  for (let i = 0; i < patchCount; i++) {
-    const ph  = tileHash(tx + i * 17, ty + i * 11);
-    const ph2 = tileHash(tx + i * 13 + 5, ty * 3 + i);
-    const col = i % 3 === 0 ? "#7aab34" : i % 3 === 1 ? "#96c83c" : "#6a9828";
-    ctx.fillStyle = col;
-    ctx.fillRect(sx + (ph * (T - 3) | 0), sy + (ph2 * (T - 3) | 0), 2, 2);
-  }
-
-  // Dark shadow dots — ground depth between blades
-  const shadowCount = 1 + (h4 * 3 | 0);
-  for (let i = 0; i < shadowCount; i++) {
-    const sh = tileHash(tx * 5 + i * 7, ty * 9 + i * 3);
-    const sh2 = tileHash(tx + i * 31, ty * 7 + i);
-    ctx.fillStyle = i % 2 === 0 ? "#3d6020" : "#4a7028";
-    ctx.fillRect(sx + (sh * (T - 2) | 0), sy + (sh2 * (T - 2) | 0), 1, 1);
-  }
-
-  // Grass blade tufts — leaning blades with angled tips (Eastward-style pixel art)
-  const bladeCount = 2 + (h1 > 0.45 ? 1 : 0);
-  for (let i = 0; i < bladeCount; i++) {
-    const bh  = tileHash(tx * 7 + i * 3, ty + i * 11);
-    const bh2 = tileHash(tx + i * 13,    ty * 5 + i * 7);
-    const bh3 = tileHash(tx + i * 23,    ty * 11 + i * 5);
-    const gx  = sx + 2 + (bh  * (T - 6) | 0);
-    const gy  = sy + 5 + (bh2 * (T - 9) | 0);
-    const lean = (bh3 > 0.5 ? 1 : -1);  // lean left or right
-    const bladeH = 3 + (bh3 * 2 | 0);
-    // Dark base (shadow side)
-    ctx.fillStyle = "#3a5c1e";
-    ctx.fillRect(gx,      gy,          1, bladeH);
-    ctx.fillRect(gx + 3,  gy + 1,      1, bladeH - 1);
-    // Mid blade
-    ctx.fillStyle = "#5a8c28";
-    ctx.fillRect(gx + 1,  gy,          1, bladeH);
-    ctx.fillRect(gx + 4,  gy + 1,      1, bladeH - 1);
-    // Bright tip — angled 1 px in the lean direction
-    ctx.fillStyle = "#8ac838";
-    ctx.fillRect(gx + 1 + lean, gy - 1, 1, 1);
-    ctx.fillRect(gx + 4 + lean, gy,     1, 1);
-  }
-
-  // Occasional pebble (12%)
-  if (h3 < 0.12) {
-    const stx = sx + 2 + (h1 * (T - 7) | 0);
-    const sty = sy + 4 + (h2 * (T - 7) | 0);
-    ctx.fillStyle = "#5c5448"; ctx.fillRect(stx, sty + 1, 4, 2);  // shadow
-    ctx.fillStyle = "#b0a880"; ctx.fillRect(stx, sty, 4, 2);
-    ctx.fillStyle = "#d4ccaa"; ctx.fillRect(stx + 1, sty, 2, 1);  // highlight
-  }
-
-  // Clover / small flower (8%)
-  if (h2 > 0.92) {
-    const flx = sx + 3 + (h4 * (T - 8) | 0);
-    const fly = sy + 4 + (h3 * (T - 9) | 0);
-    if (h1 > 0.5) {
-      // Tiny white daisy
-      ctx.fillStyle = "#d4e8a0";
-      ctx.fillRect(flx, fly, 1, 1); ctx.fillRect(flx + 2, fly, 1, 1);
-      ctx.fillRect(flx + 1, fly - 1, 1, 1); ctx.fillRect(flx + 1, fly + 1, 1, 1);
-      ctx.fillStyle = "#f8e060";
-      ctx.fillRect(flx + 1, fly, 1, 1);  // yellow centre
-    } else {
-      // Clover — tiny three-leaf cross
-      ctx.fillStyle = "#4a8428";
-      ctx.fillRect(flx + 1, fly, 1, 3);  // stem
-      ctx.fillStyle = "#68b040";
-      ctx.fillRect(flx, fly, 3, 1); ctx.fillRect(flx + 1, fly - 1, 1, 1);
-    }
-  }
-}
-
-// Hill/dirt: earthy dither, exposed rock chips, sparse dried grass.
-function drawHillTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
-  const h1 = tileHash(tx, ty);
-  const h2 = tileHash(tx + 19, ty + 83);
-  const h3 = tileHash(tx * 11, ty * 7);
-  const T = TILE_SIZE;
-
-  // Earthy dither: mix of brown tones
-  const dots = 4 + (h1 * 3 | 0);
-  for (let i = 0; i < dots; i++) {
-    const ph = tileHash(tx + i * 23, ty + i * 17);
-    const ph2 = tileHash(tx * 3 + i, ty + i * 7);
-    ctx.fillStyle = i % 3 === 0 ? "#6e5030" : i % 3 === 1 ? "#9a7848" : "#7a6040";
-    ctx.fillRect(sx + (ph * (T - 2) | 0), sy + (ph2 * (T - 2) | 0), 1, 1);
-  }
-
-  // Exposed rock chip (40%)
-  if (h2 > 0.6) {
-    ctx.fillStyle = "#6a5840";
-    ctx.fillRect(sx + (h1 * (T - 8) | 0), sy + (h2 * (T - 6) | 0), 4, 2);
-    ctx.fillStyle = "#9a8870";
-    ctx.fillRect(sx + (h1 * (T - 8) | 0), sy + (h2 * (T - 6) | 0), 4, 1);
-  }
-
-  // Sparse dried grass tuft (30%)
-  if (h3 > 0.7) {
-    const gx = sx + 2 + (h1 * (T - 6) | 0);
-    const gy = sy + 3 + (h2 * (T - 7) | 0);
-    ctx.fillStyle = "#8a7040";
-    ctx.fillRect(gx, gy, 1, 3);
-    ctx.fillRect(gx + 3, gy + 1, 1, 2);
-    ctx.fillStyle = "#b09858";
-    ctx.fillRect(gx, gy, 1, 1); ctx.fillRect(gx + 3, gy + 1, 1, 1);
-  }
-}
-
-// Forest floor: deep shadows, dappled light beams, fallen leaves, exposed roots.
-function drawForestTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
-  const h1 = tileHash(tx, ty);
-  const h2 = tileHash(tx + 31, ty + 71);
-  const h3 = tileHash(tx * 5, ty * 3 + 17);
-  const h4 = tileHash(tx * 9 + 17, ty * 3 + 41);
-  const T = TILE_SIZE;
-
-  // Mossy ground micro-variation — 3-5 dark/mid patches to break up the flat base
-  const patchCount = 2 + (h4 * 3 | 0);
-  for (let i = 0; i < patchCount; i++) {
-    const ph  = tileHash(tx + i * 19, ty + i * 13);
-    const ph2 = tileHash(tx * 3 + i * 7, ty + i);
-    ctx.fillStyle = i % 3 === 0 ? "#1e3016" : i % 3 === 1 ? "#2a3e1c" : "#223418";
-    ctx.fillRect(sx + (ph * (T - 3) | 0), sy + (ph2 * (T - 3) | 0), 3, 3);
-  }
-
-  // Dappled sunlight patch — a warm shaft cutting through the canopy
-  if (h1 > 0.42) {
-    ctx.fillStyle = "#5a8e32";
-    const lx = sx + 2 + (h2 * (T - 8) | 0);
-    const ly = sy + 2 + (h3 * (T - 8) | 0);
-    ctx.fillRect(lx, ly, 5, 4);
-    ctx.fillStyle = "#70a840";
-    ctx.fillRect(lx + 1, ly, 3, 2);    // brighter core
-    ctx.fillStyle = "#8cc04a";
-    ctx.fillRect(lx + 1, ly, 2, 1);    // sunlit highlight
-  }
-
-  // Fallen leaves — warm autumn colours
-  const leafCount = 1 + (h2 < 0.6 ? 1 : 0) + (h4 < 0.3 ? 1 : 0);
-  for (let i = 0; i < leafCount; i++) {
-    const lh = tileHash(tx + i * 11, ty * 7 + i * 13);
-    const lh2 = tileHash(tx * 5 + i * 17, ty + i * 9);
-    const col = i % 3 === 0 ? "#6a4820" : i % 3 === 1 ? "#8a5028" : "#7a4418";
-    ctx.fillStyle = col;
-    ctx.fillRect(sx + (lh * (T - 4) | 0), sy + (lh2 * (T - 4) | 0), 2 + (i % 2), 1);
-  }
-
-  // Root tendrils (~35% of tiles) — angular pixel-art style
-  if (h2 < 0.35) {
-    ctx.fillStyle = "#3a2a14";
-    const rx = sx + (h1 * (T * 0.4) | 0);
-    const ry = sy + T - 5;
-    ctx.fillRect(rx,     ry,     1, 4);  // vertical
-    ctx.fillRect(rx + 1, ry + 1, 3, 1); // horizontal branch
-    ctx.fillRect(rx + 4, ry,     1, 2); // fork up
-    ctx.fillStyle = "#5a4222";
-    ctx.fillRect(rx, ry, 1, 1);         // lighter knot at base
-  }
-}
-
-// Sand: wavy drift lines, pebbles, shell highlights.
-function drawSandTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
-  const h1 = tileHash(tx, ty);
-  const h2 = tileHash(tx + 17, ty + 43);
-  const h3 = tileHash(tx * 7, ty * 11);
-  const T = TILE_SIZE;
-
-  ctx.strokeStyle = "#b0984a"; ctx.lineWidth = 1;
-  for (let i = 0; i < 2; i++) {
-    const wy = sy + 4 + (tileHash(tx + i, ty + i * 7) * (T - 8) | 0);
-    ctx.beginPath();
-    ctx.moveTo(sx + 1, wy);
-    ctx.quadraticCurveTo(sx + T * 0.35, wy - 1, sx + T * 0.65, wy + 1);
-    ctx.quadraticCurveTo(sx + T * 0.82, wy + 1, sx + T - 1, wy);
-    ctx.stroke();
-  }
-
-  if (h1 < 0.3) { // pebble
-    ctx.fillStyle = "#c0b070"; ctx.fillRect(sx + (h2 * (T - 5) | 0), sy + (h3 * (T - 4) | 0), 3, 2);
-  }
-  if (h2 > 0.8) { // shell / bright speck
-    ctx.fillStyle = "#ece8d0"; ctx.fillRect(sx + (h1 * (T - 4) | 0), sy + (h2 * (T - 4) | 0), 2, 1);
-  }
-}
-
-// Road: visible tyre-track pair + gravel scatter.
-function drawRoadTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number) {
-  const T = TILE_SIZE;
-  ctx.fillStyle = "#3e3028";
-  ctx.fillRect(sx + 2, sy + (T * 0.3 | 0), T - 4, 1);
-  ctx.fillRect(sx + 2, sy + (T * 0.7 | 0), T - 4, 1);
-  ctx.fillStyle = "#706558";
-  for (let i = 0; i < 4; i++) {
-    ctx.fillRect(sx + (tileHash(tx + i, ty + i * 3) * (T - 2) | 0), sy + (tileHash(tx + i * 5, ty + i) * (T - 2) | 0), 1, 1);
-  }
-}
-
-// Rock/Hill: highlight strip, shadow patch, crack line, pebble.
-function drawRockTexture(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, tile: Tile) {
-  const h1 = tileHash(tx, ty);
-  const h2 = tileHash(tx + 19, ty + 83);
-  const h3 = tileHash(tx * 11, ty * 7);
-  const T = TILE_SIZE;
-  const isRock = tile === Tile.Rock;
-
-  ctx.fillStyle = isRock ? "#585048" : "#504838";
-  ctx.fillRect(sx + (h1 * (T - 10) | 0), sy + T - 6, 8, 5); // shadow patch
-  ctx.fillStyle = isRock ? "#b0a898" : "#a09880";
-  ctx.fillRect(sx + 2, sy + 2, T - 4, 2);                    // top highlight
-
-  ctx.strokeStyle = isRock ? "#484038" : "#504030"; ctx.lineWidth = 1;
-  ctx.beginPath();
-  const cx = sx + 3 + (h1 * (T - 8) | 0);
-  const cy = sy + 5 + (h2 * (T - 12) | 0);
-  ctx.moveTo(cx, cy); ctx.lineTo(cx + 3, cy + 4); ctx.lineTo(cx + 2, cy + 7); ctx.stroke();
-
-  if (h3 > 0.6) {
-    ctx.fillStyle = isRock ? "#888078" : "#807860";
-    ctx.fillRect(sx + (h2 * (T - 5) | 0), sy + (h3 * (T - 5) | 0), 3, 2);
-  }
-}
-
-// Water: bright animated ripple stripes + dark wave troughs — visible shimmer.
-function drawWaterShimmer(ctx: CanvasRenderingContext2D, sx: number, sy: number, tx: number, ty: number, now: number, col: string) {
-  const T = TILE_SIZE;
-  const r1 = parseInt(col.slice(1, 3), 16);
-  const g1 = parseInt(col.slice(3, 5), 16);
-  const b1 = parseInt(col.slice(5, 7), 16);
-
-  const p1 = (now * 0.9 + tx * 0.6 + ty * 0.8) % 1;
-  const p2 = (now * 0.7 + tx * 1.1 + ty * 0.4 + 0.5) % 1;
-  const row1 = sy + (p1 * T | 0);
-  const row2 = sy + (p2 * T | 0);
-  const w1 = 5 + (tileHash(tx * 7, ty * 3) * 8 | 0);
-  const w2 = 4 + (tileHash(tx + 3, ty * 9) * 7 | 0);
-  const x1 = sx + 1 + (tileHash(tx + 1, ty) * (T - w1 - 2) | 0);
-  const x2 = sx + 1 + (tileHash(tx, ty + 1) * (T - w2 - 2) | 0);
-
-  ctx.fillStyle = `rgba(${Math.min(255, r1 + 80)},${Math.min(255, g1 + 80)},${Math.min(255, b1 + 80)},0.65)`;
-  ctx.fillRect(x1, row1, w1, 1);
-  ctx.fillStyle = `rgba(${Math.min(255, r1 + 50)},${Math.min(255, g1 + 50)},${Math.min(255, b1 + 50)},0.45)`;
-  ctx.fillRect(x2, row2, w2, 1);
-  ctx.fillStyle = `rgba(${Math.max(0, r1 - 30)},${Math.max(0, g1 - 30)},${Math.max(0, b1 - 30)},0.3)`;
-  ctx.fillRect(sx + 2, sy + ((p1 + 0.3) % 1 * T | 0), T - 4, 1);
-}
-
 export class Game {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -613,13 +222,14 @@ export class Game {
   private animSpeed = 0;    // smoothed speed for animation decisions
   private animState: "idle" | "walk" | "run" | "jump" | "fall" | "swim" = "idle";
   private predSwimming = false; // client-predicted swimming (matches predX/predY tile depth)
-  private landedAt = 0;         // timestamp of last landing from a jump (for squash effect)
-  private wasGrounded = true;   // previous-frame jumpGrounded (landing transition detection)
+
+  private r3d: Renderer3D | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d")!;
     this.net = new Net((m) => this.onServer(m));
+    this.r3d = new Renderer3D(canvas, TILE_COLORS);
     this.resize();
     window.addEventListener("resize", () => this.resize());
     window.addEventListener("keydown", (e) => this.onKey(e, true));
@@ -713,8 +323,9 @@ export class Game {
         return;
       }
     }
-    // Left click on world = start attack charge
-    if (!this.chatOpen && this.chargeStart === null) {
+    // Left click on world = start attack charge. Middle/right belong to the
+    // camera orbit and must never trigger a swing.
+    if (e.button === 0 && !this.chatOpen && this.chargeStart === null) {
       this.chargeStart = performance.now();
     }
   }
@@ -724,6 +335,12 @@ export class Game {
       const opts = this.wandOptions(this.wandPanel.tx, this.wandPanel.ty);
       const dir = e.deltaY > 0 ? 1 : -1;
       this.wandPanel.scrollIdx = (this.wandPanel.scrollIdx + dir + opts.length) % opts.length;
+      e.preventDefault();
+      return;
+    }
+    const cam = this.r3d?.camera;
+    if (cam) {
+      cam.zoomBy(Math.sign(e.deltaY) * 1.6);
       e.preventDefault();
     }
   }
@@ -794,6 +411,7 @@ export class Game {
   private resize() {
     this.canvas.width = window.innerWidth;
     this.canvas.height = window.innerHeight;
+    this.r3d?.resize(window.innerWidth, window.innerHeight);
   }
 
   private onKey(e: KeyboardEvent, down: boolean) {
@@ -1025,14 +643,12 @@ export class Game {
       }
       return;
     }
-    let dx = 0;
-    let dy = 0;
-    if (this.keys.has("w") || this.keys.has("arrowup")) dy -= 1;
-    if (this.keys.has("s") || this.keys.has("arrowdown")) dy += 1;
-    if (this.keys.has("a") || this.keys.has("arrowleft")) dx -= 1;
-    if (this.keys.has("d") || this.keys.has("arrowright")) dx += 1;
+    const { ix: dx, iy: dy } = this.moveInput();
     const sprint = this.keys.has("shift");
-    if (dx !== this.lastDir.x || dy !== this.lastDir.y || sprint !== this.lastSprint) {
+    // Camera-relative input varies continuously as the view orbits, so resend
+    // on a small delta rather than only on an exact change.
+    const moved = Math.abs(dx - this.lastDir.x) + Math.abs(dy - this.lastDir.y) > 0.02;
+    if (moved || sprint !== this.lastSprint) {
       this.lastDir = { x: dx, y: dy };
       this.lastSprint = sprint;
       this.net.send({ t: "input", dx, dy, sprint });
@@ -1056,6 +672,7 @@ export class Game {
       this.regionName = m.region.name;
       this.travelNodes = m.region.travelNodes;
       this.snap = m.snapshot;
+      this.r3d?.setMap(this.map, this.tileOverrides);
     } else if (m.t === "chunk") {
       if (this.map && m.region === this.regionId) {
         const mw = this.map.width;
@@ -1067,6 +684,7 @@ export class Game {
             this.map.elevation[dst + xx] = m.elevation[src + xx];
           }
         }
+        this.r3d?.invalidateTiles(m.cx * CHUNK, m.cy * CHUNK, m.w, m.h);
       }
     } else if (m.t === "nameStatus") {
       this.onNameStatus?.(m.name, m.taken);
@@ -1142,15 +760,7 @@ export class Game {
     const predSwimming = isWaterTile(tileAt(this.predX, this.predY)) || (waterline - elev) >= DEPTH_SWIM;
     this.predSwimming = predSwimming;
 
-    // Build target velocity from keys
-    let ix = 0, iy = 0;
-    if (this.keys.has("w") || this.keys.has("arrowup"))    iy -= 1;
-    if (this.keys.has("s") || this.keys.has("arrowdown"))  iy += 1;
-    if (this.keys.has("a") || this.keys.has("arrowleft"))  ix -= 1;
-    if (this.keys.has("d") || this.keys.has("arrowright")) ix += 1;
-    const len = Math.hypot(ix, iy);
-    if (len > 0) { ix /= len; iy /= len; }
-
+    const { ix, iy } = this.moveInput();
     const sprint = this.keys.has("shift") && !predSwimming;
     const baseSpeed = predSwimming ? 2.4 : sprint ? 4.5 * 1.85 : 4.5;
     const targetVx = ix * baseSpeed;
@@ -1193,10 +803,6 @@ export class Game {
       }
     }
 
-    // Landing detection (false→true transition triggers squash)
-    if (this.jumpGrounded && !this.wasGrounded) this.landedAt = performance.now();
-    this.wasGrounded = this.jumpGrounded;
-
     // Animation state
     const speed = Math.hypot(this.predVx, this.predVy);
     this.animSpeed += (speed - this.animSpeed) * Math.min(1, 10 * dt);
@@ -1215,45 +821,61 @@ export class Game {
       this.animState = "idle";
     }
 
-    // Camera: smooth follow using predicted position, lead slightly in movement direction
-    const visW = this.canvas.width / this.zoom;
-    const visH = this.canvas.height / this.zoom;
-    const LEAD = 1.2;
-    const camTargX = this.predX * TILE_SIZE + ix * LEAD * TILE_SIZE - visW / 2;
-    const camTargY = this.predY * TILE_SIZE + iy * LEAD * TILE_SIZE - visH / 2;
-    const camBlend = Math.min(1, 9 * dt);
-    this.cam.x += (camTargX - this.cam.x) * camBlend;
-    this.cam.y += (camTargY - this.cam.y) * camBlend;
+    // The 3D orbit camera follows the player in Renderer3D.render(); arrow keys
+    // steer it OSRS-style rather than moving the character.
+    this.tickCameraKeys(dt);
+  }
+
+  /** Arrow keys orbit the camera (OSRS convention); WASD moves the character. */
+  private tickCameraKeys(dt: number) {
+    const cam = this.r3d?.camera;
+    if (!cam) return;
+    const rate = 2.1 * dt;
+    if (this.keys.has("arrowleft"))  cam.yawBy(rate);
+    if (this.keys.has("arrowright")) cam.yawBy(-rate);
+    if (this.keys.has("arrowup"))    cam.pitchBy(rate * 0.7);
+    if (this.keys.has("arrowdown"))  cam.pitchBy(-rate * 0.7);
+  }
+
+  /**
+   * WASD is interpreted in camera space and rotated into world space, so "W"
+   * always means "away from the camera" no matter how the view is orbited.
+   * Prediction and the input sent to the server both go through here so they
+   * can never disagree about which way the player is walking.
+   */
+  private moveInput(): { ix: number; iy: number } {
+    let fwd = 0, strafe = 0;
+    if (this.keys.has("w")) fwd += 1;
+    if (this.keys.has("s")) fwd -= 1;
+    if (this.keys.has("d")) strafe += 1;
+    if (this.keys.has("a")) strafe -= 1;
+    const len = Math.hypot(fwd, strafe);
+    if (len === 0) return { ix: 0, iy: 0 };
+    fwd /= len; strafe /= len;
+    const b = this.r3d?.basis() ?? { fx: 0, fy: -1, rx: 1, ry: 0 };
+    return { ix: b.fx * fwd + b.rx * strafe, iy: b.fy * fwd + b.ry * strafe };
   }
 
   // --- rendering ------------------------------------------------------------
-  private render(_dt = 0) {
+  private render(dt = 0) {
     const ctx = this.ctx;
-    ctx.fillStyle = "#07131c";
-    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    // The 3D canvas sits behind this one and paints the sky, so the HUD layer
+    // must stay transparent rather than filling a background.
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     if (!this.map || !this.snap) return;
 
     const me = this.snap.players.find((p) => p.id === this.myId);
-    const z = this.zoom;
 
-    // === World pass: drawn under a zoom transform (everything via toScreen) ===
-    ctx.save();
-    ctx.scale(z, z);
+    // === World pass: 3D scene ===
+    if (this.r3d) {
+      const fx = this.predInitialized ? this.predX : (me?.x ?? 0);
+      const fy = this.predInitialized ? this.predY : (me?.y ?? 0);
+      this.r3d.setWaterline(this.snap.waterline);
+      this.r3d.syncPlayers(this.playerViews(), dt);
+      this.r3d.render(dt, fx, fy, this.elevAtTile(fx, fy));
+    }
 
-    // --- Ground layer (flat, always beneath the standing world) ---
-    this.drawTiles();
-    this.drawKelpBeds();
-    this.drawTerrainWalls();
-    this.drawTravelNodes();
-    this.drawCampfires(this.snap.campfires);
-    this.drawFurnaces(this.snap.furnaces);
-    this.drawPlants(this.snap.plants);
-    this.drawMarineCreatures(this.snap.creatures, me);
-
-    // --- Upright layer, painted back-to-front by ground Y so taller things in
-    //     front correctly overlap things behind them (the oblique illusion). ---
-    this.drawSortedEntities(me);
-
+    // === World-anchored UI: projected through the 3D camera, in screen px ===
     this.drawTracers();
     if (me) this.drawSelfOverlay(me);
     if (me) this.drawScanRing(me);
@@ -1265,7 +887,6 @@ export class Game {
     this.drawHarvestPrompt(this.snap.resourceNodes, this.snap.plants, me);
     this.drawFishPrompt(me);
 
-    ctx.restore();
     // === Screen pass: HUD & modals at 1:1 (unscaled) ===
 
     this.drawHud(this.snap, me);
@@ -1597,48 +1218,6 @@ export class Game {
     }
   }
 
-  // Collect every "standing" object, sort by its ground-contact Y, then paint
-  // back-to-front. This is the heart of the oblique look: a player south of a
-  // tree (larger Y) draws over its trunk; north of it, behind the canopy.
-  private drawSortedEntities(me?: PlayerState) {
-    if (!this.snap) return;
-    type Item = { baseY: number; z: number; draw: () => void };
-    const items: Item[] = [];
-
-    for (const b of this.snap.buildings)
-      items.push({ baseY: b.y + b.h, z: 0, draw: () => this.drawBuilding(b) });
-
-    for (const n of this.snap.resourceNodes) {
-      const { sx, sy } = this.toScreen(n.x + 0.5, n.y + 0.5);
-      const tall = n.kind === "tree";
-      items.push({ baseY: n.y + (tall ? 0.8 : 0.6), z: 1, draw: () => drawResourceSprite(this.ctx, n, sx, sy) });
-    }
-
-    for (const v of this.snap.vehicles) {
-      const { sx, sy } = this.toScreen(v.x, v.y);
-      items.push({ baseY: v.y + 0.5, z: 1, draw: () => drawVehicleSprite(this.ctx, v, sx, sy) });
-    }
-
-    for (const c of this.snap.creatures) {
-      if (MARINE_KINDS.has(c.kind)) continue; // marine handled in the ground pass
-      items.push({ baseY: c.y + 0.5, z: 1, draw: () => this.drawLandCreature(c, me) });
-    }
-
-    for (const n of this.snap.npcs ?? [])
-      items.push({ baseY: n.y + 0.875, z: 2, draw: () => this.drawNpc(n, me) });
-
-    for (const p of this.snap.players)
-      items.push({ baseY: p.y + 0.375, z: 3, draw: () => this.drawPlayer(p, p.id === this.myId) });
-
-    for (const d of this.snap.lootDrops ?? []) {
-      const { sx, sy } = this.toScreen(d.x, d.y);
-      items.push({ baseY: d.y, z: 0, draw: () => drawLootDrop(this.ctx, d, sx, sy) });
-    }
-
-    items.sort((a, b) => a.baseY - b.baseY || a.z - b.z);
-    for (const it of items) it.draw();
-  }
-
   // Charge meter under your feet while you wind up a swing.
   private drawSelfOverlay(me: PlayerState) {
     if (this.chargeStart === null || me.vehicleId) return;
@@ -1658,206 +1237,59 @@ export class Game {
   }
 
   private toScreen(tx: number, ty: number) {
+    if (this.r3d) {
+      const p = this.r3d.project(tx, ty, this.elevAtTile(tx, ty));
+      return { sx: p.sx, sy: p.sy };
+    }
     return { sx: tx * TILE_SIZE - this.cam.x, sy: ty * TILE_SIZE - this.cam.y };
   }
 
-  private drawTiles() {
-    const map = this.map!;
-    const snap = this.snap!;
-    const ctx = this.ctx;
-    const startX = Math.max(0, Math.floor(this.cam.x / TILE_SIZE));
-    const startY = Math.max(0, Math.floor(this.cam.y / TILE_SIZE));
-    const endX = Math.min(map.width, startX + Math.ceil(this.canvas.width / TILE_SIZE) + 1);
-    const endY = Math.min(map.height, startY + Math.ceil(this.canvas.height / TILE_SIZE) + 1);
-    const now = performance.now() / 1000;
-
-    for (let y = startY; y < endY; y++) {
-      for (let x = startX; x < endX; x++) {
-        const i = y * map.width + x;
-        const tile = (this.tileOverrides.get(`${x},${y}`) ?? map.tiles[i]) as Tile;
-        const elev = map.elevation[i];
-        const { sx, sy } = this.toScreen(x, y);
-        const depth = snap.waterline - elev; // >0 means under water right now
-
-        if (tile === Tile.FreshWater) {
-          // Inland lake: a calm teal-green, lightly shaded by depth — clearly
-          // not the same body as the salt inlet. Always wet (never mudflat).
-          ctx.fillStyle = freshWaterColor(Math.max(2, depth));
-          ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
-          drawWaterShimmer(ctx, sx, sy, x, y, now, "#7dd4c4");
-        } else if (depth > 0) {
-          // Colour by depth tier — ankle turquoise → abyss near-black.
-          ctx.fillStyle = waterDepthColor(depth);
-          ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
-          drawWaterShimmer(ctx, sx, sy, x, y, now, "#7fcfe8");
-        } else if (tile === Tile.Water) {
-          // Seabed the tide has receded from: exposed wet mudflat at low tide.
-          ctx.fillStyle = "#6c5b3e";
-          ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
-        } else {
-          ctx.fillStyle = TILE_COLORS[tile];
-          ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
-          // Brown high-tide line: dry ground the tide still reaches looks wet.
-          if (elev < WATERLINE_HIGH) {
-            const wet = (WATERLINE_HIGH - elev) / WATERLINE_HIGH;
-            ctx.fillStyle = `rgba(86,58,33,${(0.1 + 0.3 * wet).toFixed(3)})`;
-            ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
-          }
-          // Painted terrain sprite overrides procedural texture.
-          const tileKey = TILE_SPRITE_KEY[tile as number];
-          const tileSprite = tileKey ? TERRAIN_SPRITE_CACHE.get(tileKey) : undefined;
-          if (tileSprite) {
-            ctx.drawImage(tileSprite, sx, sy, TILE_SIZE, TILE_SIZE);
-          } else {
-            // Eastward-style procedural tile textures.
-            if (tile === Tile.Grass) drawGrassTexture(ctx, sx, sy, x, y);
-            else if (tile === Tile.Forest) drawForestTexture(ctx, sx, sy, x, y);
-            else if (tile === Tile.Sand) drawSandTexture(ctx, sx, sy, x, y);
-            else if (tile === Tile.Road) drawRoadTexture(ctx, sx, sy, x, y);
-            else if (tile === Tile.Hill) drawHillTexture(ctx, sx, sy, x, y);
-            else if (tile === Tile.Rock) drawRockTexture(ctx, sx, sy, x, y, tile);
-          }
-        }
-      }
-    }
+  private elevAtTile(tx: number, ty: number): number {
+    const m = this.map;
+    if (!m) return 0;
+    const x = Math.max(0, Math.min(m.width - 1, Math.floor(tx + 0.5)));
+    const y = Math.max(0, Math.min(m.height - 1, Math.floor(ty + 0.5)));
+    return m.elevation[y * m.width + x] ?? 0;
   }
 
-  // Wall-face terrain rendering — Stardew Valley technique: after all base tiles
-  // are drawn, paint a solid cliff face below each elevated tile, topped with a
-  // rim highlight and fading into a gradient shadow. Gives real 3-D depth to
-  // Hill/Rock edges without needing an isometric projection.
-  private drawTerrainWalls() {
-    const map = this.map!;
-    const ctx = this.ctx;
-    const startX = Math.max(0, Math.floor(this.cam.x / TILE_SIZE));
-    const startY = Math.max(0, Math.floor(this.cam.y / TILE_SIZE));
-    const endX = Math.min(map.width - 1, Math.ceil((this.cam.x + this.canvas.width) / TILE_SIZE));
-    const endY = Math.min(map.height - 2, Math.ceil((this.cam.y + this.canvas.height) / TILE_SIZE));
+  /** Snapshot players → 3D rig views. Self uses the predicted position. */
+  private playerViews(): PlayerView[] {
+    const snap = this.snap;
+    if (!snap) return [];
+    const out: PlayerView[] = [];
+    for (const p of snap.players) {
+      if (p.dead || p.vehicleId) continue;
+      const isMe = p.id === this.myId;
+      const x = isMe && this.predInitialized ? this.predX : p.x;
+      const y = isMe && this.predInitialized ? this.predY : p.y;
 
-    const isElevated = (t: Tile) => t === Tile.Hill || t === Tile.Rock || t === Tile.Forest;
-
-    ctx.save();
-    for (let y = startY; y <= endY; y++) {
-      for (let x = startX; x <= endX; x++) {
-        const tile = map.tiles[y * map.width + x] as Tile;
-        if (!isElevated(tile)) continue;
-        const { sx, sy } = this.toScreen(x, y);
-
-        // South face — where terrain drops below this tile.
-        const belowTile = map.tiles[(y + 1) * map.width + x] as Tile;
-        if (!isElevated(belowTile)) {
-          const faceH = tile === Tile.Rock ? 11 : tile === Tile.Forest ? 7 : 6;
-          const faceColor  = tile === Tile.Rock ? "#38322c" : tile === Tile.Forest ? "#243820" : "#7a5c38";
-          const rimColor   = tile === Tile.Rock ? "#58524c" : tile === Tile.Forest ? "#3d5a38" : "#a07848";
-          const shadowAlpha = tile === Tile.Rock ? 0.6 : 0.42;
-
-          // Bright rim — top edge of cliff face catches the sun.
-          ctx.fillStyle = rimColor;
-          ctx.fillRect(sx, sy + TILE_SIZE - 1, TILE_SIZE, 2);
-
-          // Solid cliff face.
-          ctx.fillStyle = faceColor;
-          ctx.fillRect(sx, sy + TILE_SIZE + 1, TILE_SIZE, faceH);
-
-          // Gradient shadow below the face — contact shadow blends into ground.
-          const shadowH = 10;
-          const grd = ctx.createLinearGradient(sx, sy + TILE_SIZE + faceH, sx, sy + TILE_SIZE + faceH + shadowH);
-          grd.addColorStop(0, `rgba(0,0,0,${shadowAlpha})`);
-          grd.addColorStop(1, "rgba(0,0,0,0)");
-          ctx.fillStyle = grd;
-          ctx.fillRect(sx, sy + TILE_SIZE + faceH, TILE_SIZE, shadowH);
-        }
-
-        // East lateral face — cliff drops to the right.
-        if (x + 1 <= endX) {
-          const rightTile = map.tiles[y * map.width + x + 1] as Tile;
-          if (!isElevated(rightTile)) {
-            const grd = ctx.createLinearGradient(sx + TILE_SIZE, sy, sx + TILE_SIZE + 6, sy);
-            grd.addColorStop(0, "rgba(0,0,0,0.35)");
-            grd.addColorStop(1, "rgba(0,0,0,0)");
-            ctx.fillStyle = grd;
-            ctx.fillRect(sx + TILE_SIZE, sy, 6, TILE_SIZE);
-          }
-        }
+      let state: PlayerView["state"];
+      let speed: number;
+      if (isMe) {
+        state = this.animState;
+        speed = this.animSpeed;
+      } else {
+        const gait = this.gaitFor(p.id, p.x, p.y);
+        state = p.swimming ? "swim" : p.jumping ? "jump"
+          : gait.running && gait.moving ? "run" : gait.moving ? "walk" : "idle";
+        speed = gait.moving ? (gait.running ? 8 : 4) : 0;
       }
+
+      // jumpOff is tracked in pixels by the predictor; the scene works in tiles.
+      const lift = isMe
+        ? this.jumpOff / TILE_SIZE
+        : (p.jumping ? Math.sin((p.jumpPhase ?? 0) * Math.PI) * 0.8 : 0);
+
+      const a = p.appearance;
+      out.push({
+        id: p.id, x, y,
+        elevation: this.elevAtTile(x, y),
+        heading: p.dir,
+        state, speed, lift,
+        colors: { skin: a?.skin, hair: a?.hair, shirt: a?.shirt, pants: a?.pants },
+      });
     }
-    ctx.restore();
-  }
-
-  // Kelp bed overlay — drawn on ankle-depth water tiles after tiles but before
-  // creatures/players, using deterministic per-tile randomness so the fronds
-  // stay still relative to the map (only the gentle wave is animated).
-  private drawKelpBeds() {
-    const map = this.map!;
-    const snap = this.snap!;
-    const ctx = this.ctx;
-    const startX = Math.max(0, Math.floor(this.cam.x / TILE_SIZE));
-    const startY = Math.max(0, Math.floor(this.cam.y / TILE_SIZE));
-    const endX = Math.min(map.width, startX + Math.ceil(this.canvas.width / TILE_SIZE) + 1);
-    const endY = Math.min(map.height, startY + Math.ceil(this.canvas.height / TILE_SIZE) + 1);
-    const now = Date.now();
-
-    for (let y = startY; y < endY; y++) {
-      for (let x = startX; x < endX; x++) {
-        const i = y * map.width + x;
-        const depth = snap.waterline - map.elevation[i];
-        if (depth <= 0 || depth > DEPTH_ANKLE + 3) continue;
-
-        // Deterministic hash for this tile.
-        const h = Math.abs(((x * 374761393 + y * 1160490541) ^ (x * 13 ^ y * 7)) | 0);
-        if (h % 100 >= 10) continue; // ~10 % of ankle-deep tiles get kelp
-
-        const { sx, sy } = this.toScreen(x, y);
-        const fronds = 2 + (h % 3);
-
-        for (let f = 0; f < fronds; f++) {
-          const hf = Math.abs((h * (f + 3) * 137) | 0);
-          const fx = sx + 3 + (hf % (TILE_SIZE - 6));
-          const fy = sy + 3 + ((hf >> 4) % (TILE_SIZE - 6));
-          const wave = Math.sin(now / 1800 + f * 1.1 + x * 0.4 + y * 0.3) * 2.5;
-
-          // Stalk
-          ctx.strokeStyle = "rgba(55,85,28,0.75)";
-          ctx.lineWidth = 1.4;
-          ctx.beginPath();
-          ctx.moveTo(fx, fy + 5);
-          ctx.quadraticCurveTo(fx + wave * 0.5, fy + 2, fx + wave, fy - 4);
-          ctx.stroke();
-
-          // Blade
-          ctx.save();
-          ctx.translate(fx + wave, fy - 4);
-          ctx.rotate(wave * 0.2 + f * 0.7);
-          ctx.fillStyle = "rgba(42,75,22,0.62)";
-          ctx.beginPath();
-          ctx.ellipse(0, -2.5, 2, 5, 0, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
-        }
-      }
-    }
-  }
-
-
-  private drawTravelNodes() {
-    const ctx = this.ctx;
-    for (const n of this.travelNodes) {
-      const { sx, sy } = this.toScreen(n.x, n.y);
-      const w = n.w * TILE_SIZE;
-      const h = n.h * TILE_SIZE;
-      ctx.fillStyle = TRAVEL_COLOR[n.kind];
-      ctx.globalAlpha = n.kind === "sea" ? 0.16 : 0.55; // sea border is a big subtle zone
-      ctx.fillRect(sx, sy, w, h);
-      ctx.globalAlpha = 1;
-      ctx.strokeStyle = "#f1f1f1";
-      ctx.setLineDash([4, 3]);
-      ctx.strokeRect(sx, sy, w, h);
-      ctx.setLineDash([]);
-      ctx.fillStyle = "#fff";
-      ctx.font = "12px system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText(TRAVEL_ICON[n.kind], sx + w / 2, sy + h / 2 + 4);
-    }
+    return out;
   }
 
   private nodeUnder(me?: PlayerState): TravelNode | undefined {
@@ -1887,130 +1319,6 @@ export class Game {
     ctx.strokeRect(x - w / 2, y - 22, w, 32);
     ctx.fillStyle = "#eaf2f8";
     ctx.fillText(text, x, y);
-  }
-
-  // One oblique building: a wall facade with a pitched, overhanging roof so it
-  // reads as a structure standing up off the ground (Eastward/Stardew style).
-  private drawBuilding(b: BuildingState) {
-    const ctx = this.ctx;
-    const { sx, sy } = this.toScreen(b.x, b.y);
-    const BSCALE = 1.5; // buildings drawn 1.5× their tile footprint
-    const w = b.w * TILE_SIZE * BSCALE;
-    const h = b.h * TILE_SIZE * BSCALE;
-
-    if (b.kind === "rubble") {
-      ctx.fillStyle = "#4a4038";
-      ctx.fillRect(sx, sy, w, h);
-      ctx.fillStyle = "#5e5347";
-      for (let i = 0; i < 5; i++) ctx.fillRect(sx + ((i * 7) % w), sy + ((i * 11) % h), 4, 4);
-      return;
-    }
-
-    if (b.kind === "dock") {
-      // Flat wooden deck — planks running across, no roof.
-      ctx.fillStyle = "#7a5a36";
-      ctx.fillRect(sx, sy, w, h);
-      ctx.strokeStyle = "rgba(0,0,0,0.25)";
-      ctx.lineWidth = 1;
-      for (let px = sx; px < sx + w; px += 6) {
-        ctx.beginPath(); ctx.moveTo(px, sy); ctx.lineTo(px, sy + h); ctx.stroke();
-      }
-      return;
-    }
-
-    const wall = buildingColor(b.kind);
-    const dark = (hex: string, f: number) => {
-      const n = parseInt(hex.slice(1), 16);
-      return `rgb(${(((n >> 16) & 255) * f) | 0},${(((n >> 8) & 255) * f) | 0},${((n & 255) * f) | 0})`;
-    };
-    const roofH = Math.min(TILE_SIZE * 1.6, h * 0.6 + 12);
-    const eave = 3;
-
-    // Ground shadow cast to the SE.
-    ctx.fillStyle = "rgba(0,0,0,0.22)";
-    ctx.beginPath();
-    ctx.ellipse(sx + w / 2 + 4, sy + h, w * 0.55, 5, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // --- Wall facade ---
-    ctx.fillStyle = wall;
-    ctx.fillRect(sx, sy, w, h);
-    // Horizontal siding lines.
-    ctx.strokeStyle = dark(wall, 0.82);
-    ctx.lineWidth = 1;
-    for (let ly = sy + 5; ly < sy + h - 2; ly += 5) {
-      ctx.beginPath(); ctx.moveTo(sx, ly); ctx.lineTo(sx + w, ly); ctx.stroke();
-    }
-    // Right-side shading for form.
-    ctx.fillStyle = "rgba(0,0,0,0.16)";
-    ctx.fillRect(sx + w * 0.72, sy, w * 0.28, h);
-
-    // --- Windows (warm lit) ---
-    const winCols = Math.max(1, Math.floor(b.w));
-    const winY = sy + h * 0.42;
-    const winW = 8, winH = 8;
-    ctx.fillStyle = "#ffd98a";
-    for (let c = 0; c < winCols; c++) {
-      const cxw = sx + (c + 0.5) * (w / winCols) - winW / 2;
-      if (Math.abs(cxw + winW / 2 - (sx + w / 2)) < 7) continue; // leave room for the door
-      ctx.fillRect(cxw, winY, winW, winH);
-      ctx.strokeStyle = dark(wall, 0.5);
-      ctx.strokeRect(cxw, winY, winW, winH);
-    }
-
-    // --- Door ---
-    ctx.fillStyle = "#2c2018";
-    ctx.fillRect(sx + w / 2 - 5, sy + h - 14, 10, 14);
-    ctx.fillStyle = "#c9a24b"; // knob
-    ctx.fillRect(sx + w / 2 + 2, sy + h - 8, 1.5, 1.5);
-
-    // --- Pitched roof, overhanging the walls ---
-    const roofCol = ROOF_COLORS[b.kind] ?? "#6b4a39";
-    const ridgeInset = Math.min(w * 0.28, 14);
-    const roofTop = sy - roofH;
-    ctx.fillStyle = roofCol;
-    ctx.beginPath();
-    ctx.moveTo(sx - eave, sy + 2);
-    ctx.lineTo(sx + w + eave, sy + 2);
-    ctx.lineTo(sx + w - ridgeInset, roofTop);
-    ctx.lineTo(sx + ridgeInset, roofTop);
-    ctx.closePath();
-    ctx.fill();
-    // Eave shadow under the overhang.
-    ctx.fillStyle = "rgba(0,0,0,0.25)";
-    ctx.fillRect(sx - eave, sy + 1, w + eave * 2, 2);
-    // Ridge highlight.
-    ctx.strokeStyle = dark(roofCol, 1.25);
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(sx + ridgeInset, roofTop + 1);
-    ctx.lineTo(sx + w - ridgeInset, roofTop + 1);
-    ctx.stroke();
-
-    // Name plaque — real OSM name when we have one, else only label the
-    // tradeable/landmark kinds. Plain houses stay unlabelled to cut clutter.
-    const label = b.name ?? (b.shop ? buildingLabel(b.kind) : "");
-    if (label) {
-      ctx.font = "9px system-ui";
-      ctx.textAlign = "center";
-      const tw = ctx.measureText(label).width;
-      const px = sx + w / 2, py = roofTop - 4;
-      ctx.fillStyle = "rgba(10,16,22,0.8)";          // sign board
-      roundRect(ctx, px - tw / 2 - 4, py - 11, tw + 8, 13, 3);
-      ctx.fill();
-      ctx.fillStyle = "#ffe9b0";
-      ctx.fillText(label, px, py - 1);
-    }
-
-    // HP bar (only when damaged) — sits above the name plaque.
-    const frac = Math.max(0, b.hp / b.maxHp);
-    if (frac < 1) {
-      const hy = roofTop - (label ? 22 : 6);
-      ctx.fillStyle = "#222";
-      ctx.fillRect(sx, hy, w, 4);
-      ctx.fillStyle = frac > 0.5 ? "#4caf50" : frac > 0.25 ? "#ffb300" : "#e53935";
-      ctx.fillRect(sx, hy, w * frac, 4);
-    }
   }
 
   private vehicleNear(me?: PlayerState): VehicleState | undefined {
@@ -2050,28 +1358,6 @@ export class Game {
     ctx.strokeRect(x - w / 2, y - 22, w, 32);
     ctx.fillStyle = "#eaf2f8";
     ctx.fillText(text, x, y);
-  }
-
-  private drawPlants(plants: PlantState[]) {
-    for (const pl of plants) {
-      if (this.clientDepthAt(pl.x, pl.y) > 0) continue; // don't render submerged plants
-      const { sx, sy } = this.toScreen(pl.x + 0.5, pl.y + 0.5);
-      drawPlantSprite(this.ctx, pl, sx, sy);
-    }
-  }
-
-  private drawCampfires(fires: CampfireState[]) {
-    for (const f of fires) {
-      const { sx, sy } = this.toScreen(f.x + 0.5, f.y + 0.5);
-      drawCampfireSprite(this.ctx, sx, sy);
-    }
-  }
-
-  private drawFurnaces(furnaces: FurnaceState[]) {
-    for (const f of furnaces) {
-      const { sx, sy } = this.toScreen(f.x + 0.5, f.y + 0.5);
-      drawFurnaceSprite(this.ctx, sx, sy);
-    }
   }
 
   private drawCraftPanel(me?: PlayerState) {
@@ -2706,49 +1992,6 @@ export class Game {
     return best;
   }
 
-  private drawNpc(n: NpcState, me?: PlayerState) {
-    const ctx = this.ctx;
-    const { sx, sy } = this.toScreen(n.x + 0.5, n.y + 0.5);
-    const R = TILE_SIZE * 0.4;
-    // Face toward the nearby player so locals "notice" you; else face down.
-    let facing: Facing = "down";
-    if (me) {
-      const dx = me.x - (n.x + 0.5), dy = me.y - (n.y + 0.5);
-      if (Math.hypot(dx, dy) < 4) facing = facingFromDir(Math.atan2(dy, dx));
-    }
-    const gait = this.gaitFor("npc-" + n.id, n.x, n.y);
-
-    // Each local is a distinct individual — same crisp pixel renderer as players.
-    const npcAppearance: Appearance =
-      NPC_LOOKS[n.kind] ?? { skin: "#e0ac69", hair: "#3a2a18", shirt: NPC_COLORS[n.kind] ?? "#607d8b" };
-
-    if (!drawNpcSprite(ctx, sx, sy, n.kind, facing, gait.moving, undefined)) {
-      drawCharacterPixel(ctx, sx, sy, npcAppearance, {
-        facing: facing as PixelCharOpts["facing"],
-        phase: gait.phase,
-        moving: gait.moving,
-        weapon: null,
-      });
-    }
-
-    // Role label
-    ctx.fillStyle = "#eaf2f8";
-    ctx.font = "10px system-ui";
-    ctx.textAlign = "center";
-    ctx.fillText(NPC_NAME[n.kind] ?? "Local", sx, sy - TILE_SIZE * 1.15);
-    // "talk" bubble when you're close
-    const close = me && Math.hypot(n.x + 0.5 - me.x, n.y + 0.5 - me.y) <= 1.8;
-    if (close) {
-      ctx.fillStyle = "#fff3cf";
-      ctx.beginPath();
-      ctx.arc(sx + R, sy - TILE_SIZE * 1.0, 7, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#15384f";
-      ctx.font = "bold 10px system-ui";
-      ctx.fillText("?", sx + R, sy - TILE_SIZE * 1.0 + 3.5);
-    }
-  }
-
   private drawNpcPrompt(me?: PlayerState) {
     if (!me || me.vehicleId || this.npcOpen) return;
     const npc = this.nearbyNpc();
@@ -2955,32 +2198,6 @@ export class Game {
     ctx.fillText(label, x, y);
   }
 
-  private clientDepthAt(wx: number, wy: number): number {
-    if (!this.map || !this.snap) return 0;
-    const tx = Math.floor(wx), ty = Math.floor(wy);
-    if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return 0;
-    return Math.max(0, this.snap.waterline - this.map.elevation[ty * this.map.width + tx]);
-  }
-
-  // Marine creatures live on/under the water surface — drawn beneath the
-  // upright (Y-sorted) layer so a dorsal fin never floats over a dock or boat.
-  private drawMarineCreatures(creatures: CreatureState[], me?: PlayerState) {
-    for (const c of creatures) {
-      if (!MARINE_KINDS.has(c.kind)) continue;
-      const { sx, sy } = this.toScreen(c.x, c.y);
-      const depth = this.clientDepthAt(c.x, c.y);
-      const dist = me ? Math.hypot(c.x - me.x, c.y - me.y) : 999;
-      drawCreatureSprite(this.ctx, c.kind, sx, sy, depth, dist);
-    }
-  }
-
-  private drawLandCreature(c: CreatureState, me?: PlayerState) {
-    const { sx, sy } = this.toScreen(c.x, c.y);
-    const depth = this.clientDepthAt(c.x, c.y);
-    const dist = me ? Math.hypot(c.x - me.x, c.y - me.y) : 999;
-    drawCreatureSprite(this.ctx, c.kind, sx, sy, depth, dist);
-  }
-
   // Track whether an entity is moving and advance its walk-cycle phase. Returns
   // the current phase (radians) and a moving flag for the oblique leg stride.
   private gaitFor(id: string, x: number, y: number): { phase: number; moving: boolean; running: boolean; speed: number } {
@@ -2998,351 +2215,6 @@ export class Game {
     g.x = x; g.y = y;
     // Walk speed ~4.5 tiles/s; sprint pushes well past 6.
     return { phase: g.phase, moving: g.moving > 0.15, running: g.speed > 6, speed: g.speed };
-  }
-
-  private drawPlayer(p: PlayerState, isMe: boolean) {
-    const ctx = this.ctx;
-    const { sx, sy } = this.toScreen(p.x, p.y);
-    const R = TILE_SIZE * 0.4;
-
-    // While driving, the vehicle sprite represents you — just float your name.
-    if (p.vehicleId) {
-      ctx.fillStyle = "#eaf2f8";
-      ctx.font = "11px system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText(p.name, sx, sy - TILE_SIZE * 0.95);
-      return;
-    }
-
-    if (p.dead) ctx.globalAlpha = 0.3;
-
-    // Fishing rod line cast toward the water.
-    if (p.fishing) {
-      const rodLen = TILE_SIZE * 2.2;
-      ctx.strokeStyle = "rgba(200,220,240,0.7)";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 3]);
-      ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      const floatX = sx + Math.cos(p.dir) * rodLen;
-      const floatY = sy + Math.sin(p.dir) * rodLen;
-      ctx.lineTo(floatX, floatY);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      // Float bob
-      ctx.fillStyle = "#ff6b6b";
-      ctx.beginPath();
-      ctx.arc(floatX, floatY + Math.sin(performance.now() / 400) * 2, 3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // A motion streak behind a dodging player (i-frames active).
-    if (p.dodging) {
-      ctx.strokeStyle = "rgba(255,255,255,0.5)";
-      ctx.lineWidth = R * 1.1;
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(sx - Math.cos(p.dir) * R * 1.6, sy - Math.sin(p.dir) * R * 1.6);
-      ctx.lineTo(sx, sy);
-      ctx.stroke();
-    }
-
-    // --- Knockout: thrown & dizzy, sitting on their butt with spinning stars ---
-    if (p.knockedOut) {
-      this.drawKnockout(p, sx, sy, R);
-      ctx.globalAlpha = 1;
-      // still draw the name below
-      ctx.fillStyle = "#eaf2f8"; ctx.font = "11px system-ui"; ctx.textAlign = "center";
-      ctx.fillText(p.name, sx, sy - TILE_SIZE * 0.9);
-      return;
-    }
-
-    // --- The character body (oblique 3/4 view), sunk by real water depth ---
-    // ankle-deep in shallow → waist-deep mid → head-only when swimming/deep.
-    const depth = this.clientDepthAt(p.x, p.y);
-    let submerge = 0;
-    if (p.swimming) submerge = 0.82;             // deep: head & shoulders only
-    else if (depth >= DEPTH_SWIM) submerge = 0.82;
-    else if (depth >= DEPTH_ANKLE) submerge = 0.46; // waist-deep
-    else if (depth > 0) submerge = 0.16;            // ankle-deep
-    const gait = this.gaitFor(p.id, p.x, p.y);
-
-    // --- Transform: 2 s strip-and-re-clothe spin (squash horizontally) ---
-    if (p.transforming) {
-      const t = performance.now() / TRANSFORM_SPEED;
-      const squash = Math.abs(Math.cos(t)) * 0.85 + 0.15; // 0.15..1 horizontal spin
-      ctx.save();
-      ctx.translate(sx, 0);
-      ctx.scale(squash, 1);
-      ctx.translate(-sx, 0);
-      drawCharacterPixel(ctx, sx, sy, p.appearance, {
-        facing: "down", phase: t, moving: true, submerge, weapon: null,
-      });
-      ctx.restore();
-      // sparkle poof
-      for (let i = 0; i < 5; i++) {
-        const a = t * 0.6 + i * 1.3;
-        ctx.fillStyle = `hsla(${(t * 4 + i * 60) % 360},90%,80%,0.9)`;
-        ctx.beginPath();
-        ctx.arc(sx + Math.cos(a) * R * 1.4, sy - R + Math.sin(a) * R * 1.2, 2.2, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.fillStyle = "#eaf2f8"; ctx.font = "11px system-ui"; ctx.textAlign = "center";
-      ctx.fillText(p.name, sx, sy - TILE_SIZE * 1.15);
-      return;
-    }
-
-    // --- Play dead: slumped body + ZZZ, no stars (research mode mechanic) ---
-    if (p.playingDead) {
-      // ground shadow
-      ctx.fillStyle = "rgba(0,0,0,0.22)";
-      ctx.beginPath();
-      ctx.ellipse(sx, sy + R * 0.5, R * 1.1, R * 0.4, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // slumped body (shirt)
-      ctx.fillStyle = p.appearance.shirt;
-      ctx.beginPath();
-      ctx.ellipse(sx, sy + R * 0.15, R * 0.7, R * 0.5, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // head lolled to the side
-      ctx.fillStyle = p.appearance.skin;
-      ctx.beginPath();
-      ctx.arc(sx + R * 0.15, sy - R * 0.35, R * 0.42, 0, Math.PI * 2);
-      ctx.fill();
-      // ZZZ floating gently upward (no stars)
-      ctx.fillStyle = "rgba(180,220,255,0.9)";
-      ctx.font = "12px system-ui";
-      ctx.textAlign = "left";
-      const ztd = Math.floor(performance.now() / 600) % 3;
-      ctx.fillText("z".repeat(ztd + 1), sx + R * 0.8, sy - R * 0.8);
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = "#eaf2f8"; ctx.font = "11px system-ui"; ctx.textAlign = "center";
-      ctx.fillText(p.name, sx, sy - TILE_SIZE * 0.9);
-      return;
-    }
-
-    // --- Hide: melt into the surroundings (near-invisible shimmer to others) ---
-    if (p.hiding) {
-      const shimmer = 0.06 * Math.sin(performance.now() / 220 + p.x * 2.3);
-      ctx.globalAlpha = (isMe ? 0.4 : 0.12) + shimmer;
-    }
-
-    // --- Jump: parabolic arc offset + shrinking ground shadow ---
-    const isJumping = isMe ? !this.jumpGrounded : p.jumping;
-    const jumpOffset = isMe
-      ? -this.jumpOff
-      : (p.jumping ? -Math.sin((p.jumpPhase ?? 0) * Math.PI) * TILE_SIZE * JUMP_HEIGHT : 0);
-    if (isJumping) {
-      const shadowScale = isMe
-        ? Math.max(0.2, 1 - this.jumpOff / (TILE_SIZE * JUMP_HEIGHT))
-        : 1 - (p.jumpPhase ?? 0) * 0.5;
-      ctx.save();
-      ctx.globalAlpha = ctx.globalAlpha * 0.25;
-      ctx.fillStyle = "#000";
-      ctx.beginPath();
-      ctx.ellipse(sx, sy + 4, TILE_SIZE * 0.4 * shadowScale, TILE_SIZE * 0.15 * shadowScale, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-
-    // Combat-ready shuffle: a subtle side-to-side sway when stood in combat mode.
-    let swayX = 0;
-    if (p.mode === "combat" && !gait.moving && !p.swimming) {
-      swayX = Math.sin(performance.now() / 260 + p.x * 3.1) * 1.6;
-    }
-
-    // Research mode gait: bouncier vertical bob when moving.
-    const researchBob = (p.mode === "research" && gait.moving)
-      ? Math.abs(Math.sin(gait.phase * 2)) * 2
-      : 0;
-
-    // Active melee swing → thrust animation over ~260 ms (server-triggered for other
-    // players; set locally for self on Space-release for immediate feel).
-    const ATTACK_MS = 260;
-    const aa = this.attackAnim.get(p.id);
-    let attack: { phase: number; stance: "high" | "low" } | null = null;
-    if (aa) {
-      const t = (performance.now() - aa.at) / ATTACK_MS;
-      if (t >= 1) this.attackAnim.delete(p.id);
-      else attack = { phase: t, stance: aa.stance };
-    }
-
-    // Running kicks up dust behind the feet (land only, not while swimming).
-    const running = gait.running && gait.moving && !p.swimming && depth <= 0 && !p.jumping;
-    if (running) {
-      const t = performance.now();
-      for (let i = 0; i < 2; i++) {
-        const age = ((t / 130 + i * 0.5) % 1);
-        const puffX = sx - Math.cos(p.dir) * (TILE_SIZE * 0.3 + age * TILE_SIZE * 0.5);
-        const puffY = sy + TILE_SIZE * 0.32 - Math.sin(p.dir) * age * TILE_SIZE * 0.2;
-        ctx.fillStyle = `rgba(180,165,135,${(0.32 * (1 - age)).toFixed(3)})`;
-        ctx.beginPath();
-        ctx.arc(puffX, puffY, (1.5 + age * 3) * (TILE_SIZE / 24), 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    const pixelOpts: PixelCharOpts = {
-      facing: facingFromDir(p.dir) as PixelCharOpts["facing"],
-      phase: gait.phase,
-      moving: gait.moving,
-      running,
-      submerge,
-      weapon: p.equipped,
-      attack,
-    };
-    // Landing squash / jump stretch (local player only)
-    const LAND_MS = 260;
-    const landAge = isMe ? performance.now() - this.landedAt : LAND_MS + 1;
-    let landScaleX = 1, landScaleY = 1;
-    if (isMe && landAge < LAND_MS) {
-      // Post-land squash: wide & short, springs back with slight overshoot
-      const t = landAge / LAND_MS;
-      const wave = Math.sin(t * Math.PI) * (1 - t * 0.5);
-      landScaleX = 1 + wave * 0.22;
-      landScaleY = 1 - wave * 0.32;
-    } else if (isMe && !this.jumpGrounded && this.jumpVy < 0) {
-      // Ascending stretch: tall & narrow while going up
-      const h = Math.min(1, this.jumpOff / (TILE_SIZE * JUMP_HEIGHT));
-      landScaleX = 1 - h * 0.07;
-      landScaleY = 1 + h * 0.15;
-    }
-
-    const charX = sx + swayX, charY = sy + jumpOffset - researchBob;
-    const pivY = sy + TILE_SIZE * 0.25; // pivot at foot level for squash
-    ctx.save();
-    if (landScaleX !== 1 || landScaleY !== 1) {
-      ctx.translate(charX, pivY);
-      ctx.scale(landScaleX, landScaleY);
-      ctx.translate(-charX, -pivY);
-    }
-    if (!drawPlayerSprite(ctx, charX, charY,
-        pixelOpts.facing as Facing, gait.moving, p.appearance?.worn,
-        isMe ? this.animState : undefined)) {
-      drawCharacterPixel(ctx, charX, charY, p.appearance, pixelOpts);
-    }
-    ctx.restore();
-
-    // Landing impact ring — brief expanding halo at foot level
-    if (isMe && landAge < 180) {
-      const t = landAge / 180;
-      const r = TILE_SIZE * 0.3 + t * TILE_SIZE * 0.8;
-      const alpha = 0.55 * (1 - t);
-      const inWater = this.predSwimming;
-      ctx.save();
-      ctx.strokeStyle = inWater ? `rgba(130,200,255,${alpha.toFixed(3)})` : `rgba(200,185,155,${alpha.toFixed(3)})`;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.ellipse(sx, sy + TILE_SIZE * 0.2, r, r * 0.38, 0, 0, Math.PI * 2);
-      ctx.stroke();
-      if (inWater) {
-        // second inner ring for water
-        ctx.strokeStyle = `rgba(180,225,255,${(alpha * 0.5).toFixed(3)})`;
-        ctx.beginPath();
-        ctx.ellipse(sx, sy + TILE_SIZE * 0.2, r * 0.55, r * 0.21, 0, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      ctx.restore();
-    }
-
-    // Leaf shimmer overlay when hiding (environment-blend effect).
-    if (p.hiding) {
-      const leafAlpha = isMe ? 0.25 : 0.55;
-      ctx.save();
-      ctx.globalAlpha = leafAlpha;
-      for (let i = 0; i < 5; i++) {
-        const ang = i * 1.26 + performance.now() / 2200;
-        const lx = sx + Math.cos(ang) * R * 1.1;
-        const ly = sy - R * 0.4 + Math.sin(ang) * R * 0.7;
-        ctx.fillStyle = i % 2 === 0 ? "#2e7d32" : "#43a047";
-        ctx.beginPath();
-        ctx.ellipse(lx, ly, 3.5, 2, ang + 0.4, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-    // Always restore globalAlpha before drawing UI elements.
-    ctx.globalAlpha = 1;
-
-    // We DON'T broadcast everyone's HP to the world. Your own HP lives in the
-    // hearts HUD; others' bodies stay clean — UNLESS someone is near death
-    // (<10%), when a red bar flashes above them so teammates know to help and
-    // foes know they're nearly down.
-    const frac = Math.max(0, Math.min(1, p.hp / p.maxHp));
-    const critical = frac < 0.10 && !p.dead;
-    if (critical && !isMe) {
-      const barW = TILE_SIZE * 0.9, barH = 3;
-      const barX = sx - barW / 2, barY = sy - TILE_SIZE * 0.95;
-      const flash = 0.45 + 0.55 * Math.abs(Math.sin(performance.now() / 150));
-      ctx.fillStyle = "rgba(0,0,0,0.45)";
-      ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
-      ctx.fillStyle = `rgba(${(229 * flash) | 0},30,34,1)`;
-      ctx.fillRect(barX, barY, barW * frac, barH);
-    }
-    ctx.globalAlpha = 1;
-
-    // Sleeping zzz.
-    if (p.sleeping) {
-      ctx.fillStyle = "rgba(180,220,255,0.9)";
-      ctx.font = "12px system-ui";
-      ctx.textAlign = "left";
-      const zt = Math.floor(performance.now() / 400) % 3;
-      ctx.fillText("z".repeat(zt + 1), sx + R, sy - R);
-    }
-
-    // Wings speed boost — streaky trail + feather glints.
-    if (p.speedBoosted) {
-      const t = performance.now();
-      for (let i = 0; i < 4; i++) {
-        const ang = (i / 4) * Math.PI * 2 + t / 120;
-        const r2 = R * (0.9 + 0.4 * Math.sin(t / 200 + i));
-        ctx.beginPath();
-        ctx.arc(sx + Math.cos(ang) * r2, sy + Math.sin(ang) * r2 * 0.55, 2.5, 0, Math.PI * 2);
-        ctx.fillStyle = `hsla(${(t / 8 + i * 60) % 360},90%,80%,0.8)`;
-        ctx.fill();
-      }
-    }
-
-    // Name (with a title tag for role-holders).
-    ctx.fillStyle = "#eaf2f8";
-    ctx.font = "11px system-ui";
-    ctx.textAlign = "center";
-    ctx.fillText(p.name, sx, sy - TILE_SIZE * 1.15);
-    if (p.titles && p.titles.length) {
-      ctx.fillStyle = "#ffd54f";
-      ctx.font = "9px system-ui";
-      ctx.fillText(p.titles[0], sx, sy - TILE_SIZE * 1.4);
-    }
-  }
-
-  // A thrown player slumped on the ground, dizzy, with spinning stars overhead.
-  private drawKnockout(p: PlayerState, sx: number, sy: number, R: number) {
-    const ctx = this.ctx;
-    const a = p.appearance;
-    // ground shadow
-    ctx.fillStyle = "rgba(0,0,0,0.22)";
-    ctx.beginPath();
-    ctx.ellipse(sx, sy + R * 0.5, R * 1.1, R * 0.4, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // slumped body (shirt) + head sitting on their butt
-    ctx.fillStyle = a.shirt;
-    ctx.beginPath();
-    ctx.ellipse(sx, sy + R * 0.15, R * 0.7, R * 0.5, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = a.skin;
-    ctx.beginPath();
-    ctx.arc(sx + R * 0.15, sy - R * 0.35, R * 0.42, 0, Math.PI * 2);
-    ctx.fill();
-    // spinning dizzy stars
-    const t = performance.now() / 300;
-    for (let i = 0; i < 3; i++) {
-      const ang = t + (i / 3) * Math.PI * 2;
-      const stx = sx + Math.cos(ang) * R * 0.7;
-      const sty = sy - R * 0.9 + Math.sin(ang) * R * 0.3;
-      ctx.fillStyle = "#ffd54f";
-      ctx.font = "10px system-ui"; ctx.textAlign = "center";
-      ctx.fillText("✦", stx, sty);
-    }
   }
 
   // ─── Canvas equip panel ────────────────────────────────────────────────────
@@ -3807,12 +2679,6 @@ export class Game {
   }
 }
 
-const TRAVEL_COLOR: Record<TravelNode["kind"], string> = {
-  bus: "#f4b400",
-  gate: "#7e57c2",
-  sea: "#13b6c4",
-};
-
 // Inventory swatch colours, by item.
 const ITEM_COLORS: Record<string, string> = {
   wood: "#6b4423", cedarwood: "#5c3a1e", sprucewood: "#4a7a3a", firwood: "#3d6a30",
@@ -3843,11 +2709,6 @@ const NPC_NAME: Record<NpcState["kind"], string> = {
   icevendor: "Ice Vendor", seamstress: "Seamstress", researcher2: "Field Researcher",
   marineBiologist: "Marine Biologist", snorkeler: "Snorkeler",
 };
-
-// Each local is a distinct, quirky individual — Eastward-style cast. Skin, hair,
-// shirt, pants, optional hat, plus build/hair length give everyone a silhouette
-// you can recognise from across the map.
-const NPC_LOOKS = npcLooksData as unknown as Record<NpcState["kind"], Appearance>;
 
 const NPC_COLORS: Record<NpcState["kind"], string> = {
   naturalist: "#2e7d32", pirate: "#37474f", scientist: "#1565c0", westsider: "#00695c",
@@ -3926,591 +2787,6 @@ const NPC_DIALOGUE: Record<NpcState["kind"], string[]> = {
   ],
 };
 
-const TRAVEL_ICON: Record<TravelNode["kind"], string> = {
-  bus: "BUS",
-  gate: "GATE",
-  sea: "~ SEA ~",
-};
-
-// Tiered water colour matching the DEPTH_* constants from protocol.
-function waterDepthColor(depth: number): string {
-  if (depth < DEPTH_ANKLE) return "#7ad4e2"; // ankle — very light turquoise
-  if (depth < DEPTH_SWIM)  return "#3aadbe"; // knee — teal
-  if (depth < DEPTH_DEEP)  return "#1c7fa8"; // waist/swim — medium blue
-  if (depth < DEPTH_OCEAN) return "#0f5278"; // deep — dark blue
-  if (depth < DEPTH_OCEAN * 1.5) return "#082e50"; // ocean — near-navy
-  return "#040f22";                              // abyss — near-black
-}
-
-// Fresh water reads green-teal (tannin-stained coastal lake), distinct from the
-// blue salt ocean, and only mildly darkens with depth so a lake never looks
-// like the deep sea.
-function freshWaterColor(depth: number): string {
-  if (depth < DEPTH_ANKLE) return "#5fae90"; // shallow lake edge
-  if (depth < DEPTH_SWIM)  return "#3f8f78"; // mid
-  return "#2c6f62";                          // deeper centre
-}
-
-// --- resource node sprites --------------------------------------------------
-// Deterministic 0..1 hash from a node's tile coords (stable per tree).
-function nodeHash(n: ResourceNode, salt = 0): number {
-  const v = Math.sin(n.x * 12.9898 + n.y * 78.233 + salt * 37.719) * 43758.5453;
-  return v - Math.floor(v);
-}
-
-// NW-coast tree species: trunk + canopy palette, crown shape, and a base size.
-// `giant` species can grow into old-growth monsters (size varies per tree).
-type ConShape = "broad" | "column" | "cone" | "droop" | "scrub" | "dense";
-interface TreeSpec {
-  type: "conifer" | "broadleaf";
-  trunk: string;
-  canopy: string[]; // dark → light
-  base: number;     // base size multiplier
-  vary: number;     // extra size from per-tree hash (old-growth spread)
-  shape?: ConShape;
-}
-const TREE_SPECS: Record<string, TreeSpec> = {
-  // base/vary tuned so old-growth giants tower 5-8 tiles over a 3-tile person,
-  // while saplings of the same species stay small — real height variety.
-  redcedar:    { type:"conifer", trunk:"#6b4a2b", canopy:["#2c6230","#367a35","#49923f"], base:2.60, vary:1.90, shape:"broad" },
-  sitkaspruce: { type:"conifer", trunk:"#5e4a34", canopy:["#1f5742","#27684e","#368063"], base:2.80, vary:2.10, shape:"column" },
-  douglasfir:  { type:"conifer", trunk:"#5a3f28", canopy:["#234b25","#2d5d2d","#3c7339"], base:2.50, vary:1.80, shape:"cone" },
-  hemlock:     { type:"conifer", trunk:"#5a4632", canopy:["#356b3a","#418347","#57a55e"], base:1.70, vary:0.90, shape:"droop" },
-  shorepine:   { type:"conifer", trunk:"#6b5436", canopy:["#4f6f33","#5f8038","#74974a"], base:1.20, vary:0.55, shape:"scrub" },
-  yew:         { type:"conifer", trunk:"#7a3b2a", canopy:["#1b3d29","#244e33","#2f6040"], base:1.05, vary:0.45, shape:"dense" },
-  redalder:    { type:"broadleaf", trunk:"#8a8170", canopy:["#4a7d3a","#5b9146","#73a857"], base:1.70, vary:0.80 },
-  bigleafmaple:{ type:"broadleaf", trunk:"#7a6b54", canopy:["#5a8a32","#6fa23e","#88b955"], base:2.20, vary:1.20 },
-};
-
-// A layered conifer: dark outline tier-triangles → filled tiers → bright crown.
-// Eastward style: bold outlines, flat colour fills, highlight on sun-facing edge.
-function drawConifer(ctx: CanvasRenderingContext2D, x: number, y: number, R: number, spec: TreeSpec) {
-  const shape = spec.shape ?? "cone";
-  const wide = shape === "broad" ? 1.15 : shape === "scrub" ? 1.2 : shape === "column" ? 0.75 : shape === "dense" ? 1.0 : 0.95;
-  const tall = shape === "column" ? 1.35 : shape === "scrub" ? 0.7 : shape === "dense" ? 0.8 : 1.1;
-  // Ground shadow ellipse
-  ctx.fillStyle = "rgba(0,0,0,0.22)";
-  ctx.beginPath();
-  ctx.ellipse(x, y + R * 0.78, R * 0.85 * wide, R * 0.28, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // Trunk with bark texture
-  const trunkH = R * 0.9;
-  const tw = Math.max(2, R * 0.18);
-  ctx.fillStyle = "#2a1a0a";                           // outline
-  ctx.fillRect(x - tw / 2 - 1, y - 1, tw + 2, trunkH + 2);
-  ctx.fillStyle = spec.trunk;
-  ctx.fillRect(x - tw / 2, y, tw, trunkH);
-  ctx.fillStyle = "rgba(0,0,0,0.32)";                  // shadow stripe on right
-  ctx.fillRect(x + tw * 0.25, y, tw * 0.35, trunkH);
-  ctx.fillStyle = "rgba(255,255,255,0.10)";             // highlight on left
-  ctx.fillRect(x - tw / 2 + 1, y + 2, Math.max(1, tw * 0.2), trunkH - 4);
-  // Foliage tiers — outline first, then fill, then edge highlight
-  const tiers = shape === "scrub" ? 2 : 4;
-  const topY  = y - R * (0.35 + tall * 0.5);
-  const botY  = y + R * 0.18;
-  const halfW = R * 0.95 * wide;
-  for (let i = 0; i < tiers; i++) {
-    const f  = i / tiers;
-    const cy = botY + (topY - botY) * f;
-    const w  = halfW * (1 - f * 0.78);
-    const h  = (botY - topY) / tiers * 1.5;
-    const ci = Math.min(spec.canopy.length - 1, Math.floor(f * spec.canopy.length));
-    // Dark outline triangle (slightly larger)
-    ctx.fillStyle = "#0e1e0a";
-    ctx.beginPath();
-    ctx.moveTo(x,     cy - h - 2);
-    ctx.lineTo(x - w - 2, cy + h * 0.5 + 1);
-    ctx.lineTo(x + w + 2, cy + h * 0.5 + 1);
-    ctx.closePath();
-    ctx.fill();
-    // Coloured fill
-    ctx.fillStyle = spec.canopy[ci];
-    ctx.beginPath();
-    ctx.moveTo(x,     cy - h);
-    ctx.lineTo(x - w, cy + h * 0.5);
-    ctx.lineTo(x + w, cy + h * 0.5);
-    ctx.closePath();
-    ctx.fill();
-    // Left-edge highlight strip (sun hits left side)
-    ctx.fillStyle = "rgba(255,255,255,0.12)";
-    ctx.beginPath();
-    ctx.moveTo(x,         cy - h);
-    ctx.lineTo(x - w,     cy + h * 0.5);
-    ctx.lineTo(x - w * 0.6, cy + h * 0.5);
-    ctx.lineTo(x - w * 0.1, cy - h + h * 0.3);
-    ctx.closePath();
-    ctx.fill();
-  }
-  // Bright sunlit crown tip
-  ctx.fillStyle = "#0a180a";
-  ctx.beginPath(); ctx.arc(x, topY, R * 0.22, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = spec.canopy[spec.canopy.length - 1];
-  ctx.beginPath(); ctx.arc(x, topY, R * 0.17, 0, Math.PI * 2); ctx.fill();
-}
-
-// A rounded broadleaf (alder/maple): outlined cluster crown, lit and shadowed lobes.
-function drawBroadleaf(ctx: CanvasRenderingContext2D, x: number, y: number, R: number, spec: TreeSpec) {
-  // Ground shadow
-  ctx.fillStyle = "rgba(0,0,0,0.22)";
-  ctx.beginPath();
-  ctx.ellipse(x, y + R * 0.78, R * 0.85, R * 0.28, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // Trunk
-  const trunkH = R * 0.85;
-  const tw = Math.max(2, R * 0.18);
-  ctx.fillStyle = "#1e1008";
-  ctx.fillRect(x - tw / 2 - 1, y - 1, tw + 2, trunkH + 2);
-  ctx.fillStyle = spec.trunk;
-  ctx.fillRect(x - tw / 2, y, tw, trunkH);
-  ctx.fillStyle = "rgba(0,0,0,0.3)";
-  ctx.fillRect(x + tw * 0.2, y + 2, tw * 0.4, trunkH - 4);
-  // Crown blobs — draw dark outlines first (offset +1), then fill
-  const top = y - R * 0.55;
-  const BLOBS: [number, number, number, number][] = [
-    [0,           0,         R * 1.02, 0],
-    [-R * 0.45,  -R * 0.1,  R * 0.68, 1],
-    [ R * 0.45,  -R * 0.05, R * 0.63, 1],
-    [-R * 0.15,  -R * 0.5,  R * 0.68, 2],
-    [ R * 0.22,  -R * 0.42, R * 0.57, 2],
-  ];
-  // Outline pass
-  ctx.fillStyle = "#0e1a0a";
-  for (const [ox, oy, r] of BLOBS) {
-    ctx.beginPath();
-    ctx.arc(x + ox, top + oy, r + 1.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  // Fill pass
-  for (const [ox, oy, r, ci] of BLOBS) {
-    ctx.fillStyle = spec.canopy[ci];
-    ctx.beginPath();
-    ctx.arc(x + ox, top + oy, r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  // Highlight on upper-left lobes (sun direction)
-  ctx.fillStyle = "rgba(255,255,255,0.13)";
-  for (const [ox, oy, r, ci] of BLOBS) {
-    if (ci < 1) continue;
-    ctx.beginPath();
-    ctx.arc(x + ox - r * 0.25, top + oy - r * 0.25, r * 0.45, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-
-function drawResourceSprite(ctx: CanvasRenderingContext2D, n: ResourceNode, x: number, y: number) {
-  // Check for a painted object sprite (tree variety or generic fallback)
-  if (n.kind === "tree") {
-    const treeKey = `tree_${n.variety ?? ""}`.replace(/_$/, "");
-    const doc = PAINTED_OBJECTS.get(treeKey) ?? PAINTED_OBJECTS.get("tree");
-    if (doc) { drawObjectSprite(ctx, x, y, doc); return; }
-  } else {
-    const doc = PAINTED_OBJECTS.get(n.kind);
-    if (doc) { drawObjectSprite(ctx, x, y, doc); return; }
-  }
-  // Trees stand taller than ground resources, for a proper forest canopy.
-  // Per-tree size: species base × old-growth spread (giants tower over saplings).
-  const spec = n.kind === "tree" ? TREE_SPECS[n.variety ?? ""] : undefined;
-  const treeScale = spec ? spec.base + nodeHash(n, 4) * spec.vary : 1;
-  const R = n.kind === "tree" ? TILE_SIZE * 0.82 * treeScale : TILE_SIZE * 0.44;
-  if (n.depleted) {
-    // Ghost outline: stump or empty pit.
-    ctx.strokeStyle = n.kind === "tree" ? "#3a5c28" : "#5a4e3a";
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.arc(x, y, R * 0.55, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    return;
-  }
-
-  if (n.kind === "tree" && n.variety === "arbutus") {
-    // Arbutus: distinctive reddish-orange peeling trunk, glossy compact canopy.
-    ctx.fillStyle = "#c4582e";
-    ctx.fillRect(x - 3, y, 6, R * 0.65);
-    // Bark flecks
-    ctx.fillStyle = "#9c3d1e";
-    ctx.fillRect(x - 2, y + 4, 2, 4);
-    ctx.fillRect(x + 1, y + 9, 2, 3);
-    for (const [ox, oy, r, col] of [
-      [0, -R * 0.1, R * 0.75, "#1e5c3a"],
-      [-R * 0.25, -R * 0.15, R * 0.55, "#265e40"],
-      [R * 0.25, -R * 0.1, R * 0.5, "#245c3c"],
-      [0, -R * 0.35, R * 0.6, "#2a7048"],
-    ] as const) {
-      ctx.fillStyle = col;
-      ctx.beginPath();
-      ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    // Warm sun-glint on the glossy leaves.
-    ctx.fillStyle = "rgba(255,200,100,0.18)";
-    ctx.beginPath();
-    ctx.arc(x - R * 0.2, y - R * 0.4, R * 0.35, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (n.kind === "tree") {
-    // Real NW-coast species, each drawn to its own silhouette & palette.
-    const s = spec ?? TREE_SPECS.hemlock;
-    if (s.type === "conifer") drawConifer(ctx, x, y, R, s);
-    else drawBroadleaf(ctx, x, y, R, s);
-  } else if (n.kind === "berryBush") {
-    // Low leafy bush dotted with berries; colour hints at the variety.
-    const v = n.variety ?? "";
-    const berryCol = v.includes("salmon") ? "#e8714f"
-      : v.includes("thimble") ? "#d6453f"
-      : v.includes("salal") ? "#2b3a55"
-      : v.includes("blackberry") ? "#26121f"
-      : "#3a59c0"; // huckleberry blue default
-    ctx.fillStyle = "#2f6b34";
-    for (const [ox, oy, r] of [
-      [0, R * 0.1, R * 0.85],
-      [-R * 0.4, 0, R * 0.55],
-      [R * 0.4, 0.02, R * 0.55],
-    ] as const) {
-      ctx.beginPath();
-      ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.fillStyle = berryCol;
-    for (const [ox, oy] of [[-4, 0], [3, -2], [0, 4], [6, 3], [-6, 4]] as const) {
-      ctx.beginPath();
-      ctx.arc(x + ox, y + oy, 2.1, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  } else if (n.kind === "clayDeposit") {
-    // Clay deposit: earthy reddish mound near water.
-    ctx.fillStyle = "#b5651d";
-    ctx.beginPath();
-    ctx.ellipse(x, y + R * 0.2, R * 1.0, R * 0.55, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#cd8a40";
-    ctx.beginPath();
-    ctx.ellipse(x - R * 0.2, y - R * 0.1, R * 0.5, R * 0.3, 0.2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#a0522d";
-    ctx.strokeStyle = "rgba(0,0,0,0.2)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(x, y, R, 0, Math.PI * 2);
-    ctx.stroke();
-  } else {
-    // Ore vein: rough rock cluster
-    const col = n.kind === "ironOre" ? "#8a6040" : "#8a8a8a";
-    const hi = n.kind === "ironOre" ? "#d4824a" : "#b8b8b8";
-    ctx.fillStyle = col;
-    for (const [ox, oy, r] of [
-      [0, 0, R],
-      [-R * 0.45, -R * 0.2, R * 0.6],
-      [R * 0.4, -R * 0.15, R * 0.55],
-      [0, -R * 0.4, R * 0.5],
-    ] as const) {
-      ctx.beginPath();
-      ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    // Ore sparkles
-    ctx.fillStyle = hi;
-    for (const [ox, oy] of [[-3, -8], [5, -3], [-6, 2], [3, 6]] as const) {
-      ctx.fillRect(x + ox, y + oy, 2, 2);
-    }
-    ctx.strokeStyle = "rgba(0,0,0,0.3)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(x, y, R, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  // HP notches (dashes around the base to show how many hits are left).
-  const frac = n.hp / n.maxHp;
-  if (frac < 1) {
-    ctx.strokeStyle = "#ffb300";
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.arc(x, y, R + 4, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2);
-    ctx.stroke();
-  }
-}
-
-// --- invasive plant sprites -------------------------------------------------
-function drawPlantSprite(ctx: CanvasRenderingContext2D, pl: PlantState, x: number, y: number) {
-  const R = TILE_SIZE * 0.42;
-  const flowering = pl.stage === "flowering";
-  const seeding = pl.stage === "seeding";
-
-  if (pl.kind === "scotchBroom") {
-    // Spindly broom: green whips, yellow pea-flowers when flowering.
-    ctx.strokeStyle = "#3f6b2e";
-    ctx.lineWidth = 2;
-    for (const a of [-0.5, -0.18, 0.15, 0.5]) {
-      ctx.beginPath();
-      ctx.moveTo(x, y + R * 0.6);
-      ctx.lineTo(x + Math.sin(a) * R * 1.1, y - R);
-      ctx.stroke();
-    }
-    if (flowering) {
-      ctx.fillStyle = "#ffd21f";
-      for (const [ox, oy] of [[-6, -8], [0, -12], [6, -7], [-3, -2], [4, -1]] as const) {
-        ctx.beginPath();
-        ctx.arc(x + ox, y + oy, 2.4, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-  } else if (pl.kind === "himalayanBlackberry") {
-    // Dense arching bramble; dark berries when seeding.
-    ctx.strokeStyle = "#4a6b3a";
-    ctx.lineWidth = 3;
-    for (const a of [-0.8, -0.3, 0.3, 0.8]) {
-      ctx.beginPath();
-      ctx.arc(x, y + R * 0.4, R, Math.PI + a, Math.PI * 2 - a);
-      ctx.stroke();
-    }
-    ctx.fillStyle = "#355a2a";
-    ctx.beginPath();
-    ctx.arc(x, y, R * 0.5, 0, Math.PI * 2);
-    ctx.fill();
-    if (flowering) {
-      ctx.fillStyle = "#f3e1ec";
-      for (const [ox, oy] of [[-5, -5], [5, -4], [0, -7]] as const) {
-        ctx.beginPath();
-        ctx.arc(x + ox, y + oy, 2.2, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    } else if (seeding) {
-      ctx.fillStyle = "#1c0d18";
-      for (const [ox, oy] of [[-5, -3], [4, -4], [0, 2]] as const) {
-        ctx.beginPath();
-        ctx.arc(x + ox, y + oy, 2.4, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-  } else {
-    // Foxglove: a tall spire of purple bells when flowering — pretty but invasive.
-    ctx.strokeStyle = "#2f6b34";
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(x, y + R * 0.7);
-    ctx.lineTo(x, y - R * 1.1);
-    ctx.stroke();
-    // basal leaves
-    ctx.fillStyle = "#357a3a";
-    ctx.beginPath();
-    ctx.ellipse(x, y + R * 0.6, R * 0.7, R * 0.3, 0, 0, Math.PI * 2);
-    ctx.fill();
-    if (flowering) {
-      ctx.fillStyle = "#b061c9";
-      for (let i = 0; i < 5; i++) {
-        const by = y - R * 1.0 + i * R * 0.4;
-        ctx.beginPath();
-        ctx.ellipse(x + (i % 2 ? 4 : -4), by, 3.4, 4.6, 0, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-  }
-
-  // Flowering = your window to KILL it for good: pulsing golden halo.
-  if (flowering) {
-    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 220);
-    ctx.strokeStyle = `rgba(255,213,79,${(0.35 + 0.45 * pulse).toFixed(2)})`;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.arc(x, y, R + 6, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
-}
-
-function drawCampfireSprite(ctx: CanvasRenderingContext2D, x: number, y: number) {
-  const doc = PAINTED_OBJECTS.get("campfire");
-  if (doc) { drawObjectSprite(ctx, x, y, doc); return; }
-  const t = performance.now() / 140;
-  // Log ring
-  ctx.strokeStyle = "#5b3a1e";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(x, y + 3, TILE_SIZE * 0.34, 0, Math.PI * 2);
-  ctx.stroke();
-  // Flames
-  for (const [ox, h, col] of [
-    [0, 16, "#ff6a00"],
-    [-4, 11, "#ffb028"],
-    [4, 12, "#ffce4a"],
-  ] as const) {
-    const flick = Math.sin(t + ox) * 2;
-    ctx.fillStyle = col;
-    ctx.beginPath();
-    ctx.moveTo(x + ox - 4, y + 4);
-    ctx.quadraticCurveTo(x + ox + flick, y - h, x + ox + 4, y + 4);
-    ctx.closePath();
-    ctx.fill();
-  }
-  // Glow
-  ctx.fillStyle = "rgba(255,150,40,0.12)";
-  ctx.beginPath();
-  ctx.arc(x, y, TILE_SIZE * 0.7, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function drawFurnaceSprite(ctx: CanvasRenderingContext2D, x: number, y: number) {
-  const doc = PAINTED_OBJECTS.get("furnace");
-  if (doc) { drawObjectSprite(ctx, x, y, doc); return; }
-  const T = TILE_SIZE;
-  const hw = T * 0.44;
-  const hh = T * 0.40;
-  // Stone body
-  ctx.fillStyle = "#4a4a4a";
-  ctx.fillRect(x - hw, y - hh, hw * 2, hh * 2);
-  // Darker stone face
-  ctx.fillStyle = "#333";
-  ctx.fillRect(x - hw + 2, y - hh + 2, hw * 2 - 4, hh * 2 - 4);
-  // Glowing aperture
-  const glow = Math.sin(performance.now() / 300) * 0.15 + 0.85;
-  const grad = ctx.createRadialGradient(x, y + 2, 1, x, y + 2, T * 0.25);
-  grad.addColorStop(0, `rgba(255,200,60,${glow})`);
-  grad.addColorStop(0.5, `rgba(255,100,20,${glow * 0.7})`);
-  grad.addColorStop(1, "rgba(80,20,0,0)");
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.ellipse(x, y + 2, T * 0.22, T * 0.16, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // Smoke wisps
-  const t = performance.now() / 600;
-  for (const [ox, phase] of [[-3, 0], [0, 1.2], [3, 2.4]] as const) {
-    const drift = Math.sin(t + phase) * 2;
-    const alpha = 0.15 + Math.abs(Math.sin(t + phase)) * 0.1;
-    ctx.strokeStyle = `rgba(200,200,200,${alpha})`;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x + ox, y - hh);
-    ctx.quadraticCurveTo(x + ox + drift, y - hh - 5, x + ox + drift * 1.5, y - hh - 10);
-    ctx.stroke();
-  }
-}
-
-// --- ground loot drop --------------------------------------------------------
-const LOOT_COLORS: Partial<Record<string, string>> = {
-  venison: "#c0392b", bearMeat: "#6d2b1a", sealMeat: "#8e5fa0", poultry: "#d4a52a",
-  fish: "#3498db", salmon: "#e67e22", lingcod: "#2ecc71", halibut: "#1abc9c",
-  crabmeat: "#e74c3c", bones: "#ecf0f1", leather: "#795548",
-  wood: "#8d6e63", cedarwood: "#6d4c41", sprucewood: "#5d8a4e", firwood: "#4e7a3d",
-  hemwood: "#7b9a6d", pinewood: "#9e9e6a", yewwood: "#5c4033", alderwood: "#a8a055", mapwood: "#b8860b",
-  arrow: "#8d6e63", bolt: "#78909c", spear: "#607d8b", bullet: "#90a4ae",
-  clay: "#b5651d", pottery: "#a0522d",
-  iron: "#607d8b", stone: "#9e9e9e",
-};
-function drawLootDrop(ctx: CanvasRenderingContext2D, drop: LootDrop, x: number, y: number) {
-  const bob = Math.sin(performance.now() / 500 + drop.x * 7.3 + drop.y * 3.1) * 2;
-  const r = TILE_SIZE * 0.22;
-  // Glow
-  const pulse = 0.4 + 0.3 * Math.abs(Math.sin(performance.now() / 700));
-  ctx.save();
-  ctx.globalAlpha = pulse;
-  ctx.beginPath();
-  ctx.arc(x, y + bob, r * 1.8, 0, Math.PI * 2);
-  ctx.fillStyle = "#fff";
-  ctx.fill();
-  ctx.restore();
-  // Item circle
-  ctx.beginPath();
-  ctx.arc(x, y + bob, r, 0, Math.PI * 2);
-  ctx.fillStyle = LOOT_COLORS[drop.item] ?? "#aaa";
-  ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255,0.7)";
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  // Qty label if >1
-  if (drop.qty > 1) {
-    ctx.fillStyle = "#fff";
-    ctx.font = `bold ${Math.max(7, r * 0.9)}px system-ui`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(String(drop.qty), x, y + bob);
-  }
-  ctx.textBaseline = "alphabetic";
-}
-
-// --- vehicle sprites (top-down) ---------------------------------------------
-function drawVehicleSprite(ctx: CanvasRenderingContext2D, v: VehicleState, x: number, y: number) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(v.dir);
-  if (v.kind === "car") drawCar(ctx);
-  else drawBoat(ctx);
-  ctx.restore();
-
-  // Shared damage bar above the hull when it's taken a beating.
-  const frac = Math.max(0, v.hp / v.maxHp);
-  if (frac < 1) {
-    const w = TILE_SIZE * 3.0;
-    ctx.fillStyle = "#222";
-    ctx.fillRect(x - w / 2, y - TILE_SIZE, w, 3);
-    ctx.fillStyle = frac > 0.5 ? "#4caf50" : frac > 0.25 ? "#ffb300" : "#e53935";
-    ctx.fillRect(x - w / 2, y - TILE_SIZE, w * frac, 3);
-  }
-
-  // Fuel gauge just below the damage bar (only when it's not a full tank).
-  const ffrac = Math.max(0, v.fuel / v.maxFuel);
-  if (ffrac < 1) {
-    const w = TILE_SIZE * 3.0;
-    const fy = y - TILE_SIZE + 5;
-    ctx.fillStyle = "#222";
-    ctx.fillRect(x - w / 2, fy, w, 3);
-    ctx.fillStyle = ffrac > 0.3 ? "#ff9800" : "#e53935";
-    ctx.fillRect(x - w / 2, fy, w * ffrac, 3);
-    ctx.fillStyle = "#ffd9a0";
-    ctx.font = "8px system-ui";
-    ctx.textAlign = "left";
-    ctx.fillText("⛽", x - w / 2 - 10, fy + 4);
-  }
-}
-
-function drawCar(ctx: CanvasRenderingContext2D) {
-  const L = TILE_SIZE * 3.8; // length (along heading)
-  const W = TILE_SIZE * 1.8; // width
-  // body
-  ctx.fillStyle = "#c0392b";
-  roundRect(ctx, -L / 2, -W / 2, L, W, 5);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(0,0,0,0.5)";
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-  // cabin / windshield (toward the front = +x)
-  ctx.fillStyle = "#1c2a33";
-  roundRect(ctx, -L * 0.05, -W * 0.34, L * 0.34, W * 0.68, 3);
-  ctx.fill();
-  // headlights at the nose
-  ctx.fillStyle = "#ffe082";
-  ctx.beginPath();
-  ctx.arc(L / 2 - 3, -W * 0.28, 2.2, 0, Math.PI * 2);
-  ctx.arc(L / 2 - 3, W * 0.28, 2.2, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function drawBoat(ctx: CanvasRenderingContext2D) {
-  const L = TILE_SIZE * 3.6;
-  const W = TILE_SIZE * 1.7;
-  // pointed hull (bow toward +x)
-  ctx.fillStyle = "#e8e2d0";
-  ctx.beginPath();
-  ctx.moveTo(L / 2, 0); // bow
-  ctx.lineTo(L * 0.05, -W / 2);
-  ctx.lineTo(-L / 2, -W * 0.36);
-  ctx.lineTo(-L / 2, W * 0.36);
-  ctx.lineTo(L * 0.05, W / 2);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = "#7a6f53";
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-  // open cockpit / inner well
-  ctx.fillStyle = "#3a5a6a";
-  roundRect(ctx, -L * 0.32, -W * 0.26, L * 0.5, W * 0.52, 3);
-  ctx.fill();
-  // little outboard motor at the stern
-  ctx.fillStyle = "#222";
-  ctx.fillRect(-L / 2 - 3, -3, 5, 6);
-}
-
 function roundRect(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -4558,57 +2834,3 @@ function wrapText(
   if (line) ctx.fillText(line, x, y);
 }
 
-// ---------------------------------------------------------------------------
-// Oblique 3/4-view humanoid — the shared body for players and NPCs.
-//
-// Drawn in the style of Eastward / Stardew: the camera looks down, but every
-// character is rendered standing UP so you read head, torso, arms and legs.
-// Anchored near the feet at (sx, sy); the body rises above so taller things
-// naturally overlap shorter ones in a Y-sorted scene.
-// ---------------------------------------------------------------------------
-type Facing =
-  | "down" | "up" | "left" | "right"
-  | "downleft" | "downright" | "upleft" | "upright";
-
-function facingFromDir(dir: number): Facing {
-  // 8-way: snap the movement angle to the nearest 45°.
-  const TAU = Math.PI * 2;
-  const oct = Math.round(((dir % TAU) + TAU) % TAU / (Math.PI / 4)) % 8;
-  // octants from angle 0 (east) going clockwise (screen y is down)
-  return (["right", "downright", "down", "downleft",
-           "left", "upleft", "up", "upright"] as Facing[])[oct];
-}
-
-function buildingLabel(kind: BuildingState["kind"]): string {
-  switch (kind) {
-    case "shop":
-      return "MARKET";
-    case "boathouse":
-      return "BOATS";
-    case "dock":
-      return "DOCK";
-    default:
-      return "";
-  }
-}
-
-function buildingColor(kind: BuildingState["kind"]): string {
-  switch (kind) {
-    case "house":
-      return "#c08a52";  // warm cedar siding
-    case "shop":
-      return "#b09068";  // weathered storefront
-    case "boathouse":
-      return "#8a6a42";  // dark stained timber
-    case "dock":
-      return "#7a5a36";
-    default:
-      return "#4a4038";
-  }
-}
-
-const ROOF_COLORS: Record<string, string> = {
-  house:     "#7a3b2e", // red shingle
-  shop:      "#3f5d6b", // blue-grey metal
-  boathouse: "#4a5a3a", // mossy green
-};

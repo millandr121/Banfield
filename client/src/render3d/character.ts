@@ -30,14 +30,16 @@ const SLOT_BONE: Record<EquipSlot, BoneName> = {
 // Limb bones sit at their joint and their mesh hangs downward from it.
 const REST: Record<BoneName, [number, number, number]> = {
   root:     [0, 0, 0],
-  hips:     [0, 0.82, 0],
+  // Hip height is set so the soles land exactly on y=0: legs 0.42 + shins 0.40
+  // + feet 0.10. Change a limb length and this must move with it.
+  hips:     [0, 0.92, 0],
   torso:    [0, 0, 0],
   neck:     [0, 0.55, 0],
   head:     [0, 0.05, 0],
-  armL:     [-0.26, 0.48, 0],
+  armL:     [-0.30, 0.48, 0],
   forearmL: [0, -0.34, 0],
   handL:    [0, -0.32, 0],
-  armR:     [0.26, 0.48, 0],
+  armR:     [0.30, 0.48, 0],
   forearmR: [0, -0.34, 0],
   handR:    [0, -0.32, 0],
   legL:     [-0.11, 0, 0],
@@ -97,6 +99,7 @@ interface PartSpec {
 function bodyParts(): PartSpec[] {
   return [
     { bone: "head",  role: "skin",  geo: taperedBox(0.24, 0.22, 0.22, 0.21, 0.26), offset: [0, 0.26, 0] },
+    { bone: "head",  role: "hair",  geo: taperedBox(0.25, 0.235, 0.255, 0.24, 0.10), offset: [0, 0.30, 0] },
     { bone: "torso", role: "shirt", geo: taperedBox(0.46, 0.24, 0.38, 0.22, 0.55), offset: [0, 0.55, 0] },
     { bone: "armL",  role: "skin",  geo: taperedBox(0.14, 0.14, 0.12, 0.12, 0.34) },
     { bone: "armR",  role: "skin",  geo: taperedBox(0.14, 0.14, 0.12, 0.12, 0.34) },
@@ -151,10 +154,13 @@ export class CharacterRig {
 
     this.setColors({
       skin: "#c98a5b", hair: "#3a2a1a", shirt: "#4a6ea8",
-      pants: "#3d4450", accent: "#2e2a26", ...colors,
+      pants: "#3d4450", accent: "#2e2a26",
     });
+    this.setColors(colors);
   }
 
+  /** Absent/undefined roles keep their current colour — Appearance.pants and
+   *  friends are optional, and spreading them over defaults would erase them. */
   setColors(c: RigColors) {
     for (const [role, hex] of Object.entries(c)) {
       if (!hex) continue;

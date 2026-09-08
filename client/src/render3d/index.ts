@@ -14,6 +14,8 @@ export interface PlayerView {
   state: AnimState;
   speed: number;
   colors: RigColors;
+  /** Extra height above the ground, in scene units (jump arc). */
+  lift?: number;
 }
 
 const SKY = 0x8fb8d8;
@@ -125,7 +127,7 @@ export class Renderer3D {
       } else {
         rig.setColors(v.colors);
       }
-      rig.root.position.set(v.x, elevToY(v.elevation), v.y);
+      rig.root.position.set(v.x, elevToY(v.elevation) + (v.lift ?? 0), v.y);
       rig.setHeading(v.heading);
       rig.update(dt, v.state, v.speed);
     }
